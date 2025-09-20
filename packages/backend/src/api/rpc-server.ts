@@ -1651,6 +1651,37 @@ export class RpcServer {
           <p><strong>You Receive:</strong> ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} <span class="chain-badge">${dealInfo.receiveChainIcon} ${dealInfo.receiveChain}</span></p>
         </div>
         
+        <!-- Details Form (Always Visible) -->
+        <div id="detailsForm" style="background: #f9f9f9; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+          <h3>📝 Your Wallet Addresses:</h3>
+          
+          <div class="form-group">
+            <label for="payback">🔙 Payback Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.sendChain}</span></label>
+            <small style="color: #888;">If the deal fails, your ${dealInfo.sendAmount} ${dealInfo.sendAsset} will be returned to this address</small>
+            <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
+              <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.sendChain} address that can receive ${dealInfo.sendAsset}</small>
+            </div>
+            <input id="payback" placeholder="Enter your ${dealInfo.sendChain} wallet address" required>
+          </div>
+          
+          <div class="form-group">
+            <label for="recipient">📥 Recipient Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.receiveChain}</span></label>
+            <small style="color: #888;">When the deal succeeds, you will receive ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} here</small>
+            <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
+              <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.receiveChain} address that can receive ${dealInfo.receiveAsset}</small>
+            </div>
+            <input id="recipient" placeholder="Enter your ${dealInfo.receiveChain} wallet address" required>
+          </div>
+          
+          <div class="form-group">
+            <label for="email">Email (Optional)</label>
+            <small style="color: #888;">For deal status notifications</small>
+            <input id="email" type="email" placeholder="your@email.com">
+          </div>
+          
+          <button onclick="submitDetails()">Submit Details & Continue</button>
+        </div>
+        
         <!-- Status Dashboard (Always Visible) -->
         <div class="status-dashboard" id="statusDashboard">
           <!-- Status Header -->
@@ -1717,43 +1748,22 @@ export class RpcServer {
             </div>
           </div>
         </div>
-        
-        <!-- Details Form (Always Visible) -->
-        <div id="detailsForm" style="background: #f9f9f9; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-          <h3>📝 Your Wallet Addresses:</h3>
-          
-          <div class="form-group">
-            <label for="payback">🔙 Payback Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.sendChain}</span></label>
-            <small style="color: #888;">If the deal fails, your ${dealInfo.sendAmount} ${dealInfo.sendAsset} will be returned to this address</small>
-            <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
-              <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.sendChain} address that can receive ${dealInfo.sendAsset}</small>
-            </div>
-            <input id="payback" placeholder="Enter your ${dealInfo.sendChain} wallet address" required>
-          </div>
-          
-          <div class="form-group">
-            <label for="recipient">📥 Recipient Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.receiveChain}</span></label>
-            <small style="color: #888;">When the deal succeeds, you will receive ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} here</small>
-            <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
-              <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.receiveChain} address that can receive ${dealInfo.receiveAsset}</small>
-            </div>
-            <input id="recipient" placeholder="Enter your ${dealInfo.receiveChain} wallet address" required>
-          </div>
-          
-          <div class="form-group">
-            <label for="email">Email (Optional)</label>
-            <small style="color: #888;">For deal status notifications</small>
-            <input id="email" type="email" placeholder="your@email.com">
-          </div>
-          
-          <button onclick="submitDetails()">Submit Details & Continue</button>
-        </div>
       </div>
       
       <script>
         const dealId = '${dealId}';
         const token = '${token}';
         const party = '${party}';
+        
+        // Store deal info for use in JavaScript
+        const dealInfo = {
+          sendChain: '${dealInfo.sendChain}',
+          sendAsset: '${dealInfo.sendAsset}',
+          sendAmount: '${dealInfo.sendAmount}',
+          receiveChain: '${dealInfo.receiveChain}',
+          receiveAsset: '${dealInfo.receiveAsset}',
+          receiveAmount: '${dealInfo.receiveAmount}'
+        };
         
         let refreshInterval = null;
         let countdownInterval = null;
