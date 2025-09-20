@@ -341,61 +341,75 @@ export class RpcServer {
         <style>
           body { 
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
-            max-width: 600px; 
-            margin: 50px auto;
-            padding: 20px;
+            font-size: 13px;
+            max-width: 500px; 
+            margin: 10px auto;
+            padding: 10px;
             background: #f5f5f5;
           }
           .container {
             background: white;
-            border-radius: 10px;
-            padding: 30px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 6px;
+            padding: 15px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
           }
           h1 {
             color: #333;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
+            font-size: 18px;
+            border-bottom: 1px solid #667eea;
+            padding-bottom: 6px;
+            margin: 0 0 10px 0;
+          }
+          h3 {
+            font-size: 14px;
+            margin: 0 0 8px 0;
+          }
+          .two-column {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
           }
           .asset-section {
             background: #f9f9f9;
-            border-radius: 8px;
-            padding: 20px;
-            margin: 20px 0;
+            border-radius: 5px;
+            padding: 10px;
           }
           .form-group {
-            margin: 15px 0;
+            margin: 8px 0;
           }
           label {
             display: block;
-            margin-bottom: 5px;
+            margin-bottom: 2px;
             font-weight: 600;
             color: #555;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
           }
           input, select { 
             width: 100%; 
-            padding: 10px; 
-            margin: 5px 0; 
+            padding: 6px 8px; 
+            margin: 2px 0; 
             border: 1px solid #ddd;
-            border-radius: 5px;
-            font-size: 14px;
+            border-radius: 3px;
+            font-size: 12px;
           }
           select:focus, input:focus {
             outline: none;
             border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
           }
           button { 
             background: #667eea; 
             color: white; 
-            padding: 12px 30px; 
+            padding: 8px 20px; 
             border: none; 
             cursor: pointer;
-            border-radius: 5px;
-            font-size: 16px;
+            border-radius: 3px;
+            font-size: 13px;
             font-weight: 600;
             width: 100%;
-            margin-top: 20px;
+            margin-top: 10px;
           }
           button:hover {
             background: #5a67d8;
@@ -403,21 +417,21 @@ export class RpcServer {
           .asset-display {
             display: flex;
             align-items: center;
-            gap: 10px;
-            padding: 8px;
+            gap: 6px;
+            padding: 4px 6px;
             background: white;
-            border-radius: 5px;
-            margin-top: 10px;
+            border-radius: 3px;
+            margin-top: 4px;
             text-decoration: none;
             transition: all 0.2s ease;
+            font-size: 11px;
           }
           .asset-display:hover {
             background: #f0f4ff;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
           }
           .asset-icon {
-            font-size: 24px;
+            font-size: 16px;
           }
           .asset-info {
             flex: 1;
@@ -425,19 +439,28 @@ export class RpcServer {
           .asset-name {
             font-weight: 600;
             color: #333;
+            font-size: 11px;
           }
           .asset-details {
-            font-size: 12px;
+            font-size: 10px;
             color: #888;
           }
           .external-link {
             color: #667eea;
-            font-size: 14px;
+            font-size: 10px;
             opacity: 0;
             transition: opacity 0.2s;
           }
           .asset-display:hover .external-link {
             opacity: 1;
+          }
+          .timeout-group {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #e0e0e0;
+          }
+          small {
+            font-size: 10px;
           }
         </style>
       </head>
@@ -446,78 +469,82 @@ export class RpcServer {
           <h1>Create OTC Asset Swap Deal</h1>
           
           <form id="dealForm">
-            <div class="asset-section">
-              <h3>🅰️ Asset A</h3>
-              
-              <div class="form-group">
-                <label for="chainA">Blockchain Network:</label>
-                <select name="chainA" id="chainA" onchange="updateAssetDropdown('A')">
-                  ${chains.map((chain: any) => 
-                    `<option value="${chain.chainId}">${chain.icon} ${chain.name}</option>`
-                  ).join('')}
-                </select>
-              </div>
-              
-              <div class="form-group">
-                <label for="assetA">Asset:</label>
-                <select name="assetA" id="assetA" onchange="updateAssetDisplay('A')">
-                  <!-- Will be populated by JavaScript -->
-                </select>
-              </div>
-              
-              <a id="assetDisplayA" class="asset-display" href="#" target="_blank" style="display:none;">
-                <span class="asset-icon"></span>
-                <div class="asset-info">
-                  <div class="asset-name"></div>
-                  <div class="asset-details"></div>
+            <div class="two-column">
+              <div class="asset-section">
+                <h3>🅰️ Asset A</h3>
+                
+                <div class="form-group">
+                  <label for="chainA">Network</label>
+                  <select name="chainA" id="chainA" onchange="updateAssetDropdown('A')">
+                    ${chains.map((chain: any) => 
+                      `<option value="${chain.chainId}">${chain.icon} ${chain.name}</option>`
+                    ).join('')}
+                  </select>
                 </div>
-                <span class="external-link">🔗</span>
-              </a>
+                
+                <div class="form-group">
+                  <label for="assetA">Asset</label>
+                  <select name="assetA" id="assetA" onchange="updateAssetDisplay('A')">
+                    <!-- Will be populated by JavaScript -->
+                  </select>
+                </div>
+                
+                <a id="assetDisplayA" class="asset-display" href="#" target="_blank" style="display:none;">
+                  <span class="asset-icon"></span>
+                  <div class="asset-info">
+                    <div class="asset-name"></div>
+                    <div class="asset-details"></div>
+                  </div>
+                  <span class="external-link">🔗</span>
+                </a>
+                
+                <div class="form-group">
+                  <label for="amountA">Amount</label>
+                  <input name="amountA" id="amountA" type="number" step="0.00000001" placeholder="0.00" required>
+                </div>
+              </div>
               
-              <div class="form-group">
-                <label for="amountA">Amount:</label>
-                <input name="amountA" id="amountA" type="number" step="0.00000001" placeholder="0.00" required>
+              <div class="asset-section">
+                <h3>🅱️ Asset B</h3>
+                
+                <div class="form-group">
+                  <label for="chainB">Network</label>
+                  <select name="chainB" id="chainB" onchange="updateAssetDropdown('B')">
+                    ${chains.map((chain: any) => 
+                      `<option value="${chain.chainId}">${chain.icon} ${chain.name}</option>`
+                    ).join('')}
+                  </select>
+                </div>
+                
+                <div class="form-group">
+                  <label for="assetB">Asset</label>
+                  <select name="assetB" id="assetB" onchange="updateAssetDisplay('B')">
+                    <!-- Will be populated by JavaScript -->
+                  </select>
+                </div>
+                
+                <a id="assetDisplayB" class="asset-display" href="#" target="_blank" style="display:none;">
+                  <span class="asset-icon"></span>
+                  <div class="asset-info">
+                    <div class="asset-name"></div>
+                    <div class="asset-details"></div>
+                  </div>
+                  <span class="external-link">🔗</span>
+                </a>
+                
+                <div class="form-group">
+                  <label for="amountB">Amount</label>
+                  <input name="amountB" id="amountB" type="number" step="0.00000001" placeholder="0.00" required>
+                </div>
               </div>
             </div>
             
-            <div class="asset-section">
-              <h3>🅱️ Asset B</h3>
-              
+            <div class="timeout-group">
               <div class="form-group">
-                <label for="chainB">Blockchain Network:</label>
-                <select name="chainB" id="chainB" onchange="updateAssetDropdown('B')">
-                  ${chains.map((chain: any) => 
-                    `<option value="${chain.chainId}">${chain.icon} ${chain.name}</option>`
-                  ).join('')}
-                </select>
+                <label for="timeout">Timeout (seconds)</label>
+                <input name="timeout" id="timeout" type="number" value="3600" min="300" max="86400" required>
+                <small style="color: #888;">Default: 1 hour</small>
               </div>
-              
-              <div class="form-group">
-                <label for="assetB">Asset:</label>
-                <select name="assetB" id="assetB" onchange="updateAssetDisplay('B')">
-                  <!-- Will be populated by JavaScript -->
-                </select>
-              </div>
-              
-              <a id="assetDisplayB" class="asset-display" href="#" target="_blank" style="display:none;">
-                <span class="asset-icon"></span>
-                <div class="asset-info">
-                  <div class="asset-name"></div>
-                  <div class="asset-details"></div>
-                </div>
-                <span class="external-link">🔗</span>
-              </a>
-              
-              <div class="form-group">
-                <label for="amountB">Amount:</label>
-                <input name="amountB" id="amountB" type="number" step="0.00000001" placeholder="0.00" required>
-              </div>
-            </div>
-            
-            <div class="form-group">
-              <label for="timeout">Deal Timeout (seconds):</label>
-              <input name="timeout" id="timeout" type="number" value="3600" min="300" max="86400" required>
-              <small style="color: #888;">Default: 1 hour (3600 seconds)</small>
             </div>
             
             <button type="submit">Create Swap Deal</button>
