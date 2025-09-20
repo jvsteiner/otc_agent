@@ -4,6 +4,7 @@ import { DealRepository } from '../db/repositories';
 import { DB } from '../db/database';
 import { PluginManager } from '@otc-broker/chains';
 import * as crypto from 'crypto';
+import { EmailService } from '../services/email';
 
 interface CreateDealParams {
   alice: DealAssetSpec;
@@ -41,6 +42,7 @@ export class RpcServer {
   private app: express.Application;
   private dealRepo: DealRepository;
   private pluginManager: PluginManager;
+  private emailService: EmailService;
   private tokens = new Map<string, { dealId: string; party: 'ALICE' | 'BOB' }>();
 
   constructor(private db: DB, pluginManager: PluginManager) {
@@ -48,6 +50,7 @@ export class RpcServer {
     this.app.use(express.json());
     this.dealRepo = new DealRepository(db);
     this.pluginManager = pluginManager;
+    this.emailService = new EmailService(db);
     
     this.setupRoutes();
   }
@@ -333,6 +336,11 @@ export class RpcServer {
   }
 
   private async sendInvite(params: SendInviteParams) {
+    // Delegate to email service
+    return await this.emailService.sendInvite(params);
+  }
+
+  private async sendInviteOld(params: SendInviteParams) {
     // Check if email is enabled in environment
     const emailEnabled = process.env.EMAIL_ENABLED === 'true';
     
