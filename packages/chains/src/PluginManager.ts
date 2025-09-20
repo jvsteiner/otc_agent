@@ -5,6 +5,7 @@ import { UnicityMockPlugin } from './UnicityMockPlugin';
 import { EvmPlugin } from './EvmPlugin';
 import { EthereumPlugin } from './EthereumPlugin';
 import { PolygonPlugin } from './PolygonPlugin';
+import { BasePlugin } from './BasePlugin';
 
 export class PluginManager {
   private plugins = new Map<ChainId, ChainPlugin>();
@@ -26,6 +27,9 @@ export class PluginManager {
         break;
       case 'POLYGON':
         plugin = new PolygonPlugin(config);
+        break;
+      case 'BASE':
+        plugin = new BasePlugin(config);
         break;
       default:
         if (config.chainId.startsWith('EVM:')) {

@@ -50,6 +50,16 @@ async function main() {
     hotWalletSeed: process.env.HOT_WALLET_SEED,
   });
   
+  // Register Base plugin (always enabled with default or configured RPC)
+  await pluginManager.registerPlugin({
+    chainId: 'BASE',
+    rpcUrl: process.env.BASE_RPC || 'https://base-rpc.publicnode.com',
+    confirmations: parseInt(process.env.BASE_CONFIRMATIONS || '12'),
+    collectConfirms: parseInt(process.env.BASE_COLLECT_CONFIRMS || '12'),
+    operator: { address: process.env.BASE_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
+    hotWalletSeed: process.env.HOT_WALLET_SEED,
+  });
+  
   // Initialize engine
   const engine = new Engine(db, pluginManager);
   

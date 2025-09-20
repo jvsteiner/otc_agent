@@ -100,6 +100,39 @@
       "icon": "€"
     },
     {
+      "assetName": "Ethereum (Base)",
+      "assetSymbol": "ETH",
+      "chainId": "BASE",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 18,
+      "icon": "Ξ"
+    },
+    {
+      "assetName": "USD Coin (Base)",
+      "assetSymbol": "USDC",
+      "chainId": "BASE",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "$"
+    },
+    {
+      "assetName": "Dai (Base)",
+      "assetSymbol": "DAI",
+      "chainId": "BASE",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+      "tokenId": null,
+      "decimals": 18,
+      "icon": "◈"
+    },
+    {
       "assetName": "Solana",
       "assetSymbol": "SOL",
       "chainId": "SOLANA",
@@ -148,6 +181,11 @@
       "chainId": "POLYGON",
       "name": "Polygon",
       "icon": "Ⓜ"
+    },
+    {
+      "chainId": "BASE",
+      "name": "Base",
+      "icon": "🔵"
     },
     {
       "chainId": "SOLANA",
