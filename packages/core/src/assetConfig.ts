@@ -10,6 +10,7 @@ export interface AssetConfig {
   tokenId: string | null;
   decimals: number;
   icon: string;
+  url?: string;
 }
 
 export interface ChainConfig {
@@ -92,4 +93,44 @@ export function parseAssetCode(assetCode: string, chainId: string): AssetConfig 
   return assetRegistry.assets.find(
     asset => asset.chainId === chainId && asset.assetSymbol === assetCode
   );
+}
+
+export function getAssetUrl(asset: AssetConfig): string {
+  // If asset has a custom URL, use it
+  if (asset.url) {
+    return asset.url;
+  }
+  
+  // Generate blockchain explorer URLs
+  switch (asset.chainId) {
+    case 'UNICITY':
+      return 'https://www.unicity.network/';
+    
+    case 'ETH':
+      if (asset.native) {
+        return 'https://etherscan.io/';
+      } else if (asset.contractAddress) {
+        return `https://etherscan.io/token/${asset.contractAddress}`;
+      }
+      break;
+    
+    case 'POLYGON':
+      if (asset.native) {
+        return 'https://polygonscan.com/';
+      } else if (asset.contractAddress) {
+        return `https://polygonscan.com/token/${asset.contractAddress}`;
+      }
+      break;
+    
+    case 'SOLANA':
+      if (asset.native) {
+        return 'https://solscan.io/';
+      } else if (asset.contractAddress) {
+        return `https://solscan.io/token/${asset.contractAddress}`;
+      }
+      break;
+  }
+  
+  // Default fallback
+  return '#';
 }

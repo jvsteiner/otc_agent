@@ -408,6 +408,13 @@ export class RpcServer {
             background: white;
             border-radius: 5px;
             margin-top: 10px;
+            text-decoration: none;
+            transition: all 0.2s ease;
+          }
+          .asset-display:hover {
+            background: #f0f4ff;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
           }
           .asset-icon {
             font-size: 24px;
@@ -422,6 +429,15 @@ export class RpcServer {
           .asset-details {
             font-size: 12px;
             color: #888;
+          }
+          .external-link {
+            color: #667eea;
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 0.2s;
+          }
+          .asset-display:hover .external-link {
+            opacity: 1;
           }
         </style>
       </head>
@@ -449,13 +465,14 @@ export class RpcServer {
                 </select>
               </div>
               
-              <div id="assetDisplayA" class="asset-display" style="display:none;">
+              <a id="assetDisplayA" class="asset-display" href="#" target="_blank" style="display:none;">
                 <span class="asset-icon"></span>
                 <div class="asset-info">
                   <div class="asset-name"></div>
                   <div class="asset-details"></div>
                 </div>
-              </div>
+                <span class="external-link">🔗</span>
+              </a>
               
               <div class="form-group">
                 <label for="amountA">Amount:</label>
@@ -482,13 +499,14 @@ export class RpcServer {
                 </select>
               </div>
               
-              <div id="assetDisplayB" class="asset-display" style="display:none;">
+              <a id="assetDisplayB" class="asset-display" href="#" target="_blank" style="display:none;">
                 <span class="asset-icon"></span>
                 <div class="asset-info">
                   <div class="asset-name"></div>
                   <div class="asset-details"></div>
                 </div>
-              </div>
+                <span class="external-link">🔗</span>
+              </a>
               
               <div class="form-group">
                 <label for="amountB">Amount:</label>
@@ -543,16 +561,50 @@ export class RpcServer {
             return asset.assetSymbol;
           }
           
+          function getAssetUrl(asset) {
+            // Generate blockchain explorer URLs
+            switch (asset.chainId) {
+              case 'UNICITY':
+                return 'https://www.unicity.network/';
+              
+              case 'ETH':
+                if (asset.native) {
+                  return 'https://etherscan.io/';
+                } else if (asset.contractAddress) {
+                  return 'https://etherscan.io/token/' + asset.contractAddress;
+                }
+                break;
+              
+              case 'POLYGON':
+                if (asset.native) {
+                  return 'https://polygonscan.com/';
+                } else if (asset.contractAddress) {
+                  return 'https://polygonscan.com/token/' + asset.contractAddress;
+                }
+                break;
+              
+              case 'SOLANA':
+                if (asset.native) {
+                  return 'https://solscan.io/';
+                } else if (asset.contractAddress) {
+                  return 'https://solscan.io/token/' + asset.contractAddress;
+                }
+                break;
+            }
+            
+            return '#';
+          }
+          
           function updateAssetDisplay(side) {
             const assetSelect = document.getElementById('asset' + side);
-            const displayDiv = document.getElementById('assetDisplay' + side);
+            const displayLink = document.getElementById('assetDisplay' + side);
             const selectedOption = assetSelect.options[assetSelect.selectedIndex];
             
             if (selectedOption && selectedOption.dataset.asset) {
               const asset = JSON.parse(selectedOption.dataset.asset);
               
-              displayDiv.querySelector('.asset-icon').textContent = asset.icon;
-              displayDiv.querySelector('.asset-name').textContent = asset.assetName;
+              displayLink.querySelector('.asset-icon').textContent = asset.icon;
+              displayLink.querySelector('.asset-name').textContent = asset.assetName;
               
               let details = asset.assetSymbol + ' • ';
               if (asset.native) {
@@ -564,8 +616,9 @@ export class RpcServer {
                             asset.contractAddress.substring(asset.contractAddress.length - 4);
                 }
               }
-              displayDiv.querySelector('.asset-details').textContent = details;
-              displayDiv.style.display = 'flex';
+              displayLink.querySelector('.asset-details').textContent = details;
+              displayLink.href = getAssetUrl(asset);
+              displayLink.style.display = 'flex';
             }
           }
           
