@@ -11,6 +11,22 @@ export function runMigrations(db: DB): void {
   
   try {
     db.exec(schema);
+    
+    // Run additional migrations
+    const migrationsDir = path.join(__dirname, 'migrations');
+    if (fs.existsSync(migrationsDir)) {
+      const migrationFiles = fs.readdirSync(migrationsDir)
+        .filter(f => f.endsWith('.sql'))
+        .sort();
+      
+      for (const file of migrationFiles) {
+        const migrationPath = path.join(migrationsDir, file);
+        const migration = fs.readFileSync(migrationPath, 'utf-8');
+        console.log(`Running migration: ${file}`);
+        db.exec(migration);
+      }
+    }
+    
     console.log('Database migrations completed successfully');
   } catch (error) {
     console.error('Failed to run migrations:', error);

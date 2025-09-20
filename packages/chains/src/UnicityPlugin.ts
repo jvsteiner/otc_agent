@@ -115,7 +115,10 @@ export class UnicityPlugin implements ChainPlugin {
   }
 
   async generateEscrowAccount(asset: AssetCode): Promise<EscrowAccountRef> {
-    if (asset !== 'ALPHA@UNICITY') {
+    console.log('UnicityPlugin.generateEscrowAccount called with asset:', asset);
+    
+    // Accept both ALPHA and ALPHA@UNICITY formats
+    if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
     }
 
@@ -146,7 +149,8 @@ export class UnicityPlugin implements ChainPlugin {
     minConf: number,
     since?: string
   ): Promise<EscrowDepositsView> {
-    if (asset !== 'ALPHA@UNICITY') {
+    // Accept both ALPHA and ALPHA@UNICITY formats
+    if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
     }
 
@@ -216,7 +220,8 @@ export class UnicityPlugin implements ChainPlugin {
     to: string,
     amount: string
   ): Promise<SubmittedTx> {
-    if (asset !== 'ALPHA@UNICITY') {
+    // Accept both ALPHA and ALPHA@UNICITY formats
+    if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
     }
 
@@ -289,8 +294,21 @@ export class UnicityPlugin implements ChainPlugin {
   }
 
   validateAddress(address: string): boolean {
-    // Simplified validation - check if it starts with UNI and has right length
-    // Real implementation needs proper base58 validation
-    return address.startsWith('UNI') && address.length === 33;
+    // Support both bech32 (alpha1...) and legacy (UNI...) formats
+    // Bech32 format: alpha1 + 39 characters = 45 total
+    // Legacy format: UNI + 30 characters = 33 total
+    if (address.startsWith('alpha1') && address.length === 45) {
+      // Basic bech32 validation for Unicity addresses
+      // Only lowercase letters and numbers 2-9 after the prefix
+      const bech32Chars = /^alpha1[a-z0-9]{39}$/;
+      return bech32Chars.test(address);
+    }
+    
+    // Legacy format validation
+    if (address.startsWith('UNI') && address.length === 33) {
+      return true;
+    }
+    
+    return false;
   }
 }

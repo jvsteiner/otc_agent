@@ -5,6 +5,7 @@ export type ChainId =
   | `CUSTOM:${string}`;
 
 export type AssetCode =
+  | 'ALPHA' // native Alpha on Unicity (without chain suffix)
   | 'ALPHA@UNICITY' // alias to native Alpha on Unicity
   | 'ALPHA@ETH'
   | 'ETH' | 'MATIC' | 'SOL' | 'USDT' | 'USDC' | 'BTC'
