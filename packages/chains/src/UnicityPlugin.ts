@@ -2,6 +2,8 @@ import WebSocket from 'ws';
 import * as crypto from 'crypto';
 import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx } from './ChainPlugin';
 import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts } from '@otc-broker/core';
+import { generateDeterministicKey, deriveChildPrivateKey, privateKeyToAddress } from './utils/UnicityAddress';
+import { buildAndSignSegWitTransaction, selectUTXOs } from './utils/UnicityTransaction';
 
 interface ElectrumRequest {
   id: number;
@@ -22,16 +24,31 @@ export class UnicityPlugin implements ChainPlugin {
   private requestId = 1;
   private pendingRequests = new Map<number, { resolve: Function; reject: Function }>();
   private connected = false;
+  private wallets = new Map<string, { privateKey: string; address: string; index: number; wif: string }>();
+  private nextWalletIndex = 0;
+  private masterPrivateKey?: string;
 
   async init(cfg: ChainConfig): Promise<void> {
     this.config = cfg;
+    
+    // Initialize master private key from seed
+    if (cfg.hotWalletSeed) {
+      // Create a deterministic master key from the seed
+      this.masterPrivateKey = crypto.createHash('sha256')
+        .update(cfg.hotWalletSeed)
+        .digest('hex');
+      console.log('UnicityPlugin: Initialized with deterministic master key');
+    } else {
+      console.warn('UnicityPlugin: No hot wallet seed provided, using random keys');
+    }
+    
     await this.connect();
   }
 
   private async connect(): Promise<void> {
     if (this.connected && this.ws?.readyState === WebSocket.OPEN) return;
 
-    const url = this.config.electrumUrl || 'wss://fulcrum.unicity.network:50004';
+    const url = this.config.electrumUrl || process.env.UNICITY_ELECTRUM || 'wss://fulcrum.unicity.network:50004';
     
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(url);
@@ -95,23 +112,52 @@ export class UnicityPlugin implements ChainPlugin {
   }
 
   private addressToScriptHash(address: string): string {
-    // Convert Unicity address to scripthash for Electrum
-    // This is a simplified version - real implementation needs proper address decoding
-    const script = this.addressToScript(address);
-    const hash = crypto.createHash('sha256').update(script).digest();
-    return hash.reverse().toString('hex');
-  }
-
-  private addressToScript(address: string): Buffer {
-    // Simplified P2PKH script creation
-    // Real implementation needs proper base58 decoding and script building
-    // For now, return a dummy script
-    const pubKeyHash = crypto.createHash('sha256').update(address).digest().slice(0, 20);
-    return Buffer.concat([
-      Buffer.from([0x76, 0xa9, 0x14]), // OP_DUP OP_HASH160 <push 20 bytes>
-      pubKeyHash,
-      Buffer.from([0x88, 0xac]) // OP_EQUALVERIFY OP_CHECKSIG
-    ]);
+    try {
+      // Import bech32 module
+      const bech32Module = require('bech32');
+      
+      // Decode the bech32 address to get the witness program
+      const decoded = bech32Module.bech32.decode(address);
+      
+      if (!decoded) {
+        throw new Error('Failed to decode bech32 address');
+      }
+      
+      // First word is the witness version
+      const witnessVersion = decoded.words[0];
+      
+      // Convert remaining words from 5-bit to 8-bit (excluding witness version)
+      const witnessProgram = bech32Module.bech32.fromWords(decoded.words.slice(1));
+      
+      // Create the scriptPubKey for P2WPKH
+      const scriptPubKey: number[] = [];
+      
+      // Add witness version (OP_0 for version 0, OP_1-16 for versions 1-16)
+      if (witnessVersion === 0) {
+        scriptPubKey.push(0x00); // OP_0
+      } else if (witnessVersion <= 16) {
+        scriptPubKey.push(0x50 + witnessVersion); // OP_1 through OP_16
+      } else {
+        throw new Error('Unsupported witness version');
+      }
+      
+      // Add push opcode for witness program length
+      scriptPubKey.push(witnessProgram.length);
+      
+      // Add witness program
+      scriptPubKey.push(...witnessProgram);
+      
+      // Convert to Buffer and hash
+      const script = Buffer.from(scriptPubKey);
+      const hash = crypto.createHash('sha256').update(script).digest();
+      
+      // Reverse for Electrum (little-endian)
+      return hash.reverse().toString('hex');
+    } catch (error) {
+      console.error('Error converting address to scripthash:', error);
+      // Fallback to empty string
+      return '';
+    }
   }
 
   async generateEscrowAccount(asset: AssetCode): Promise<EscrowAccountRef> {
@@ -122,20 +168,54 @@ export class UnicityPlugin implements ChainPlugin {
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
     }
 
-    // Generate deterministic address from seed
-    const seed = this.config.hotWalletSeed || 'default-seed';
-    const index = Date.now(); // Simple index, should use proper HD derivation
-    const keyMaterial = crypto.createHash('sha256')
-      .update(`${seed}-${index}`)
-      .digest();
+    let privateKey: string;
+    let address: string;
+    let wif: string;
+    let keyRef: string;
     
-    // Generate address (simplified - real implementation needs proper key derivation)
-    const address = 'UNI' + keyMaterial.toString('hex').substring(0, 30);
+    if (this.masterPrivateKey) {
+      // Use deterministic derivation from master key
+      const index = this.nextWalletIndex++;
+      const walletInfo = generateDeterministicKey(this.masterPrivateKey, index);
+      
+      privateKey = walletInfo.privateKey;
+      address = walletInfo.address;
+      wif = walletInfo.wif;
+      keyRef = `unicity-hd-${index}`;
+      
+      // Store wallet info for later use
+      this.wallets.set(keyRef, {
+        privateKey,
+        address,
+        index,
+        wif
+      });
+      
+      console.log(`Generated HD wallet at index ${index}: ${address}`);
+    } else {
+      // Generate random key if no master key
+      const randomBytes = crypto.randomBytes(32);
+      privateKey = randomBytes.toString('hex');
+      address = privateKeyToAddress(privateKey);
+      
+      // Generate unique keyRef
+      keyRef = `unicity-random-${Date.now()}`;
+      
+      // Store wallet info
+      this.wallets.set(keyRef, {
+        privateKey,
+        address,
+        index: -1,
+        wif: '' // Will generate if needed
+      });
+      
+      console.log(`Generated random wallet: ${address}`);
+    }
     
     return {
       chainId: this.chainId,
       address,
-      keyRef: `unicity-key-${index}`,
+      keyRef,
     };
   }
 
@@ -225,8 +305,13 @@ export class UnicityPlugin implements ChainPlugin {
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
     }
 
-    // Build and sign transaction
-    // This is a simplified version - real implementation needs proper transaction building
+    // Get the wallet info for this escrow account
+    const walletInfo = this.wallets.get(from.keyRef || '');
+    if (!walletInfo) {
+      throw new Error(`No wallet found for escrow account ${from.address}`);
+    }
+
+    // Get UTXOs for the address
     const scriptHash = this.addressToScriptHash(from.address);
     const utxos = await this.electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
     
@@ -234,24 +319,45 @@ export class UnicityPlugin implements ChainPlugin {
       throw new Error('No UTXOs available for spending');
     }
     
-    // Build raw transaction (simplified - needs real implementation)
-    const rawTx = this.buildRawTransaction(utxos, to, amount);
+    // Convert amount to satoshis
+    const amountSatoshis = Math.floor(parseFloat(amount) * 100000000);
+    
+    // Select UTXOs and calculate fee
+    const feeRate = 1; // 1 satoshi per byte
+    const { selectedUtxos, totalValue, estimatedFee } = selectUTXOs(utxos, amountSatoshis, feeRate);
+    
+    console.log(`Sending ${amount} ALPHA (${amountSatoshis} satoshis) from ${from.address} to ${to}`);
+    console.log(`Selected ${selectedUtxos.length} UTXOs with total value ${totalValue} satoshis`);
+    console.log(`Estimated fee: ${estimatedFee} satoshis`);
+    
+    // Build and sign the transaction
+    const { hex: rawTx, txid } = buildAndSignSegWitTransaction(
+      selectedUtxos,
+      [{ address: to, value: amountSatoshis }],
+      walletInfo.privateKey,
+      from.address, // use same address for change
+      feeRate
+    );
+    
+    console.log(`Built transaction ${txid}, broadcasting...`);
     
     // Broadcast transaction
-    const txid = await this.electrumRequest('blockchain.transaction.broadcast', [rawTx]);
+    const broadcastResult = await this.electrumRequest('blockchain.transaction.broadcast', [rawTx]);
+    
+    // Electrum returns the txid on success, or throws on error
+    if (broadcastResult !== txid) {
+      console.warn(`Broadcast returned different txid: expected ${txid}, got ${broadcastResult}`);
+    }
+    
+    console.log(`Transaction ${txid} broadcast successfully`);
     
     return {
       txid,
       submittedAt: new Date().toISOString(),
-      nonceOrInputs: JSON.stringify(utxos.map((u: any) => `${u.tx_hash}:${u.tx_pos}`)),
+      nonceOrInputs: JSON.stringify(selectedUtxos.map(u => `${u.tx_hash}:${u.tx_pos}`)),
     };
   }
 
-  private buildRawTransaction(utxos: any[], to: string, amount: string): string {
-    // This is a placeholder - real implementation needs proper transaction building
-    // including input selection, change calculation, signing, etc.
-    return '0x' + crypto.randomBytes(200).toString('hex');
-  }
 
   async ensureFeeBudget(
     from: EscrowAccountRef,
@@ -294,12 +400,18 @@ export class UnicityPlugin implements ChainPlugin {
   }
 
   validateAddress(address: string): boolean {
-    // Support both bech32 (alpha1...) and legacy (UNI...) formats
-    // Bech32 format: alpha1 + 39 characters = 45 total
+    // Support both bech32 (alpha...) and legacy (UNI...) formats
+    // Bech32 format: alpha + 39 characters = 44 total
     // Legacy format: UNI + 30 characters = 33 total
-    if (address.startsWith('alpha1') && address.length === 45) {
+    if (address.startsWith('alpha') && !address.startsWith('alpha1')) {
       // Basic bech32 validation for Unicity addresses
-      // Only lowercase letters and numbers 2-9 after the prefix
+      // Only lowercase letters and numbers after the prefix (excluding 1, b, i, o)
+      const bech32Chars = /^alpha[ac-hj-np-z02-9]{38,}$/;
+      return bech32Chars.test(address.toLowerCase());
+    }
+    
+    // Also support alpha1 format for compatibility
+    if (address.startsWith('alpha1') && address.length === 45) {
       const bech32Chars = /^alpha1[a-z0-9]{39}$/;
       return bech32Chars.test(address);
     }

@@ -32,6 +32,9 @@
   },
   "dependencies": {
     "@types/nodemailer": "^7.0.1",
-    "nodemailer": "^7.0.6"
+    "@types/secp256k1": "^4.0.6",
+    "bech32": "^2.0.0",
+    "nodemailer": "^7.0.6",
+    "secp256k1": "^5.0.1"
   }
 }
