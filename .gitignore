@@ -137,3 +137,12 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Reference materials (symlinks to external resources)
+ref_materials/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+data/

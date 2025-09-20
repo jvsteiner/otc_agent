@@ -1,0 +1,121 @@
+import { QueueItem, QueuePurpose, EscrowAccountRef, ChainId, AssetCode, TxRef } from '@otc-broker/core';
+import { DB } from '../database';
+import * as crypto from 'crypto';
+
+export class QueueRepository {
+  constructor(private db: DB) {}
+
+  enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq'>): QueueItem {
+    // Get next sequence number for this deal+sender
+    const seqStmt = this.db.prepare(`
+      SELECT COALESCE(MAX(seq), 0) + 1 as nextSeq
+      FROM queue_items
+      WHERE dealId = ? AND fromAddr = ?
+    `);
+    
+    const seqRow = seqStmt.get(item.dealId, item.from.address) as { nextSeq: number };
+    const seq = seqRow.nextSeq;
+    
+    const id = crypto.randomBytes(16).toString('hex');
+    const createdAt = new Date().toISOString();
+    
+    const queueItem: QueueItem = {
+      ...item,
+      id,
+      seq,
+      createdAt,
+    };
+    
+    const stmt = this.db.prepare(`
+      INSERT INTO queue_items (
+        id, dealId, chainId, fromAddr, toAddr, 
+        asset, amount, purpose, seq, status, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    stmt.run(
+      queueItem.id,
+      queueItem.dealId,
+      queueItem.chainId,
+      queueItem.from.address,
+      queueItem.to,
+      queueItem.asset,
+      queueItem.amount,
+      queueItem.purpose,
+      queueItem.seq,
+      'PENDING',
+      queueItem.createdAt
+    );
+    
+    return queueItem;
+  }
+
+  getByDeal(dealId: string): QueueItem[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM queue_items
+      WHERE dealId = ?
+      ORDER BY fromAddr, seq
+    `);
+    
+    const rows = stmt.all(dealId) as any[];
+    return rows.map(row => this.mapRowToQueueItem(row));
+  }
+
+  getNextPending(dealId: string, fromAddr: string): QueueItem | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM queue_items
+      WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING'
+      ORDER BY seq
+      LIMIT 1
+    `);
+    
+    const row = stmt.get(dealId, fromAddr) as any;
+    if (!row) return null;
+    
+    return this.mapRowToQueueItem(row);
+  }
+
+  updateStatus(id: string, status: string, submittedTx?: TxRef): void {
+    const stmt = this.db.prepare(`
+      UPDATE queue_items
+      SET status = ?, submittedTx = ?
+      WHERE id = ?
+    `);
+    
+    stmt.run(
+      status,
+      submittedTx ? JSON.stringify(submittedTx) : null,
+      id
+    );
+  }
+
+  getPendingCount(dealId: string): number {
+    const stmt = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM queue_items
+      WHERE dealId = ? AND status = 'PENDING'
+    `);
+    
+    const row = stmt.get(dealId) as { count: number };
+    return row.count;
+  }
+
+  private mapRowToQueueItem(row: any): QueueItem {
+    return {
+      id: row.id,
+      dealId: row.dealId,
+      chainId: row.chainId as ChainId,
+      from: {
+        chainId: row.chainId as ChainId,
+        address: row.fromAddr,
+      },
+      to: row.toAddr,
+      asset: row.asset as AssetCode,
+      amount: row.amount,
+      purpose: row.purpose as QueuePurpose,
+      seq: row.seq,
+      createdAt: row.createdAt,
+      submittedTx: row.submittedTx ? JSON.parse(row.submittedTx) : undefined,
+    };
+  }
+}

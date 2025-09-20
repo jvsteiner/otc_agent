@@ -1,0 +1,23 @@
+{
+  "name": "@otc-broker/chains",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@otc-broker/core": "1.0.0",
+    "ws": "^8.16.0",
+    "bitcoin-core": "^4.2.0",
+    "ethers": "^6.10.0",
+    "elliptic": "^6.5.4"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "@types/node": "^20.11.0"
+  }
+}
