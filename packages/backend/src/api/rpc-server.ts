@@ -78,6 +78,9 @@ export class RpcServer {
           case 'otc.sendInvite':
             result = await this.sendInvite(params as SendInviteParams);
             break;
+          case 'otc.cancelDeal':
+            result = await this.cancelDeal(params as { dealId: string; token: string });
+            break;
           default:
             throw new Error(`Method ${method} not found`);
         }
@@ -456,6 +459,32 @@ export class RpcServer {
     return { ok: true, asOf };
   }
 
+  private async cancelDeal(params: { dealId: string; token: string }) {
+    // Verify token
+    const deal = this.dealRepo.get(params.dealId);
+    if (!deal) {
+      throw new Error('Deal not found');
+    }
+    
+    // Check if assets are already locked
+    const hasDeposits = (deal.sideAState?.deposits?.length ?? 0) > 0 || (deal.sideBState?.deposits?.length ?? 0) > 0;
+    if (hasDeposits) {
+      throw new Error('Cannot cancel deal - assets have already been locked');
+    }
+    
+    // Check if deal is already closed or reverted
+    if (deal.stage === 'CLOSED' || deal.stage === 'REVERTED') {
+      throw new Error('Deal has already been finalized');
+    }
+    
+    // Update deal stage to REVERTED
+    deal.stage = 'REVERTED';
+    this.dealRepo.update(deal);
+    this.dealRepo.addEvent(deal.id, 'Deal cancelled by party');
+    
+    return { ok: true };
+  }
+  
   private async sendInvite(params: SendInviteParams) {
     // Delegate to email service
     return await this.emailService.sendInvite(params);
@@ -1732,6 +1761,14 @@ export class RpcServer {
             </div>
           </div>
           
+          <!-- Cancel Deal Button (if no assets locked) -->
+          <div id="cancelSection" style="display: none; margin: 20px 0; text-align: center;">
+            <button onclick="cancelDeal()" style="background: #dc3545; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">
+              ❌ Cancel Deal
+            </button>
+            <small style="display: block; margin-top: 5px; color: #666;">You can cancel this deal since no assets have been locked yet</small>
+          </div>
+          
           <!-- Escrow Address Section -->
           <div class="escrow-section" id="escrowSection" style="display: none;">
             <div class="escrow-label">⚠️ Send Your Funds To This Escrow Address:</div>
@@ -1905,6 +1942,17 @@ export class RpcServer {
           // Update countdown
           if (dealData.expiresAt) {
             startCountdown(dealData.expiresAt);
+          } else {
+            // Show informative message instead of --:--:--
+            const countdownEl = document.getElementById('countdown');
+            if (dealData.stage === 'CREATED') {
+              countdownEl.className = 'countdown-timer';
+              countdownEl.textContent = '⏳ Waiting for both parties';
+              countdownEl.title = 'Timer starts when both parties submit their addresses';
+            } else {
+              countdownEl.className = 'countdown-timer';
+              countdownEl.textContent = 'No deadline';
+            }
           }
           
           // Update balances
@@ -1927,6 +1975,17 @@ export class RpcServer {
           
           // Update transaction log
           updateTransactionLog();
+          
+          // Show/hide cancel button based on whether assets are locked
+          const hasDeposits = 
+            (dealData.collection?.sideA?.deposits?.length > 0) ||
+            (dealData.collection?.sideB?.deposits?.length > 0);
+          
+          if (!hasDeposits && dealData.stage !== 'CLOSED' && dealData.stage !== 'REVERTED') {
+            document.getElementById('cancelSection').style.display = 'block';
+          } else {
+            document.getElementById('cancelSection').style.display = 'none';
+          }
         }
         
         // Update balance display
@@ -2096,21 +2155,81 @@ export class RpcServer {
           }).join('');
         }
         
+        // Cancel deal
+        async function cancelDeal() {
+          if (!confirm('Are you sure you want to cancel this deal? This action cannot be undone.')) {
+            return;
+          }
+          
+          try {
+            const response = await fetch('/rpc', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                method: 'otc.cancelDeal',
+                params: { dealId, token },
+                id: 1
+              })
+            });
+            
+            const result = await response.json();
+            if (result.result?.ok) {
+              alert('Deal has been cancelled successfully.');
+              // Refresh the page to show updated status
+              location.reload();
+            } else {
+              alert('Failed to cancel deal: ' + (result.error?.message || 'Unknown error'));
+            }
+          } catch (error) {
+            alert('Failed to cancel deal: ' + error.message);
+          }
+        }
+        
         // Copy escrow address
         function copyEscrowAddress() {
           const address = document.getElementById('escrowAddress').textContent;
-          navigator.clipboard.writeText(address).then(() => {
-            alert('Escrow address copied to clipboard!');
-          }).catch(() => {
-            // Fallback for older browsers
-            const textArea = document.createElement('textarea');
-            textArea.value = address;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textArea);
-            alert('Escrow address copied to clipboard!');
-          });
+          
+          // Check if clipboard API is available (requires HTTPS)
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(address).then(() => {
+              alert('Escrow address copied to clipboard!');
+            }).catch(() => {
+              // Fallback if clipboard API fails
+              fallbackCopyTextToClipboard(address);
+            });
+          } else {
+            // Fallback for HTTP or older browsers
+            fallbackCopyTextToClipboard(address);
+          }
+        }
+        
+        function fallbackCopyTextToClipboard(text) {
+          const textArea = document.createElement('textarea');
+          textArea.value = text;
+          textArea.style.position = 'fixed';
+          textArea.style.top = '0';
+          textArea.style.left = '0';
+          textArea.style.width = '2em';
+          textArea.style.height = '2em';
+          textArea.style.padding = '0';
+          textArea.style.border = 'none';
+          textArea.style.outline = 'none';
+          textArea.style.boxShadow = 'none';
+          textArea.style.background = 'transparent';
+          document.body.appendChild(textArea);
+          textArea.focus();
+          textArea.select();
+          
+          try {
+            const successful = document.execCommand('copy');
+            const msg = successful ? 'Escrow address copied to clipboard!' : 'Failed to copy address';
+            alert(msg);
+          } catch (err) {
+            alert('Failed to copy address');
+          }
+          
+          document.body.removeChild(textArea);
         }
         
         // Check if details already filled
