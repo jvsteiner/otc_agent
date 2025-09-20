@@ -3,6 +3,8 @@ import { ChainPlugin, ChainConfig } from './ChainPlugin';
 import { UnicityPlugin } from './UnicityPlugin';
 import { UnicityMockPlugin } from './UnicityMockPlugin';
 import { EvmPlugin } from './EvmPlugin';
+import { EthereumPlugin } from './EthereumPlugin';
+import { PolygonPlugin } from './PolygonPlugin';
 
 export class PluginManager {
   private plugins = new Map<ChainId, ChainPlugin>();
@@ -20,8 +22,10 @@ export class PluginManager {
         }
         break;
       case 'ETH':
+        plugin = new EthereumPlugin(config);
+        break;
       case 'POLYGON':
-        plugin = new EvmPlugin(config.chainId);
+        plugin = new PolygonPlugin(config);
         break;
       default:
         if (config.chainId.startsWith('EVM:')) {

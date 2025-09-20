@@ -30,29 +30,25 @@ async function main() {
     hotWalletSeed: process.env.HOT_WALLET_SEED,
   });
   
-  // Register ETH plugin if configured
-  if (process.env.ETH_RPC) {
-    await pluginManager.registerPlugin({
-      chainId: 'ETH',
-      rpcUrl: process.env.ETH_RPC,
-      confirmations: parseInt(process.env.ETH_CONFIRMATIONS || '3'),
-      collectConfirms: parseInt(process.env.ETH_COLLECT_CONFIRMS || '3'),
-      operator: { address: process.env.ETH_OPERATOR_ADDRESS || '0x0' },
-      hotWalletSeed: process.env.HOT_WALLET_SEED,
-    });
-  }
+  // Register ETH plugin (always enabled with default or configured RPC)
+  await pluginManager.registerPlugin({
+    chainId: 'ETH',
+    rpcUrl: process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com',
+    confirmations: parseInt(process.env.ETH_CONFIRMATIONS || '12'),
+    collectConfirms: parseInt(process.env.ETH_COLLECT_CONFIRMS || '12'),
+    operator: { address: process.env.ETH_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
+    hotWalletSeed: process.env.HOT_WALLET_SEED,
+  });
   
-  // Register Polygon plugin if configured
-  if (process.env.POLYGON_RPC) {
-    await pluginManager.registerPlugin({
-      chainId: 'POLYGON',
-      rpcUrl: process.env.POLYGON_RPC,
-      confirmations: parseInt(process.env.POLYGON_CONFIRMATIONS || '64'),
-      collectConfirms: parseInt(process.env.POLYGON_COLLECT_CONFIRMS || '64'),
-      operator: { address: process.env.POLYGON_OPERATOR_ADDRESS || '0x0' },
-      hotWalletSeed: process.env.HOT_WALLET_SEED,
-    });
-  }
+  // Register Polygon plugin (always enabled with default or configured RPC)
+  await pluginManager.registerPlugin({
+    chainId: 'POLYGON',
+    rpcUrl: process.env.POLYGON_RPC || 'https://polygon-bor-rpc.publicnode.com',
+    confirmations: parseInt(process.env.POLYGON_CONFIRMATIONS || '30'),
+    collectConfirms: parseInt(process.env.POLYGON_COLLECT_CONFIRMS || '30'),
+    operator: { address: process.env.POLYGON_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
+    hotWalletSeed: process.env.HOT_WALLET_SEED,
+  });
   
   // Initialize engine
   const engine = new Engine(db, pluginManager);
