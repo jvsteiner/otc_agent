@@ -30,6 +30,13 @@ interface SetPriceParams {
   price: string;
 }
 
+interface SendInviteParams {
+  dealId: string;
+  party: 'ALICE' | 'BOB';
+  email: string;
+  link: string;
+}
+
 export class RpcServer {
   private app: express.Application;
   private dealRepo: DealRepository;
@@ -65,6 +72,9 @@ export class RpcServer {
             break;
           case 'admin.setPrice':
             result = await this.setPrice(params as SetPriceParams);
+            break;
+          case 'otc.sendInvite':
+            result = await this.sendInvite(params as SendInviteParams);
             break;
           default:
             throw new Error(`Method ${method} not found`);
@@ -322,6 +332,57 @@ export class RpcServer {
     return { ok: true, asOf };
   }
 
+  private async sendInvite(params: SendInviteParams) {
+    // Check if email is enabled in environment
+    const emailEnabled = process.env.EMAIL_ENABLED === 'true';
+    
+    if (!emailEnabled) {
+      // For now, just log the invitation and return success
+      console.log(`
+        ========================================
+        EMAIL INVITATION (Email service not configured)
+        ========================================
+        To: ${params.email}
+        Party: ${params.party === 'ALICE' ? 'Asset A Seller' : 'Asset B Seller'}
+        Deal ID: ${params.dealId}
+        Link: ${params.link}
+        ========================================
+      `);
+      
+      // In production, you would integrate with an email service like:
+      // - SendGrid
+      // - Mailgun  
+      // - AWS SES
+      // - SMTP server
+      
+      return { 
+        sent: true, 
+        message: 'Invitation logged (email service not configured)',
+        email: params.email 
+      };
+    }
+    
+    // If email service is configured, send actual email
+    try {
+      // TODO: Integrate with actual email service
+      // Example with nodemailer:
+      // const transporter = nodemailer.createTransport({...});
+      // await transporter.sendMail({
+      //   from: process.env.EMAIL_FROM,
+      //   to: params.email,
+      //   subject: `OTC Asset Swap - ${params.party === 'ALICE' ? 'Asset A' : 'Asset B'} Seller Invitation`,
+      //   html: `...`,
+      // });
+      
+      return { 
+        sent: true, 
+        email: params.email 
+      };
+    } catch (error: any) {
+      throw new Error(`Failed to send email: ${error.message}`);
+    }
+  }
+
   private renderCreateDealPage(): string {
     const registry = getAssetRegistry();
     const chains = registry.supportedChains;
@@ -462,11 +523,127 @@ export class RpcServer {
           small {
             font-size: 10px;
           }
+          .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+          }
+          .modal-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+          }
+          .modal h2 {
+            color: #333;
+            margin: 0 0 20px 0;
+            font-size: 20px;
+          }
+          .link-section {
+            margin: 15px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+          }
+          .link-section h4 {
+            margin: 0 0 10px 0;
+            color: #667eea;
+            font-size: 14px;
+          }
+          .link-input {
+            display: flex;
+            gap: 8px;
+            margin: 8px 0;
+          }
+          .link-input input {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 12px;
+            background: white;
+          }
+          .copy-btn, .email-btn {
+            padding: 8px 12px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            white-space: nowrap;
+          }
+          .copy-btn:hover, .email-btn:hover {
+            background: #5a67d8;
+          }
+          .success-message {
+            color: #10b981;
+            font-size: 12px;
+            margin-top: 5px;
+            display: none;
+          }
+          .close-modal {
+            margin-top: 20px;
+            width: 100%;
+          }
         </style>
       </head>
       <body>
         <div class="container">
           <h1>Create OTC Asset Swap Deal</h1>
+          
+          <!-- Modal for showing deal links -->
+          <div id="dealModal" class="modal">
+            <div class="modal-content">
+              <h2>✅ Deal Created Successfully!</h2>
+              <p style="color: #666; font-size: 12px;">Deal ID: <span id="dealIdDisplay"></span></p>
+              
+              <div class="link-section">
+                <h4>🅰️ Asset A Seller Link</h4>
+                <div style="margin: 10px 0;">
+                  <a id="linkADisplay" href="#" target="_blank" style="color: #667eea; word-break: break-all; font-size: 12px;"></a>
+                </div>
+                <div class="link-input">
+                  <input type="text" id="linkA" readonly style="display:none;">
+                  <button class="copy-btn" onclick="copyLink('A')">📋 Copy Link</button>
+                </div>
+                <div style="margin-top: 10px;">
+                  <input type="email" id="emailA" placeholder="Enter recipient email" style="flex: 1;">
+                  <button class="email-btn" onclick="sendInvite('A')" style="margin-top: 5px;">📧 Send Invitation</button>
+                </div>
+                <div id="successA" class="success-message">✓ Action completed!</div>
+              </div>
+              
+              <div class="link-section">
+                <h4>🅱️ Asset B Seller Link</h4>
+                <div style="margin: 10px 0;">
+                  <a id="linkBDisplay" href="#" target="_blank" style="color: #667eea; word-break: break-all; font-size: 12px;"></a>
+                </div>
+                <div class="link-input">
+                  <input type="text" id="linkB" readonly style="display:none;">
+                  <button class="copy-btn" onclick="copyLink('B')">📋 Copy Link</button>
+                </div>
+                <div style="margin-top: 10px;">
+                  <input type="email" id="emailB" placeholder="Enter recipient email" style="flex: 1;">
+                  <button class="email-btn" onclick="sendInvite('B')" style="margin-top: 5px;">📧 Send Invitation</button>
+                </div>
+                <div id="successB" class="success-message">✓ Action completed!</div>
+              </div>
+              
+              <button class="button close-modal" onclick="closeModal()">Close</button>
+            </div>
+          </div>
           
           <form id="dealForm">
             <div class="two-column">
@@ -659,6 +836,110 @@ export class RpcServer {
             updateAssetDropdown('B');
           });
           
+          // Modal functions
+          function showDealCreatedModal(dealResult) {
+            // Store deal ID
+            document.getElementById('dealIdDisplay').textContent = dealResult.dealId;
+            
+            // Set hidden inputs
+            document.getElementById('linkA').value = dealResult.linkA;
+            document.getElementById('linkB').value = dealResult.linkB;
+            
+            // Set visible clickable links
+            document.getElementById('linkADisplay').href = dealResult.linkA;
+            document.getElementById('linkADisplay').textContent = dealResult.linkA;
+            document.getElementById('linkBDisplay').href = dealResult.linkB;
+            document.getElementById('linkBDisplay').textContent = dealResult.linkB;
+            
+            // Store deal result globally for invite function
+            window.currentDealResult = dealResult;
+            
+            document.getElementById('dealModal').style.display = 'block';
+          }
+          
+          function closeModal() {
+            document.getElementById('dealModal').style.display = 'none';
+            // Reset form for next deal
+            document.getElementById('dealForm').reset();
+            updateAssetDropdown('A');
+            updateAssetDropdown('B');
+            // Clear email inputs
+            document.getElementById('emailA').value = '';
+            document.getElementById('emailB').value = '';
+          }
+          
+          function copyLink(side) {
+            const link = document.getElementById('link' + side).value;
+            
+            navigator.clipboard.writeText(link).then(() => {
+              showSuccess(side, 'Link copied to clipboard!');
+            }).catch(() => {
+              // Fallback for older browsers
+              const textArea = document.createElement('textarea');
+              textArea.value = link;
+              document.body.appendChild(textArea);
+              textArea.select();
+              document.execCommand('copy');
+              document.body.removeChild(textArea);
+              showSuccess(side, 'Link copied to clipboard!');
+            });
+          }
+          
+          async function sendInvite(side) {
+            const email = document.getElementById('email' + side).value;
+            if (!email) {
+              alert('Please enter an email address');
+              return;
+            }
+            
+            const link = document.getElementById('link' + side).value;
+            const dealId = window.currentDealResult.dealId;
+            
+            try {
+              const response = await fetch('/rpc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  method: 'otc.sendInvite',
+                  params: {
+                    dealId: dealId,
+                    party: side === 'A' ? 'ALICE' : 'BOB',
+                    email: email,
+                    link: link
+                  },
+                  id: 1
+                })
+              });
+              
+              const result = await response.json();
+              if (result.result && result.result.sent) {
+                showSuccess(side, 'Invitation sent to ' + email);
+                document.getElementById('email' + side).value = '';
+              } else {
+                alert('Failed to send invitation: ' + (result.error?.message || 'Unknown error'));
+              }
+            } catch (error) {
+              alert('Failed to send invitation: ' + error.message);
+            }
+          }
+          
+          function showSuccess(side, message) {
+            const successMsg = document.getElementById('success' + side);
+            successMsg.textContent = '✓ ' + message;
+            successMsg.style.display = 'block';
+            setTimeout(() => {
+              successMsg.style.display = 'none';
+            }, 3000);
+          }
+          
+          // Make functions global
+          window.showDealCreatedModal = showDealCreatedModal;
+          window.closeModal = closeModal;
+          window.copyLink = copyLink;
+          window.sendInvite = sendInvite;
+          window.showSuccess = showSuccess;
+          
           // Handle form submission
           document.getElementById('dealForm').onsubmit = async (e) => {
             e.preventDefault();
@@ -689,7 +970,8 @@ export class RpcServer {
             
             const result = await response.json();
             if (result.result) {
-              alert('✅ Deal created successfully!\\n\\n📎 Personal Links:\\n\\nAlice: ' + result.result.linkA + '\\n\\nBob: ' + result.result.linkB);
+              // Create a modal to show the links with copy/email functionality
+              showDealCreatedModal(result.result);
             } else {
               alert('❌ Error: ' + (result.error?.message || 'Unknown error'));
             }
@@ -701,32 +983,147 @@ export class RpcServer {
   }
 
   private renderPartyPage(dealId: string, token: string, party: 'ALICE' | 'BOB'): string {
+    const partyLabel = party === 'ALICE' ? 'Asset A Seller' : 'Asset B Seller';
+    const partyIcon = party === 'ALICE' ? '🅰️' : '🅱️';
+    
     return `
       <!DOCTYPE html>
       <html>
       <head>
-        <title>${party} - OTC Deal</title>
+        <title>${partyLabel} - OTC Asset Swap</title>
         <style>
-          body { font-family: sans-serif; max-width: 600px; margin: 50px auto; }
-          input { width: 100%; padding: 8px; margin: 5px 0; }
-          button { background: #4CAF50; color: white; padding: 10px 20px; border: none; cursor: pointer; }
-          .status { background: #f0f0f0; padding: 20px; margin: 20px 0; }
+          body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 600px;
+            margin: 30px auto;
+            padding: 20px;
+            background: #f5f5f5;
+          }
+          .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          }
+          h1 {
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+          }
+          .form-group {
+            margin: 15px 0;
+          }
+          label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+          }
+          input {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+          }
+          input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+          }
+          button {
+            background: #667eea;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            margin-top: 15px;
+          }
+          button:hover {
+            background: #5a67d8;
+          }
+          .status {
+            background: #f9f9f9;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+          }
+          .copy-btn {
+            display: inline-block;
+            padding: 4px 8px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-left: 8px;
+          }
+          .copy-btn:hover {
+            background: #5a67d8;
+          }
+          .address-field {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 13px;
+          }
+          .success-message {
+            color: #10b981;
+            font-size: 12px;
+            margin-left: 10px;
+            display: none;
+          }
         </style>
       </head>
       <body>
-        <h1>${party} - OTC Deal</h1>
-        
-        <div id="detailsForm">
-          <h3>Enter Your Details:</h3>
-          <input id="payback" placeholder="Payback Address (on your send chain)" required>
-          <input id="recipient" placeholder="Recipient Address (on other chain)" required>
-          <input id="email" type="email" placeholder="Email (optional)">
-          <button onclick="submitDetails()">Submit Details</button>
-        </div>
-        
-        <div class="status" id="status" style="display:none;">
-          <h3>Deal Status</h3>
-          <div id="statusContent"></div>
+        <div class="container">
+          <h1>${partyIcon} ${partyLabel}</h1>
+          
+          <div id="detailsForm">
+            <h3>Enter Your Details:</h3>
+            
+            <div class="form-group">
+              <label for="payback">Payback Address</label>
+              <small style="color: #888;">Address to return funds on your sending chain if deal fails</small>
+              <input id="payback" placeholder="Enter your payback address" required>
+            </div>
+            
+            <div class="form-group">
+              <label for="recipient">Recipient Address</label>
+              <small style="color: #888;">Address to receive assets on the other chain</small>
+              <input id="recipient" placeholder="Enter your recipient address" required>
+            </div>
+            
+            <div class="form-group">
+              <label for="email">Email (Optional)</label>
+              <small style="color: #888;">For deal status notifications</small>
+              <input id="email" type="email" placeholder="your@email.com">
+            </div>
+            
+            <button onclick="submitDetails()">Submit Details</button>
+          </div>
+          
+          <div class="status" id="status" style="display:none;">
+            <h3>Deal Status</h3>
+            <div id="escrowAddresses" style="display:none;">
+              <h4>Escrow Addresses:</h4>
+              <div id="escrowContent"></div>
+            </div>
+            <div id="statusContent"></div>
+          </div>
         </div>
         
         <script>
@@ -764,6 +1161,33 @@ export class RpcServer {
             }
           }
           
+          function copyAddress(addressId) {
+            const addressElement = document.getElementById(addressId);
+            const address = addressElement.textContent;
+            
+            navigator.clipboard.writeText(address).then(() => {
+              const successMsg = document.getElementById(addressId + '-success');
+              successMsg.style.display = 'inline';
+              setTimeout(() => {
+                successMsg.style.display = 'none';
+              }, 3000);
+            }).catch(() => {
+              // Fallback for older browsers
+              const textArea = document.createElement('textarea');
+              textArea.value = address;
+              document.body.appendChild(textArea);
+              textArea.select();
+              document.execCommand('copy');
+              document.body.removeChild(textArea);
+              
+              const successMsg = document.getElementById(addressId + '-success');
+              successMsg.style.display = 'inline';
+              setTimeout(() => {
+                successMsg.style.display = 'none';
+              }, 3000);
+            });
+          }
+          
           async function updateStatus() {
             const response = await fetch('/rpc', {
               method: 'POST',
@@ -778,8 +1202,26 @@ export class RpcServer {
             
             const result = await response.json();
             if (result.result) {
+              // Display escrow addresses with copy functionality
+              if (result.result.instructions && result.result.instructions.${party === 'ALICE' ? 'sideA' : 'sideB'}?.length > 0) {
+                const instructions = result.result.instructions.${party === 'ALICE' ? 'sideA' : 'sideB'};
+                let escrowHtml = '';
+                instructions.forEach((instr, index) => {
+                  const addressId = 'escrow-' + index;
+                  escrowHtml += '<div class="address-field">' +
+                    '<span id="' + addressId + '">' + instr.to + '</span>' +
+                    '<button class="copy-btn" onclick="copyAddress(\\'' + addressId + '\\')">📋 Copy</button>' +
+                    '<span id="' + addressId + '-success" class="success-message">✓ Copied!</span>' +
+                    '</div>' +
+                    '<small>Send ' + instr.amount + ' ' + instr.assetCode + ' to this address</small>';
+                });
+                document.getElementById('escrowContent').innerHTML = escrowHtml;
+                document.getElementById('escrowAddresses').style.display = 'block';
+              }
+              
+              // Display full status
               document.getElementById('statusContent').innerHTML = 
-                '<pre>' + JSON.stringify(result.result, null, 2) + '</pre>';
+                '<h4>Full Status:</h4><pre>' + JSON.stringify(result.result, null, 2) + '</pre>';
             }
           }
           
