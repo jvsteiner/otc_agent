@@ -1203,6 +1203,13 @@ export class RpcServer {
           border-color: #667eea;
           box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
+        input:disabled {
+          background: #e9ecef;
+          color: #495057;
+          cursor: not-allowed;
+          border-color: #28a745;
+          border-width: 2px;
+        }
         button {
           background: #667eea;
           color: white;
@@ -1644,8 +1651,8 @@ export class RpcServer {
           <p><strong>You Receive:</strong> ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} <span class="chain-badge">${dealInfo.receiveChainIcon} ${dealInfo.receiveChain}</span></p>
         </div>
         
-        <!-- Status Dashboard (Hidden Initially) -->
-        <div class="status-dashboard" id="statusDashboard" style="display: none;">
+        <!-- Status Dashboard (Always Visible) -->
+        <div class="status-dashboard" id="statusDashboard">
           <!-- Status Header -->
           <div class="status-header">
             <div class="deal-stage">
@@ -1711,9 +1718,9 @@ export class RpcServer {
           </div>
         </div>
         
-        <!-- Details Form (Initial View) -->
-        <div id="detailsForm">
-          <h3>Enter Your Wallet Addresses:</h3>
+        <!-- Details Form (Always Visible) -->
+        <div id="detailsForm" style="background: #f9f9f9; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+          <h3>📝 Your Wallet Addresses:</h3>
           
           <div class="form-group">
             <label for="payback">🔙 Payback Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.sendChain}</span></label>
@@ -1763,6 +1770,25 @@ export class RpcServer {
             return;
           }
           
+          // Show confirmation dialog with address details
+          const confirmMsg = '⚠️ IMPORTANT: Please double-check your addresses!\\n\\n' +
+            'Once submitted, these addresses CANNOT be changed.\\n\\n' +
+            '🔙 PAYBACK Address (' + dealInfo.sendChain + '):\\n' + payback + '\\n\\n' +
+            '📥 RECIPIENT Address (' + dealInfo.receiveChain + '):\\n' + recipient + '\\n\\n' +
+            'If the deal fails, ' + dealInfo.sendAmount + ' ' + dealInfo.sendAsset + ' will be returned to the PAYBACK address.\\n' +
+            'If the deal succeeds, you will receive ' + dealInfo.receiveAmount + ' ' + dealInfo.receiveAsset + ' at the RECIPIENT address.\\n\\n' +
+            'Are you absolutely sure these addresses are correct?';
+          
+          if (!confirm(confirmMsg)) {
+            return;
+          }
+          
+          // Double confirmation for extra safety
+          const doubleConfirm = confirm('🔒 Final Confirmation: After clicking OK, these addresses will be permanently locked. Continue?');
+          if (!doubleConfirm) {
+            return;
+          }
+          
           try {
             const response = await fetch('/rpc', {
               method: 'POST',
@@ -1785,9 +1811,22 @@ export class RpcServer {
             const result = await response.json();
             
             if (result.result?.ok) {
-              document.getElementById('detailsForm').style.display = 'none';
-              document.getElementById('statusDashboard').style.display = 'block';
-              startStatusUpdates();
+              // Keep form visible but disabled, and show dashboard
+              document.getElementById('payback').disabled = true;
+              document.getElementById('recipient').disabled = true;
+              document.getElementById('email').disabled = true;
+              
+              // Update button
+              const submitBtn = document.querySelector('#detailsForm button');
+              submitBtn.style.display = 'none';
+              
+              // Add success message
+              const successMsg = document.createElement('div');
+              successMsg.style.cssText = 'background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 12px; border-radius: 5px; margin: 15px 0;';
+              successMsg.innerHTML = '<strong>✅ Success!</strong> Your addresses have been saved and locked.';
+              document.getElementById('detailsForm').appendChild(successMsg);
+              
+              // Dashboard is already visible and updating
             } else {
               alert('Error: ' + (result.error?.message || 'Unknown error'));
             }
@@ -2073,15 +2112,34 @@ export class RpcServer {
               dealData = result.result;
               
               // Check if this party has already filled details
-              const details = party === 'ALICE' ? 
+              const partyDetails = party === 'ALICE' ? dealData.aliceDetails : dealData.bobDetails;
+              const hasInstructions = party === 'ALICE' ? 
                 (dealData.instructions?.sideA?.length > 0) : 
                 (dealData.instructions?.sideB?.length > 0);
                 
-              if (details) {
-                // Already filled, show status dashboard
-                document.getElementById('detailsForm').style.display = 'none';
-                document.getElementById('statusDashboard').style.display = 'block';
-                startStatusUpdates();
+              if (partyDetails && partyDetails.paybackAddress && partyDetails.recipientAddress) {
+                // Details are filled - show them in read-only mode
+                document.getElementById('payback').value = partyDetails.paybackAddress;
+                document.getElementById('recipient').value = partyDetails.recipientAddress;
+                document.getElementById('payback').disabled = true;
+                document.getElementById('recipient').disabled = true;
+                
+                if (partyDetails.email) {
+                  document.getElementById('email').value = partyDetails.email;
+                  document.getElementById('email').disabled = true;
+                }
+                
+                // Hide the submit button since addresses are locked
+                const submitBtn = document.querySelector('#detailsForm button');
+                submitBtn.style.display = 'none';
+                
+                // Add locked message
+                const lockedMsg = document.createElement('div');
+                lockedMsg.style.cssText = 'background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 12px; border-radius: 5px; margin: 15px 0;';
+                lockedMsg.innerHTML = '<strong>🔒 Addresses Locked:</strong> Your addresses have been saved and cannot be changed.';
+                document.getElementById('detailsForm').appendChild(lockedMsg);
+                
+                // Dashboard is already visible and updating
               }
             }
           } catch (error) {
@@ -2090,7 +2148,11 @@ export class RpcServer {
         }
         
         // Initialize on load
-        window.addEventListener('DOMContentLoaded', checkInitialStatus);
+        window.addEventListener('DOMContentLoaded', () => {
+          checkInitialStatus();
+          // Always start status updates to show current deal state
+          startStatusUpdates();
+        });
         
         // Cleanup on unload
         window.addEventListener('beforeunload', () => {
