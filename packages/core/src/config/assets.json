@@ -1,0 +1,158 @@
+{
+  "assets": [
+    {
+      "assetName": "Alpha",
+      "assetSymbol": "ALPHA",
+      "chainId": "UNICITY",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 8,
+      "icon": "🪙"
+    },
+    {
+      "assetName": "Ethereum",
+      "assetSymbol": "ETH",
+      "chainId": "ETH",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 18,
+      "icon": "Ξ"
+    },
+    {
+      "assetName": "Tether USD",
+      "assetSymbol": "USDT",
+      "chainId": "ETH",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "₮"
+    },
+    {
+      "assetName": "USD Coin",
+      "assetSymbol": "USDC",
+      "chainId": "ETH",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "$"
+    },
+    {
+      "assetName": "Euro Coin",
+      "assetSymbol": "EURC",
+      "chainId": "ETH",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "€"
+    },
+    {
+      "assetName": "Polygon",
+      "assetSymbol": "MATIC",
+      "chainId": "POLYGON",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 18,
+      "icon": "Ⓜ"
+    },
+    {
+      "assetName": "Tether USD (Polygon)",
+      "assetSymbol": "USDT",
+      "chainId": "POLYGON",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "₮"
+    },
+    {
+      "assetName": "USD Coin (Polygon)",
+      "assetSymbol": "USDC",
+      "chainId": "POLYGON",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "$"
+    },
+    {
+      "assetName": "Euro Coin (Polygon)",
+      "assetSymbol": "EURC",
+      "chainId": "POLYGON",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0x4e3Decbb3645551B8A19f0eA1678079FCB33fB4c",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "€"
+    },
+    {
+      "assetName": "Solana",
+      "assetSymbol": "SOL",
+      "chainId": "SOLANA",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 9,
+      "icon": "◎"
+    },
+    {
+      "assetName": "Tether USD (Solana)",
+      "assetSymbol": "USDT",
+      "chainId": "SOLANA",
+      "native": false,
+      "type": "SPL",
+      "contractAddress": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "₮"
+    },
+    {
+      "assetName": "USD Coin (Solana)",
+      "assetSymbol": "USDC",
+      "chainId": "SOLANA",
+      "native": false,
+      "type": "SPL",
+      "contractAddress": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "$"
+    }
+  ],
+  "supportedChains": [
+    {
+      "chainId": "UNICITY",
+      "name": "Unicity",
+      "icon": "🔷"
+    },
+    {
+      "chainId": "ETH",
+      "name": "Ethereum",
+      "icon": "Ξ"
+    },
+    {
+      "chainId": "POLYGON",
+      "name": "Polygon",
+      "icon": "Ⓜ"
+    },
+    {
+      "chainId": "SOLANA",
+      "name": "Solana",
+      "icon": "◎"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import express from 'express';
-import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement } from '@otc-broker/core';
+import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, getAssetRegistry, formatAssetCode, parseAssetCode } from '@otc-broker/core';
 import { DealRepository } from '../db/repositories';
 import { DB } from '../db/database';
 import { PluginManager } from '@otc-broker/chains';
@@ -97,6 +97,18 @@ export class RpcServer {
   }
 
   private async createDeal(params: CreateDealParams) {
+    // Validate assets using the asset registry
+    const aliceAsset = parseAssetCode(params.alice.asset, params.alice.chainId);
+    const bobAsset = parseAssetCode(params.bob.asset, params.bob.chainId);
+    
+    if (!aliceAsset) {
+      throw new Error(`Invalid or unsupported asset: ${params.alice.asset} on chain ${params.alice.chainId}`);
+    }
+    
+    if (!bobAsset) {
+      throw new Error(`Invalid or unsupported asset: ${params.bob.asset} on chain ${params.bob.chainId}`);
+    }
+    
     // Generate tokens for personal links
     const tokenA = crypto.randomBytes(16).toString('hex');
     const tokenB = crypto.randomBytes(16).toString('hex');
@@ -132,25 +144,36 @@ export class RpcServer {
   }
 
   private getCommissionRequirement(spec: DealAssetSpec): CommissionRequirement {
-    // Simplified commission logic
-    // Real implementation would check chain config
-    if (spec.asset.startsWith('ERC20:') || spec.asset.startsWith('SPL:')) {
-      // Unknown token - use fixed USD in native
+    // Parse asset to determine commission structure
+    const asset = parseAssetCode(spec.asset, spec.chainId);
+    
+    if (!asset) {
+      // Unknown asset - use fixed USD in native
       return {
         mode: 'FIXED_USD_NATIVE',
         currency: 'NATIVE',
         usdFixed: '10',
         coveredBySurplus: true,
       };
-    } else {
-      // Known asset - use percentage
+    }
+    
+    // For stablecoins (USDT, USDC, EURC), use fixed USD
+    if (['USDT', 'USDC', 'EURC'].includes(asset.assetSymbol)) {
       return {
-        mode: 'PERCENT_BPS',
-        currency: 'ASSET',
-        percentBps: 30, // 0.3%
+        mode: 'FIXED_USD_NATIVE',
+        currency: 'NATIVE',
+        usdFixed: '5',
         coveredBySurplus: true,
       };
     }
+    
+    // For native assets and other tokens, use percentage
+    return {
+      mode: 'PERCENT_BPS',
+      currency: 'ASSET',
+      percentBps: 30, // 0.3%
+      coveredBySurplus: true,
+    };
   }
 
   private async fillPartyDetails(params: FillPartyDetailsParams) {
@@ -300,45 +323,263 @@ export class RpcServer {
   }
 
   private renderCreateDealPage(): string {
+    const registry = getAssetRegistry();
+    const chains = registry.supportedChains;
+    const assets = registry.assets;
+    
+    // Group assets by chain for easier access in JavaScript
+    const assetsByChain: Record<string, any[]> = {};
+    chains.forEach((chain: any) => {
+      assetsByChain[chain.chainId] = assets.filter((a: any) => a.chainId === chain.chainId);
+    });
+
     return `
       <!DOCTYPE html>
       <html>
       <head>
         <title>Create OTC asset swap deal</title>
         <style>
-          body { font-family: sans-serif; max-width: 600px; margin: 50px auto; }
-          input, select { width: 100%; padding: 8px; margin: 5px 0; }
-          button { background: #4CAF50; color: white; padding: 10px 20px; border: none; cursor: pointer; }
+          body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
+            max-width: 600px; 
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+          }
+          .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          }
+          h1 {
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+          }
+          .asset-section {
+            background: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+          }
+          .form-group {
+            margin: 15px 0;
+          }
+          label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+          }
+          input, select { 
+            width: 100%; 
+            padding: 10px; 
+            margin: 5px 0; 
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+          }
+          select:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+          }
+          button { 
+            background: #667eea; 
+            color: white; 
+            padding: 12px 30px; 
+            border: none; 
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            margin-top: 20px;
+          }
+          button:hover {
+            background: #5a67d8;
+          }
+          .asset-display {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: white;
+            border-radius: 5px;
+            margin-top: 10px;
+          }
+          .asset-icon {
+            font-size: 24px;
+          }
+          .asset-info {
+            flex: 1;
+          }
+          .asset-name {
+            font-weight: 600;
+            color: #333;
+          }
+          .asset-details {
+            font-size: 12px;
+            color: #888;
+          }
         </style>
       </head>
       <body>
-        <h1>Create OTC asset swap deal</h1>
-        <form id="dealForm">
-          <h3>Asset A:</h3>
-          <select name="aliceChain">
-            <option value="UNICITY">Unicity</option>
-            <option value="ETH">Ethereum</option>
-            <option value="POLYGON">Polygon</option>
-          </select>
-          <input name="aliceAsset" placeholder="Asset (e.g., ALPHA@UNICITY)" required>
-          <input name="aliceAmount" type="number" step="0.00000001" placeholder="Amount" required>
+        <div class="container">
+          <h1>Create OTC Asset Swap Deal</h1>
           
-          <h3>Asset B:</h3>
-          <select name="bobChain">
-            <option value="ETH">Ethereum</option>
-            <option value="UNICITY">Unicity</option>
-            <option value="POLYGON">Polygon</option>
-          </select>
-          <input name="bobAsset" placeholder="Asset (e.g., ETH)" required>
-          <input name="bobAmount" type="number" step="0.00000001" placeholder="Amount" required>
-          
-          <h3>Timeout (seconds):</h3>
-          <input name="timeout" type="number" value="3600" required>
-          
-          <button type="submit">Create Deal</button>
-        </form>
+          <form id="dealForm">
+            <div class="asset-section">
+              <h3>🅰️ Asset A</h3>
+              
+              <div class="form-group">
+                <label for="chainA">Blockchain Network:</label>
+                <select name="chainA" id="chainA" onchange="updateAssetDropdown('A')">
+                  ${chains.map((chain: any) => 
+                    `<option value="${chain.chainId}">${chain.icon} ${chain.name}</option>`
+                  ).join('')}
+                </select>
+              </div>
+              
+              <div class="form-group">
+                <label for="assetA">Asset:</label>
+                <select name="assetA" id="assetA" onchange="updateAssetDisplay('A')">
+                  <!-- Will be populated by JavaScript -->
+                </select>
+              </div>
+              
+              <div id="assetDisplayA" class="asset-display" style="display:none;">
+                <span class="asset-icon"></span>
+                <div class="asset-info">
+                  <div class="asset-name"></div>
+                  <div class="asset-details"></div>
+                </div>
+              </div>
+              
+              <div class="form-group">
+                <label for="amountA">Amount:</label>
+                <input name="amountA" id="amountA" type="number" step="0.00000001" placeholder="0.00" required>
+              </div>
+            </div>
+            
+            <div class="asset-section">
+              <h3>🅱️ Asset B</h3>
+              
+              <div class="form-group">
+                <label for="chainB">Blockchain Network:</label>
+                <select name="chainB" id="chainB" onchange="updateAssetDropdown('B')">
+                  ${chains.map((chain: any) => 
+                    `<option value="${chain.chainId}">${chain.icon} ${chain.name}</option>`
+                  ).join('')}
+                </select>
+              </div>
+              
+              <div class="form-group">
+                <label for="assetB">Asset:</label>
+                <select name="assetB" id="assetB" onchange="updateAssetDisplay('B')">
+                  <!-- Will be populated by JavaScript -->
+                </select>
+              </div>
+              
+              <div id="assetDisplayB" class="asset-display" style="display:none;">
+                <span class="asset-icon"></span>
+                <div class="asset-info">
+                  <div class="asset-name"></div>
+                  <div class="asset-details"></div>
+                </div>
+              </div>
+              
+              <div class="form-group">
+                <label for="amountB">Amount:</label>
+                <input name="amountB" id="amountB" type="number" step="0.00000001" placeholder="0.00" required>
+              </div>
+            </div>
+            
+            <div class="form-group">
+              <label for="timeout">Deal Timeout (seconds):</label>
+              <input name="timeout" id="timeout" type="number" value="3600" min="300" max="86400" required>
+              <small style="color: #888;">Default: 1 hour (3600 seconds)</small>
+            </div>
+            
+            <button type="submit">Create Swap Deal</button>
+          </form>
+        </div>
         
         <script>
+          // Asset registry data
+          const assetsByChain = ${JSON.stringify(assetsByChain)};
+          const chains = ${JSON.stringify(chains)};
+          
+          function updateAssetDropdown(side) {
+            const chainSelect = document.getElementById('chain' + side);
+            const assetSelect = document.getElementById('asset' + side);
+            const chainId = chainSelect.value;
+            const assets = assetsByChain[chainId] || [];
+            
+            // Clear and repopulate asset dropdown
+            assetSelect.innerHTML = '';
+            assets.forEach(asset => {
+              const option = document.createElement('option');
+              option.value = formatAssetCode(asset);
+              option.textContent = asset.icon + ' ' + asset.assetName + ' (' + asset.assetSymbol + ')';
+              option.dataset.asset = JSON.stringify(asset);
+              assetSelect.appendChild(option);
+            });
+            
+            // Update display for first asset
+            if (assets.length > 0) {
+              updateAssetDisplay(side);
+            }
+          }
+          
+          function formatAssetCode(asset) {
+            if (asset.native) {
+              return asset.assetSymbol;
+            }
+            if (asset.type === 'ERC20' || asset.type === 'SPL') {
+              return asset.type + ':' + asset.contractAddress;
+            }
+            return asset.assetSymbol;
+          }
+          
+          function updateAssetDisplay(side) {
+            const assetSelect = document.getElementById('asset' + side);
+            const displayDiv = document.getElementById('assetDisplay' + side);
+            const selectedOption = assetSelect.options[assetSelect.selectedIndex];
+            
+            if (selectedOption && selectedOption.dataset.asset) {
+              const asset = JSON.parse(selectedOption.dataset.asset);
+              
+              displayDiv.querySelector('.asset-icon').textContent = asset.icon;
+              displayDiv.querySelector('.asset-name').textContent = asset.assetName;
+              
+              let details = asset.assetSymbol + ' • ';
+              if (asset.native) {
+                details += 'Native Asset';
+              } else {
+                details += asset.type;
+                if (asset.contractAddress) {
+                  details += ' • ' + asset.contractAddress.substring(0, 6) + '...' + 
+                            asset.contractAddress.substring(asset.contractAddress.length - 4);
+                }
+              }
+              displayDiv.querySelector('.asset-details').textContent = details;
+              displayDiv.style.display = 'flex';
+            }
+          }
+          
+          // Initialize dropdowns on page load
+          window.addEventListener('DOMContentLoaded', function() {
+            updateAssetDropdown('A');
+            updateAssetDropdown('B');
+            
+            // Set different default chains for A and B
+            document.getElementById('chainB').selectedIndex = 1; // Select second chain
+            updateAssetDropdown('B');
+          });
+          
+          // Handle form submission
           document.getElementById('dealForm').onsubmit = async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
@@ -351,14 +592,14 @@ export class RpcServer {
                 method: 'otc.createDeal',
                 params: {
                   alice: {
-                    chainId: formData.get('aliceChain'),
-                    asset: formData.get('aliceAsset'),
-                    amount: formData.get('aliceAmount')
+                    chainId: formData.get('chainA'),
+                    asset: formData.get('assetA'),
+                    amount: formData.get('amountA')
                   },
                   bob: {
-                    chainId: formData.get('bobChain'),
-                    asset: formData.get('bobAsset'),
-                    amount: formData.get('bobAmount')
+                    chainId: formData.get('chainB'),
+                    asset: formData.get('assetB'),
+                    amount: formData.get('amountB')
                   },
                   timeoutSeconds: parseInt(formData.get('timeout'))
                 },
@@ -368,9 +609,9 @@ export class RpcServer {
             
             const result = await response.json();
             if (result.result) {
-              alert('Deal created! Links:\\n\\nAlice: ' + result.result.linkA + '\\n\\nBob: ' + result.result.linkB);
+              alert('✅ Deal created successfully!\\n\\n📎 Personal Links:\\n\\nAlice: ' + result.result.linkA + '\\n\\nBob: ' + result.result.linkB);
             } else {
-              alert('Error: ' + (result.error?.message || 'Unknown error'));
+              alert('❌ Error: ' + (result.error?.message || 'Unknown error'));
             }
           };
         </script>
