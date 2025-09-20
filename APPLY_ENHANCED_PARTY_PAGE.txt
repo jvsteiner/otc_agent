@@ -1,0 +1,1 @@
+Copy the enhanced renderPartyPage method from packages/backend/src/api/rpc-server-enhanced-party.ts and replace the existing renderPartyPage method in packages/backend/src/api/rpc-server.ts (lines 1065-1427)

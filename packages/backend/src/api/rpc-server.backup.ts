@@ -1102,961 +1102,325 @@ export class RpcServer {
   }
 
   private renderPartyPage(dealId: string, token: string, party: 'ALICE' | 'BOB'): string {
-  const partyLabel = party === 'ALICE' ? 'Asset A Seller' : 'Asset B Seller';
-  const partyIcon = party === 'ALICE' ? '🅰️' : '🅱️';
-  
-  // Get deal information to show correct chains and assets
-  const deal = this.dealRepo.get(dealId);
-  let dealInfo = { 
-    sendChain: '', 
-    sendAsset: '', 
-    sendAmount: '',
-    sendChainIcon: '',
-    receiveChain: '', 
-    receiveAsset: '',
-    receiveAmount: '',
-    receiveChainIcon: ''
-  };
-  
-  const chainIcons: Record<string, string> = {
-    'UNICITY': '🔷',
-    'ETH': 'Ξ',
-    'POLYGON': 'Ⓜ',
-    'BASE': '🔵',
-    'SOLANA': '◎'
-  };
-  
-  if (deal) {
-    const registry = getAssetRegistry();
-    const assetA = registry.assets.find(a => a.chainId === deal.alice.chainId && formatAssetCode(a) === deal.alice.asset);
-    const assetB = registry.assets.find(a => a.chainId === deal.bob.chainId && formatAssetCode(a) === deal.bob.asset);
+    const partyLabel = party === 'ALICE' ? 'Asset A Seller' : 'Asset B Seller';
+    const partyIcon = party === 'ALICE' ? '🅰️' : '🅱️';
     
-    if (party === 'ALICE') {
-      dealInfo = {
-        sendChain: deal.alice.chainId,
-        sendAsset: assetA?.assetSymbol || deal.alice.asset,
-        sendAmount: deal.alice.amount,
-        sendChainIcon: chainIcons[deal.alice.chainId] || '🔗',
-        receiveChain: deal.bob.chainId,
-        receiveAsset: assetB?.assetSymbol || deal.bob.asset,
-        receiveAmount: deal.bob.amount,
-        receiveChainIcon: chainIcons[deal.bob.chainId] || '🔗'
-      };
-    } else {
-      dealInfo = {
-        sendChain: deal.bob.chainId,
-        sendAsset: assetB?.assetSymbol || deal.bob.asset,
-        sendAmount: deal.bob.amount,
-        sendChainIcon: chainIcons[deal.bob.chainId] || '🔗',
-        receiveChain: deal.alice.chainId,
-        receiveAsset: assetA?.assetSymbol || deal.alice.asset,
-        receiveAmount: deal.alice.amount,
-        receiveChainIcon: chainIcons[deal.alice.chainId] || '🔗'
-      };
-    }
-  }
-  
-  return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>${partyLabel} - OTC Asset Swap</title>
-      <style>
-        body { 
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-          max-width: 900px;
-          margin: 30px auto;
-          padding: 20px;
-          background: #f5f5f5;
-        }
-        .container {
-          background: white;
-          border-radius: 10px;
-          padding: 30px;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-          color: #333;
-          border-bottom: 2px solid #667eea;
-          padding-bottom: 10px;
-          margin-bottom: 20px;
-        }
-        .form-group {
-          margin: 15px 0;
-        }
-        label {
-          display: block;
-          margin-bottom: 5px;
-          font-weight: 600;
-          color: #555;
-        }
-        input {
-          width: 100%;
-          padding: 10px;
-          margin: 5px 0;
-          border: 1px solid #ddd;
-          border-radius: 5px;
-          font-size: 14px;
-        }
-        input:focus {
-          outline: none;
-          border-color: #667eea;
-          box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        button {
-          background: #667eea;
-          color: white;
-          padding: 12px 30px;
-          border: none;
-          cursor: pointer;
-          border-radius: 5px;
-          font-size: 16px;
-          font-weight: 600;
-          width: 100%;
-          margin-top: 15px;
-        }
-        button:hover {
-          background: #5a67d8;
-        }
-        
-        /* Enhanced Status Visualization Styles */
-        .status-dashboard {
-          background: white;
-          border-radius: 10px;
-          padding: 20px;
-          margin-top: 20px;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }
-        
-        .status-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 15px;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          border-radius: 8px;
-          margin-bottom: 20px;
-        }
-        
-        .deal-stage {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        
-        .stage-badge {
-          padding: 6px 12px;
-          border-radius: 20px;
-          font-weight: 600;
-          font-size: 12px;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-        }
-        
-        .stage-created { background: rgba(255,255,255,0.2); }
-        .stage-collection { background: rgba(255,193,7,0.3); color: #fff3cd; }
-        .stage-waiting { background: rgba(33,150,243,0.3); color: #bbdefb; }
-        .stage-closed { background: rgba(76,175,80,0.3); color: #c8e6c9; }
-        .stage-reverted { background: rgba(244,67,54,0.3); color: #ffcdd2; }
-        
-        .countdown-timer {
-          font-family: 'Courier New', monospace;
-          font-size: 24px;
-          font-weight: bold;
-          padding: 10px 15px;
-          background: rgba(0,0,0,0.2);
-          border-radius: 6px;
-          min-width: 120px;
-          text-align: center;
-        }
-        
-        .countdown-expired {
-          background: rgba(244,67,54,0.3);
-          animation: pulse 1s infinite;
-        }
-        
-        @keyframes pulse {
-          0% { opacity: 1; }
-          50% { opacity: 0.5; }
-          100% { opacity: 1; }
-        }
-        
-        /* Balance Cards */
-        .balance-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 20px;
-          margin-bottom: 25px;
-        }
-        
-        .balance-card {
-          background: #f9fafb;
-          border-radius: 10px;
-          padding: 20px;
-          border: 1px solid #e5e7eb;
-          position: relative;
-          overflow: hidden;
-        }
-        
-        .balance-card.your-balance {
-          border-left: 4px solid #667eea;
-        }
-        
-        .balance-card.their-balance {
-          border-left: 4px solid #764ba2;
-        }
-        
-        .balance-label {
-          font-size: 12px;
-          text-transform: uppercase;
-          color: #6b7280;
-          margin-bottom: 10px;
-          font-weight: 600;
-          letter-spacing: 1px;
-        }
-        
-        .balance-amount {
-          font-size: 28px;
-          font-weight: 700;
-          color: #111827;
-          margin: 10px 0;
-          font-family: 'Courier New', monospace;
-        }
-        
-        .balance-progress {
-          width: 100%;
-          height: 10px;
-          background: #e5e7eb;
-          border-radius: 5px;
-          overflow: hidden;
-          margin: 15px 0;
-        }
-        
-        .balance-progress-fill {
-          height: 100%;
-          background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-          transition: width 0.5s ease;
-          box-shadow: 0 0 10px rgba(102, 126, 234, 0.3);
-        }
-        
-        .balance-details {
-          font-size: 13px;
-          color: #6b7280;
-          margin-top: 10px;
-        }
-        
-        .balance-percentage {
-          position: absolute;
-          top: 20px;
-          right: 20px;
-          font-size: 24px;
-          font-weight: bold;
-          color: #667eea;
-          opacity: 0.3;
-        }
-        
-        /* Escrow Address Display */
-        .escrow-section {
-          background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-          border: 2px solid #f59e0b;
-          border-radius: 10px;
-          padding: 20px;
-          margin: 20px 0;
-        }
-        
-        .escrow-label {
-          font-size: 14px;
-          text-transform: uppercase;
-          color: #92400e;
-          margin-bottom: 10px;
-          font-weight: 600;
-          letter-spacing: 1px;
-        }
-        
-        .escrow-address {
-          font-family: 'Courier New', monospace;
-          font-size: 14px;
-          color: #451a03;
-          word-break: break-all;
-          background: white;
-          padding: 12px;
-          border-radius: 6px;
-          margin: 10px 0;
-        }
-        
-        .escrow-copy-btn {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 8px 16px;
-          background: #f59e0b;
-          color: white;
-          border: none;
-          border-radius: 6px;
-          cursor: pointer;
-          font-size: 14px;
-          font-weight: 600;
-        }
-        
-        .escrow-copy-btn:hover {
-          background: #d97706;
-        }
-        
-        /* Transaction Log */
-        .transaction-log {
-          background: white;
-          border-radius: 10px;
-          padding: 20px;
-          border: 1px solid #e5e7eb;
-          margin-top: 20px;
-        }
-        
-        .transaction-log h3 {
-          font-size: 18px;
-          margin-bottom: 15px;
-          color: #111827;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        
-        .transaction-list {
-          max-height: 400px;
-          overflow-y: auto;
-          border: 1px solid #f3f4f6;
-          border-radius: 8px;
-        }
-        
-        .transaction-item {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 15px;
-          border-bottom: 1px solid #f3f4f6;
-          transition: background 0.2s;
-        }
-        
-        .transaction-item:hover {
-          background: #f9fafb;
-        }
-        
-        .transaction-item:last-child {
-          border-bottom: none;
-        }
-        
-        .tx-info {
-          flex: 1;
-        }
-        
-        .tx-type {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-weight: 600;
-          margin-bottom: 5px;
-        }
-        
-        .tx-in {
-          color: #10b981;
-        }
-        
-        .tx-out {
-          color: #ef4444;
-        }
-        
-        .tx-pending {
-          color: #f59e0b;
-        }
-        
-        .tx-hash {
-          font-family: 'Courier New', monospace;
-          font-size: 12px;
-          color: #6b7280;
-          margin-top: 5px;
-        }
-        
-        .tx-hash a {
-          color: #667eea;
-          text-decoration: none;
-        }
-        
-        .tx-hash a:hover {
-          text-decoration: underline;
-        }
-        
-        .tx-details {
-          text-align: right;
-        }
-        
-        .tx-amount {
-          font-weight: 700;
-          font-size: 16px;
-          margin-bottom: 5px;
-        }
-        
-        .tx-time {
-          font-size: 11px;
-          color: #9ca3af;
-        }
-        
-        .tx-status {
-          display: inline-block;
-          padding: 3px 8px;
-          border-radius: 4px;
-          font-size: 10px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          margin-top: 5px;
-        }
-        
-        .tx-status.pending {
-          background: #fef3c7;
-          color: #92400e;
-        }
-        
-        .tx-status.confirmed {
-          background: #d1fae5;
-          color: #065f46;
-        }
-        
-        .tx-status.failed {
-          background: #fee2e2;
-          color: #991b1b;
-        }
-        
-        /* Empty State */
-        .empty-state {
-          text-align: center;
-          padding: 40px;
-          color: #9ca3af;
-        }
-        
-        .empty-state-icon {
-          font-size: 48px;
-          margin-bottom: 10px;
-          opacity: 0.5;
-        }
-        
-        /* Loading Spinner */
-        .loading-spinner {
-          display: inline-block;
-          width: 20px;
-          height: 20px;
-          border: 3px solid #e5e7eb;
-          border-top-color: #667eea;
-          border-radius: 50%;
-          animation: spin 1s linear infinite;
-        }
-        
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-        
-        /* Refresh Indicator */
-        .refresh-indicator {
-          position: fixed;
-          top: 20px;
-          right: 20px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 8px 12px;
-          background: white;
-          border-radius: 20px;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          font-size: 12px;
-          color: #6b7280;
-        }
-        
-        .refresh-indicator.active .loading-spinner {
-          display: inline-block;
-        }
-        
-        .deal-summary {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          padding: 20px;
-          border-radius: 10px;
-          margin-bottom: 25px;
-        }
-        
-        .deal-summary p {
-          margin: 8px 0;
-          font-size: 15px;
-        }
-        
-        .deal-summary strong {
-          display: inline-block;
-          min-width: 100px;
-        }
-        
-        .chain-badge {
-          display: inline-block;
-          padding: 3px 8px;
-          background: rgba(255,255,255,0.2);
-          color: white;
-          border-radius: 4px;
-          font-weight: 600;
-          font-size: 12px;
-          margin-left: 5px;
-        }
-        
-        /* Responsive Design */
-        @media (max-width: 768px) {
-          .balance-grid {
-            grid-template-columns: 1fr;
-          }
-          
-          .status-header {
-            flex-direction: column;
-            gap: 15px;
-            text-align: center;
-          }
-          
-          .transaction-item {
-            flex-direction: column;
-            gap: 10px;
-          }
-          
-          .tx-details {
-            text-align: left;
-            width: 100%;
-          }
-        }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>${partyIcon} ${partyLabel}</h1>
-        
-        <!-- Refresh Indicator -->
-        <div class="refresh-indicator" id="refreshIndicator">
-          <div class="loading-spinner" style="display: none;"></div>
-          <span>Auto-refresh: <span id="refreshStatus">ON</span></span>
-        </div>
-        
-        <!-- Deal Summary (Always Visible) -->
-        <div class="deal-summary">
-          <h3 style="margin-top: 0; margin-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.3); padding-bottom: 10px;">📊 Deal Summary</h3>
-          <p><strong>You Send:</strong> ${dealInfo.sendAmount} ${dealInfo.sendAsset} <span class="chain-badge">${dealInfo.sendChainIcon} ${dealInfo.sendChain}</span></p>
-          <p><strong>You Receive:</strong> ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} <span class="chain-badge">${dealInfo.receiveChainIcon} ${dealInfo.receiveChain}</span></p>
-        </div>
-        
-        <!-- Status Dashboard (Hidden Initially) -->
-        <div class="status-dashboard" id="statusDashboard" style="display: none;">
-          <!-- Status Header -->
-          <div class="status-header">
-            <div class="deal-stage">
-              <span>Deal Status:</span>
-              <span id="dealStage" class="stage-badge"></span>
-            </div>
-            <div id="countdown" class="countdown-timer">--:--:--</div>
-          </div>
-          
-          <!-- Balance Cards -->
-          <div class="balance-grid">
-            <div class="balance-card your-balance">
-              <div class="balance-percentage" id="yourPercentage">0%</div>
-              <div class="balance-label">Your Escrow Balance</div>
-              <div class="balance-amount" id="yourBalance">0.0000 / 0.0000</div>
-              <div class="balance-progress">
-                <div class="balance-progress-fill" id="yourProgress" style="width: 0%;"></div>
-              </div>
-              <div class="balance-details" id="yourDetails">
-                <span id="yourAsset">${dealInfo.sendAsset}</span> • 
-                <span id="yourStatus">Waiting for deposits...</span>
-              </div>
-            </div>
-            
-            <div class="balance-card their-balance">
-              <div class="balance-percentage" id="theirPercentage">0%</div>
-              <div class="balance-label">Counterparty Balance</div>
-              <div class="balance-amount" id="theirBalance">0.0000 / 0.0000</div>
-              <div class="balance-progress">
-                <div class="balance-progress-fill" id="theirProgress" style="width: 0%;"></div>
-              </div>
-              <div class="balance-details" id="theirDetails">
-                <span id="theirAsset">${dealInfo.receiveAsset}</span> • 
-                <span id="theirStatus">Waiting for deposits...</span>
-              </div>
-            </div>
-          </div>
-          
-          <!-- Escrow Address Section -->
-          <div class="escrow-section" id="escrowSection" style="display: none;">
-            <div class="escrow-label">⚠️ Send Your Funds To This Escrow Address:</div>
-            <div class="escrow-address" id="escrowAddress">Loading...</div>
-            <div style="margin-top: 10px;">
-              <span style="font-size: 14px; color: #92400e;">
-                Amount Required: <strong id="escrowAmount">${dealInfo.sendAmount} ${dealInfo.sendAsset}</strong>
-              </span>
-            </div>
-            <button class="escrow-copy-btn" onclick="copyEscrowAddress()">
-              📋 Copy Escrow Address
-            </button>
-          </div>
-          
-          <!-- Transaction Log -->
-          <div class="transaction-log">
-            <h3>📜 Transaction History <div class="loading-spinner" id="txLoadingSpinner" style="display: none;"></div></h3>
-            <div class="transaction-list" id="transactionList">
-              <div class="empty-state">
-                <div class="empty-state-icon">📭</div>
-                <p>No transactions yet</p>
-                <small>Transactions will appear here once you start depositing funds</small>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Details Form (Initial View) -->
-        <div id="detailsForm">
-          <h3>Enter Your Wallet Addresses:</h3>
-          
-          <div class="form-group">
-            <label for="payback">🔙 Payback Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.sendChain}</span></label>
-            <small style="color: #888;">If the deal fails, your ${dealInfo.sendAmount} ${dealInfo.sendAsset} will be returned to this address</small>
-            <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
-              <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.sendChain} address that can receive ${dealInfo.sendAsset}</small>
-            </div>
-            <input id="payback" placeholder="Enter your ${dealInfo.sendChain} wallet address" required>
-          </div>
-          
-          <div class="form-group">
-            <label for="recipient">📥 Recipient Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.receiveChain}</span></label>
-            <small style="color: #888;">When the deal succeeds, you will receive ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} here</small>
-            <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
-              <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.receiveChain} address that can receive ${dealInfo.receiveAsset}</small>
-            </div>
-            <input id="recipient" placeholder="Enter your ${dealInfo.receiveChain} wallet address" required>
-          </div>
-          
-          <div class="form-group">
-            <label for="email">Email (Optional)</label>
-            <small style="color: #888;">For deal status notifications</small>
-            <input id="email" type="email" placeholder="your@email.com">
-          </div>
-          
-          <button onclick="submitDetails()">Submit Details & Continue</button>
-        </div>
-      </div>
+    // Get deal information to show correct chains and assets
+    const deal = this.dealRepo.get(dealId);
+    let dealInfo = { 
+      sendChain: '', 
+      sendAsset: '', 
+      sendAmount: '',
+      sendChainIcon: '',
+      receiveChain: '', 
+      receiveAsset: '',
+      receiveAmount: '',
+      receiveChainIcon: ''
+    };
+    
+    const chainIcons: Record<string, string> = {
+      'UNICITY': '🔷',
+      'ETH': 'Ξ',
+      'POLYGON': 'Ⓜ',
+      'BASE': '🔵',
+      'SOLANA': '◎'
+    };
+    
+    if (deal) {
+      const registry = getAssetRegistry();
+      const assetA = registry.assets.find(a => a.chainId === deal.alice.chainId && formatAssetCode(a) === deal.alice.asset);
+      const assetB = registry.assets.find(a => a.chainId === deal.bob.chainId && formatAssetCode(a) === deal.bob.asset);
       
-      <script>
-        const dealId = '${dealId}';
-        const token = '${token}';
-        const party = '${party}';
-        
-        let refreshInterval = null;
-        let countdownInterval = null;
-        let dealData = null;
-        
-        // Submit party details
-        async function submitDetails() {
-          const payback = document.getElementById('payback').value;
-          const recipient = document.getElementById('recipient').value;
-          const email = document.getElementById('email').value;
-          
-          if (!payback || !recipient) {
-            alert('Please enter both payback and recipient addresses');
-            return;
+      if (party === 'ALICE') {
+        dealInfo = {
+          sendChain: deal.alice.chainId,
+          sendAsset: assetA?.assetSymbol || deal.alice.asset,
+          sendAmount: deal.alice.amount,
+          sendChainIcon: chainIcons[deal.alice.chainId] || '🔗',
+          receiveChain: deal.bob.chainId,
+          receiveAsset: assetB?.assetSymbol || deal.bob.asset,
+          receiveAmount: deal.bob.amount,
+          receiveChainIcon: chainIcons[deal.bob.chainId] || '🔗'
+        };
+      } else {
+        dealInfo = {
+          sendChain: deal.bob.chainId,
+          sendAsset: assetB?.assetSymbol || deal.bob.asset,
+          sendAmount: deal.bob.amount,
+          sendChainIcon: chainIcons[deal.bob.chainId] || '🔗',
+          receiveChain: deal.alice.chainId,
+          receiveAsset: assetA?.assetSymbol || deal.alice.asset,
+          receiveAmount: deal.alice.amount,
+          receiveChainIcon: chainIcons[deal.alice.chainId] || '🔗'
+        };
+      }
+    }
+    
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>${partyLabel} - OTC Asset Swap</title>
+        <style>
+          body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 900px;
+            margin: 30px auto;
+            padding: 20px;
+            background: #f5f5f5;
           }
+          .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          }
+          h1 {
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+          }
+          .form-group {
+            margin: 15px 0;
+          }
+          label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+          }
+          input {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+          }
+          input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+          }
+          button {
+            background: #667eea;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            margin-top: 15px;
+          }
+          button:hover {
+            background: #5a67d8;
+          }
+          .status {
+            background: #f9f9f9;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+          }
+          .copy-btn {
+            display: inline-block;
+            padding: 4px 8px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-left: 8px;
+          }
+          .copy-btn:hover {
+            background: #5a67d8;
+          }
+          .address-field {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 13px;
+          }
+          .success-message {
+            color: #10b981;
+            font-size: 12px;
+            margin-left: 10px;
+            display: none;
+          }
+          .chain-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            background: #667eea;
+            color: white;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 12px;
+            margin-left: 5px;
+          }
+          .deal-summary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 25px;
+          }
+          .deal-summary p {
+            margin: 8px 0;
+            font-size: 15px;
+          }
+          .deal-summary strong {
+            display: inline-block;
+            min-width: 100px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>${partyIcon} ${partyLabel}</h1>
           
-          try {
-            const response = await fetch('/rpc', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                jsonrpc: '2.0',
-                method: 'otc.fillPartyDetails',
-                params: {
-                  dealId,
-                  party,
-                  paybackAddress: payback,
-                  recipientAddress: recipient,
-                  email: email || undefined,
-                  token
-                },
-                id: 1
-              })
-            });
+          <div id="detailsForm">
+            <div class="deal-summary">
+              <h3 style="margin-top: 0; margin-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.3); padding-bottom: 10px;">📊 Deal Summary</h3>
+              <p><strong>You Send:</strong> ${dealInfo.sendAmount} ${dealInfo.sendAsset} <span class="chain-badge">${dealInfo.sendChainIcon} ${dealInfo.sendChain}</span></p>
+              <p><strong>You Receive:</strong> ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} <span class="chain-badge">${dealInfo.receiveChainIcon} ${dealInfo.receiveChain}</span></p>
+            </div>
             
-            const result = await response.json();
+            <h3>Enter Your Wallet Addresses:</h3>
             
-            if (result.result?.ok) {
-              document.getElementById('detailsForm').style.display = 'none';
-              document.getElementById('statusDashboard').style.display = 'block';
-              startStatusUpdates();
-            } else {
-              alert('Error: ' + (result.error?.message || 'Unknown error'));
-            }
-          } catch (error) {
-            alert('Failed to submit details: ' + error.message);
-          }
-        }
-        
-        // Start status updates
-        function startStatusUpdates() {
-          updateStatus();
-          refreshInterval = setInterval(updateStatus, 5000); // Update every 5 seconds
-        }
-        
-        // Update status from server
-        async function updateStatus() {
-          const indicator = document.getElementById('refreshIndicator');
-          const spinner = indicator.querySelector('.loading-spinner');
-          spinner.style.display = 'inline-block';
-          
-          try {
-            const response = await fetch('/rpc', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                jsonrpc: '2.0',
-                method: 'otc.status',
-                params: { dealId },
-                id: 1
-              })
-            });
-            
-            const result = await response.json();
-            if (result.result) {
-              dealData = result.result;
-              updateDisplay();
-            }
-          } catch (error) {
-            console.error('Failed to update status:', error);
-          } finally {
-            spinner.style.display = 'none';
-          }
-        }
-        
-        // Update display with latest data
-        function updateDisplay() {
-          if (!dealData) return;
-          
-          // Update stage
-          const stageEl = document.getElementById('dealStage');
-          if (stageEl) {
-            stageEl.textContent = dealData.stage;
-            stageEl.className = 'stage-badge stage-' + dealData.stage.toLowerCase();
-          }
-          
-          // Update countdown
-          if (dealData.expiresAt) {
-            startCountdown(dealData.expiresAt);
-          }
-          
-          // Update balances
-          const yourSide = party === 'ALICE' ? 'sideA' : 'sideB';
-          const theirSide = party === 'ALICE' ? 'sideB' : 'sideA';
-          
-          updateBalance('your', dealData.collection?.[yourSide], dealData.instructions?.[yourSide]);
-          updateBalance('their', dealData.collection?.[theirSide], dealData.instructions?.[theirSide]);
-          
-          // Show escrow address
-          if (dealData.instructions?.[yourSide]?.[0]) {
-            const escrowAddr = dealData.instructions[yourSide][0].to;
-            const escrowAmount = dealData.instructions[yourSide][0].amount;
-            const escrowAsset = dealData.instructions[yourSide][0].assetCode;
-            
-            document.getElementById('escrowSection').style.display = 'block';
-            document.getElementById('escrowAddress').textContent = escrowAddr;
-            document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + escrowAsset;
-          }
-          
-          // Update transaction log
-          updateTransactionLog();
-        }
-        
-        // Update balance display
-        function updateBalance(type, collection, instructions) {
-          const balanceEl = document.getElementById(type + 'Balance');
-          const progressEl = document.getElementById(type + 'Progress');
-          const percentageEl = document.getElementById(type + 'Percentage');
-          const statusEl = document.getElementById(type + 'Status');
-          
-          if (!instructions || instructions.length === 0) {
-            balanceEl.textContent = '0.0000 / 0.0000';
-            progressEl.style.width = '0%';
-            percentageEl.textContent = '0%';
-            statusEl.textContent = 'No deposits required';
-            return;
-          }
-          
-          const required = parseFloat(instructions[0].amount);
-          const collected = parseFloat(collection?.collectedByAsset?.[instructions[0].assetCode] || '0');
-          const percentage = Math.min(100, (collected / required) * 100);
-          
-          balanceEl.textContent = collected.toFixed(4) + ' / ' + required.toFixed(4);
-          progressEl.style.width = percentage + '%';
-          percentageEl.textContent = Math.round(percentage) + '%';
-          
-          if (percentage === 100) {
-            statusEl.textContent = '✅ Fully funded';
-          } else if (percentage > 0) {
-            statusEl.textContent = '⏳ Partial funding (' + percentage.toFixed(1) + '%)';
-          } else {
-            statusEl.textContent = '⏰ Waiting for deposits...';
-          }
-        }
-        
-        // Start countdown timer
-        function startCountdown(expiresAt) {
-          if (countdownInterval) {
-            clearInterval(countdownInterval);
-          }
-          
-          countdownInterval = setInterval(() => {
-            const now = Date.now();
-            const expiry = new Date(expiresAt).getTime();
-            const remaining = expiry - now;
-            
-            const countdownEl = document.getElementById('countdown');
-            
-            if (remaining <= 0) {
-              countdownEl.className = 'countdown-timer countdown-expired';
-              countdownEl.textContent = '⏰ EXPIRED';
-              clearInterval(countdownInterval);
-            } else {
-              const hours = Math.floor(remaining / (1000 * 60 * 60));
-              const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-              const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
-              
-              countdownEl.className = 'countdown-timer';
-              countdownEl.textContent = 
-                String(hours).padStart(2, '0') + ':' +
-                String(minutes).padStart(2, '0') + ':' +
-                String(seconds).padStart(2, '0');
-            }
-          }, 1000);
-        }
-        
-        // Update transaction log
-        function updateTransactionLog() {
-          const listEl = document.getElementById('transactionList');
-          const transactions = [];
-          
-          // Add deposits from collection
-          const yourSide = party === 'ALICE' ? 'sideA' : 'sideB';
-          if (dealData?.collection?.[yourSide]?.deposits) {
-            dealData.collection[yourSide].deposits.forEach(dep => {
-              transactions.push({
-                type: 'in',
-                txid: dep.txid,
-                amount: dep.amount,
-                asset: dep.asset,
-                confirmations: dep.confirms,
-                time: dep.blockTime || new Date().toISOString()
-              });
-            });
-          }
-          
-          // Add outgoing transactions
-          if (dealData?.outQueue) {
-            dealData.outQueue.forEach(item => {
-              if (item.from?.address === dealData.instructions?.[yourSide]?.[0]?.to) {
-                transactions.push({
-                  type: 'out',
-                  txid: item.submittedTx?.txid,
-                  amount: item.amount,
-                  asset: item.asset,
-                  to: item.to,
-                  status: item.submittedTx?.status,
-                  time: item.createdAt
-                });
-              }
-            });
-          }
-          
-          // Add events
-          if (dealData?.events) {
-            dealData.events.forEach(event => {
-              transactions.push({
-                type: 'event',
-                message: event.msg,
-                time: event.t
-              });
-            });
-          }
-          
-          if (transactions.length === 0) {
-            listEl.innerHTML = \`
-              <div class="empty-state">
-                <div class="empty-state-icon">📭</div>
-                <p>No transactions yet</p>
-                <small>Transactions will appear here once you start depositing funds</small>
+            <div class="form-group">
+              <label for="payback">🔙 Payback Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.sendChain}</span></label>
+              <small style="color: #888;">If the deal fails, your ${dealInfo.sendAmount} ${dealInfo.sendAsset} will be returned to this address</small>
+              <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
+                <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.sendChain} address that can receive ${dealInfo.sendAsset}</small>
               </div>
-            \`;
-            return;
+              <input id="payback" placeholder="Enter your ${dealInfo.sendChain} wallet address" required>
+            </div>
+            
+            <div class="form-group">
+              <label for="recipient">📥 Recipient Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.receiveChain}</span></label>
+              <small style="color: #888;">When the deal succeeds, you will receive ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} here</small>
+              <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
+                <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.receiveChain} address that can receive ${dealInfo.receiveAsset}</small>
+              </div>
+              <input id="recipient" placeholder="Enter your ${dealInfo.receiveChain} wallet address" required>
+            </div>
+            
+            <div class="form-group">
+              <label for="email">Email (Optional)</label>
+              <small style="color: #888;">For deal status notifications</small>
+              <input id="email" type="email" placeholder="your@email.com">
+            </div>
+            
+            <button onclick="submitDetails()">Submit Details</button>
+          </div>
+          
+          <div class="status" id="status" style="display:none;">
+            <h3>Deal Status</h3>
+            <div id="escrowAddresses" style="display:none;">
+              <h4>Escrow Addresses:</h4>
+              <div id="escrowContent"></div>
+            </div>
+            <div id="statusContent"></div>
+          </div>
+        </div>
+        
+        <script>
+          const dealId = '${dealId}';
+          const token = '${token}';
+          const party = '${party}';
+          
+          async function submitDetails() {
+            const payback = document.getElementById('payback').value;
+            const recipient = document.getElementById('recipient').value;
+            const email = document.getElementById('email').value;
+            
+            console.log('Submitting details:', {
+              dealId,
+              party,
+              token,
+              paybackAddress: payback,
+              recipientAddress: recipient
+            });
+            
+            if (!payback || !recipient) {
+              alert('Please enter both payback and recipient addresses');
+              return;
+            }
+            
+            try {
+              const response = await fetch('/rpc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  method: 'otc.fillPartyDetails',
+                  params: {
+                    dealId,
+                    party,
+                    paybackAddress: payback,
+                    recipientAddress: recipient,
+                    email: email || undefined,
+                    token
+                  },
+                  id: 1
+                })
+              });
+              
+              const result = await response.json();
+              console.log('Server response:', result);
+              
+              if (result.result?.ok) {
+                document.getElementById('detailsForm').style.display = 'none';
+                document.getElementById('status').style.display = 'block';
+                updateStatus();
+                setInterval(updateStatus, 5000);
+              } else {
+                console.error('Error from server:', result.error);
+                alert('Error: ' + (result.error?.message || 'Unknown error'));
+              }
+            } catch (error) {
+              console.error('Request failed:', error);
+              alert('Failed to submit details: ' + error.message);
+            }
           }
           
-          // Sort by time (newest first)
-          transactions.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-          
-          // Render transactions
-          listEl.innerHTML = transactions.map(tx => {
-            if (tx.type === 'event') {
-              return \`
-                <div class="transaction-item">
-                  <div class="tx-info">
-                    <div class="tx-type">
-                      <span>📝</span>
-                      <span>\${tx.message}</span>
-                    </div>
-                  </div>
-                  <div class="tx-details">
-                    <div class="tx-time">\${new Date(tx.time).toLocaleString()}</div>
-                  </div>
-                </div>
-              \`;
-            } else {
-              const typeIcon = tx.type === 'in' ? '⬇️' : '⬆️';
-              const typeClass = tx.type === 'in' ? 'tx-in' : 'tx-out';
-              const statusClass = tx.status === 'CONFIRMED' ? 'confirmed' : tx.status === 'DROPPED' ? 'failed' : 'pending';
-              const statusText = tx.status || (tx.confirmations > 0 ? 'CONFIRMED' : 'PENDING');
+          function copyAddress(addressId) {
+            const addressElement = document.getElementById(addressId);
+            const address = addressElement.textContent;
+            
+            navigator.clipboard.writeText(address).then(() => {
+              const successMsg = document.getElementById(addressId + '-success');
+              successMsg.style.display = 'inline';
+              setTimeout(() => {
+                successMsg.style.display = 'none';
+              }, 3000);
+            }).catch(() => {
+              // Fallback for older browsers
+              const textArea = document.createElement('textarea');
+              textArea.value = address;
+              document.body.appendChild(textArea);
+              textArea.select();
+              document.execCommand('copy');
+              document.body.removeChild(textArea);
               
-              return \`
-                <div class="transaction-item">
-                  <div class="tx-info">
-                    <div class="tx-type \${typeClass}">
-                      <span>\${typeIcon}</span>
-                      <span>\${tx.type === 'in' ? 'Received' : 'Sent'}</span>
-                    </div>
-                    \${tx.txid ? '<div class="tx-hash">TxID: <a href="#" onclick="alert(\\'' + tx.txid + '\\'); return false;">' + tx.txid.substr(0, 10) + '...</a></div>' : ''}
-                  </div>
-                  <div class="tx-details">
-                    <div class="tx-amount">\${tx.amount} \${tx.asset}</div>
-                    <div class="tx-time">\${new Date(tx.time).toLocaleString()}</div>
-                    <span class="tx-status \${statusClass}">\${statusText}</span>
-                  </div>
-                </div>
-              \`;
-            }
-          }).join('');
-        }
-        
-        // Copy escrow address
-        function copyEscrowAddress() {
-          const address = document.getElementById('escrowAddress').textContent;
-          navigator.clipboard.writeText(address).then(() => {
-            alert('Escrow address copied to clipboard!');
-          }).catch(() => {
-            // Fallback for older browsers
-            const textArea = document.createElement('textarea');
-            textArea.value = address;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textArea);
-            alert('Escrow address copied to clipboard!');
-          });
-        }
-        
-        // Check if details already filled
-        async function checkInitialStatus() {
-          try {
+              const successMsg = document.getElementById(addressId + '-success');
+              successMsg.style.display = 'inline';
+              setTimeout(() => {
+                successMsg.style.display = 'none';
+              }, 3000);
+            });
+          }
+          
+          async function updateStatus() {
             const response = await fetch('/rpc', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -2070,38 +1434,82 @@ export class RpcServer {
             
             const result = await response.json();
             if (result.result) {
-              dealData = result.result;
-              
-              // Check if this party has already filled details
-              const details = party === 'ALICE' ? 
-                (dealData.instructions?.sideA?.length > 0) : 
-                (dealData.instructions?.sideB?.length > 0);
-                
-              if (details) {
-                // Already filled, show status dashboard
-                document.getElementById('detailsForm').style.display = 'none';
-                document.getElementById('statusDashboard').style.display = 'block';
-                startStatusUpdates();
+              // Display escrow addresses with copy functionality
+              if (result.result.instructions && result.result.instructions.${party === 'ALICE' ? 'sideA' : 'sideB'}?.length > 0) {
+                const instructions = result.result.instructions.${party === 'ALICE' ? 'sideA' : 'sideB'};
+                let escrowHtml = '';
+                instructions.forEach((instr, index) => {
+                  const addressId = 'escrow-' + index;
+                  escrowHtml += '<div class="address-field">' +
+                    '<span id="' + addressId + '">' + instr.to + '</span>' +
+                    '<button class="copy-btn" onclick="copyAddress(\\'' + addressId + '\\')">📋 Copy</button>' +
+                    '<span id="' + addressId + '-success" class="success-message">✓ Copied!</span>' +
+                    '</div>' +
+                    '<small>Send ' + instr.amount + ' ' + instr.assetCode + ' to this address</small>';
+                });
+                document.getElementById('escrowContent').innerHTML = escrowHtml;
+                document.getElementById('escrowAddresses').style.display = 'block';
               }
+              
+              // Display full status
+              document.getElementById('statusContent').innerHTML = 
+                '<h4>Full Status:</h4><pre>' + JSON.stringify(result.result, null, 2) + '</pre>';
             }
-          } catch (error) {
-            console.error('Failed to check initial status:', error);
           }
-        }
-        
-        // Initialize on load
-        window.addEventListener('DOMContentLoaded', checkInitialStatus);
-        
-        // Cleanup on unload
-        window.addEventListener('beforeunload', () => {
-          if (refreshInterval) clearInterval(refreshInterval);
-          if (countdownInterval) clearInterval(countdownInterval);
-        });
-      </script>
-    </body>
-    </html>
-  `;
-}
+          
+          // Check initial status and if details already filled
+          async function checkInitialStatus() {
+            try {
+              const response = await fetch('/rpc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  method: 'otc.status',
+                  params: { dealId },
+                  id: 1
+                })
+              });
+              
+              const result = await response.json();
+              if (result.result) {
+                const status = result.result;
+                
+                // Check if this party has already filled details
+                const partyDetails = party === 'ALICE' ? status.aliceDetails : status.bobDetails;
+                const hasFilledDetails = partyDetails && partyDetails.paybackAddress && partyDetails.recipientAddress;
+                
+                if (hasFilledDetails) {
+                  // Already filled, show status dashboard and populate fields
+                  document.getElementById('payback').value = partyDetails.paybackAddress;
+                  document.getElementById('recipient').value = partyDetails.recipientAddress;
+                  if (partyDetails.email) {
+                    document.getElementById('email').value = partyDetails.email;
+                  }
+                  
+                  // Show status instead of form
+                  document.getElementById('detailsForm').style.display = 'none';
+                  document.getElementById('status').style.display = 'block';
+                  
+                  // Start regular status updates
+                  setInterval(updateStatus, 5000);
+                }
+                
+                // Update status display
+                updateStatus();
+              }
+            } catch (error) {
+              console.error('Failed to check initial status:', error);
+            }
+          }
+          
+          // Check on page load
+          window.addEventListener('DOMContentLoaded', checkInitialStatus);
+        </script>
+      </body>
+      </html>
+    `;
+  }
 
   start(port: number) {
     this.app.listen(port, () => {
