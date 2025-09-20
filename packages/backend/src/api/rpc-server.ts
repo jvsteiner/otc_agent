@@ -273,6 +273,12 @@ export class RpcServer {
       throw new Error('Deal not found');
     }
     
+    // CRUCIAL: Check if party details already exist and are locked
+    const existingDetails = params.party === 'ALICE' ? deal.aliceDetails : deal.bobDetails;
+    if (existingDetails && existingDetails.locked) {
+      throw new Error('Party details are already locked and cannot be changed. This is a security feature to prevent address tampering.');
+    }
+    
     // Validate addresses
     const sendChain = params.party === 'ALICE' ? deal.alice.chainId : deal.bob.chainId;
     const receiveChain = params.party === 'ALICE' ? deal.bob.chainId : deal.alice.chainId;
@@ -430,6 +436,10 @@ export class RpcServer {
         sideB: deal.sideBState || {},
       },
       events: deal.events,
+      aliceDetails: deal.aliceDetails,
+      bobDetails: deal.bobDetails,
+      alice: deal.alice,
+      bob: deal.bob,
     };
   }
 
@@ -2129,6 +2139,7 @@ export class RpcServer {
                 
               if (partyDetails && partyDetails.paybackAddress && partyDetails.recipientAddress) {
                 // Details are filled - show them in read-only mode
+                console.log('Loading saved addresses:', partyDetails);
                 document.getElementById('payback').value = partyDetails.paybackAddress;
                 document.getElementById('recipient').value = partyDetails.recipientAddress;
                 document.getElementById('payback').disabled = true;
