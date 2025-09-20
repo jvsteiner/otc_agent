@@ -27,7 +27,11 @@ export class EthereumPlugin implements ChainPlugin {
     
     // Default to PublicNode if no RPC URL provided
     const rpcUrl = cfg.rpcUrl || 'https://ethereum-rpc.publicnode.com';
-    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    
+    // Create provider with custom timeout settings
+    this.provider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+      staticNetwork: true // Skip network detection to avoid timeout
+    });
     
     // Initialize hot wallet if seed provided
     if (cfg.hotWalletSeed) {
@@ -44,13 +48,27 @@ export class EthereumPlugin implements ChainPlugin {
       }
     }
     
-    // Test connection
-    try {
-      await this.provider.getNetwork();
-      console.log(`Connected to ${this.chainId} network`);
-    } catch (error) {
-      console.error(`Failed to connect to ${this.chainId}:`, error);
-      throw error;
+    // Test connection with retry logic
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const network = await Promise.race([
+          this.provider.getNetwork(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Network detection timeout')), 5000))
+        ]);
+        console.log(`Connected to ${this.chainId} network`);
+        break;
+      } catch (error) {
+        retries--;
+        if (retries === 0) {
+          console.error(`Failed to connect to ${this.chainId} after 3 attempts:`, error);
+          // Don't throw - allow the plugin to initialize but log the warning
+          console.warn(`WARNING: ${this.chainId} plugin initialized but network connectivity may be limited`);
+        } else {
+          console.warn(`Failed to connect to ${this.chainId}, retrying... (${retries} attempts left)`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
     }
   }
 
