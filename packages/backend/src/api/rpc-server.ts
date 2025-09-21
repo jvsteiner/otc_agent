@@ -440,6 +440,7 @@ export class RpcServer {
     
     return {
       stage: deal.stage,
+      timeoutSeconds: deal.timeoutSeconds,
       expiresAt: deal.expiresAt,
       instructions,
       collection: {
@@ -1975,12 +1976,20 @@ export class RpcServer {
           if (dealData.expiresAt) {
             startCountdown(dealData.expiresAt);
           } else {
-            // Show informative message instead of --:--:--
+            // Show static total time when timer not started
             const countdownEl = document.getElementById('countdown');
             if (dealData.stage === 'CREATED') {
+              const totalSeconds = dealData.timeoutSeconds || 3600;
+              const hours = Math.floor(totalSeconds / 3600);
+              const minutes = Math.floor((totalSeconds % 3600) / 60);
+              const seconds = totalSeconds % 60;
+              
               countdownEl.className = 'countdown-timer';
-              countdownEl.textContent = '⏳ Timer not started';
-              countdownEl.title = 'Timer starts when both parties submit their addresses';
+              countdownEl.textContent = '⏱️ ' + 
+                String(hours).padStart(2, '0') + ':' + 
+                String(minutes).padStart(2, '0') + ':' + 
+                String(seconds).padStart(2, '0');
+              countdownEl.title = 'Total time available once collection phase begins';
             } else {
               countdownEl.className = 'countdown-timer';
               countdownEl.textContent = 'No deadline';
@@ -2038,38 +2047,76 @@ export class RpcServer {
           switch(dealData.stage) {
             case 'CREATED':
               if (!hasAliceDetails && !hasBobDetails) {
-                return '<strong>Deal initialized.</strong><br>Waiting for both parties to provide their wallet addresses.<br>Alice (Asset Seller) and Bob (Asset Buyer) need to submit their details.';
+                return '<strong>Deal initialized - Setup Phase</strong><br>' +
+                  '<br><strong>Current Status:</strong> Waiting for both parties to provide wallet addresses<br>' +
+                  '<br><strong>Next Steps:</strong><br>' +
+                  '1. Alice (Asset Seller) needs to submit Unicity wallet addresses<br>' +
+                  '2. Bob (Asset Buyer) needs to submit Polygon wallet addresses<br>' +
+                  '3. Once both submit, timer will start and collection phase begins<br>' +
+                  '4. Both parties will then deposit assets to their escrow addresses';
               } else if (hasAliceDetails && !hasBobDetails) {
-                return '<strong>Alice has submitted details.</strong><br>Waiting for <strong>Bob (Asset Buyer)</strong> to provide wallet addresses for Polygon chain.<br>Once Bob submits, the collection phase will begin with a 1-hour timer.';
+                return '<strong>Partially Ready - Waiting for Party B</strong><br>' +
+                  '<br><strong>Current Status:</strong><br>' +
+                  '✅ Alice (Party A) has submitted wallet addresses<br>' +
+                  '⏳ Waiting for Bob (Party B) to provide Polygon wallet addresses<br>' +
+                  '<br><strong>What happens next:</strong><br>' +
+                  '1. Bob needs to open their party link and submit details<br>' +
+                  '2. Once Bob submits, the 1-hour countdown timer will start<br>' +
+                  '3. Both parties must then deposit their assets:<br>' +
+                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ALPHA to Unicity escrow<br>' +
+                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' MATIC to Polygon escrow<br>' +
+                  '4. After both fully fund, automatic swap will execute';
               } else if (!hasAliceDetails && hasBobDetails) {
-                return '<strong>Bob has submitted details.</strong><br>Waiting for <strong>Alice (Asset Seller)</strong> to provide wallet addresses for Unicity chain.<br>Once Alice submits, the collection phase will begin with a 1-hour timer.';
+                return '<strong>Partially Ready - Waiting for Party A</strong><br>' +
+                  '<br><strong>Current Status:</strong><br>' +
+                  '✅ Bob (Party B) has submitted wallet addresses<br>' +
+                  '⏳ Waiting for Alice (Party A) to provide Unicity wallet addresses<br>' +
+                  '<br><strong>What happens next:</strong><br>' +
+                  '1. Alice needs to open their party link and submit details<br>' +
+                  '2. Once Alice submits, the 1-hour countdown timer will start<br>' +
+                  '3. Both parties must then deposit their assets:<br>' +
+                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ALPHA to Unicity escrow<br>' +
+                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' MATIC to Polygon escrow<br>' +
+                  '4. After both fully fund, automatic swap will execute';
               }
-              return '<strong>Both parties ready.</strong><br>Transitioning to collection phase...';
+              return '<strong>Both parties ready!</strong><br>Transitioning to collection phase...';
               
             case 'COLLECTION':
               const alicePercent = Math.min(100, (aliceCollected / aliceExpected) * 100).toFixed(1);
               const bobPercent = Math.min(100, (bobCollected / bobExpected) * 100).toFixed(1);
               
               if (aliceCollected < aliceExpected && bobCollected < bobExpected) {
-                return '<strong>Collection phase active.</strong><br>' +
-                  'Both parties need to deposit assets to their escrow addresses:<br>' +
-                  '• Alice: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ALPHA (' + alicePercent + '%)<br>' +
-                  '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%)<br>' +
-                  'Timer is running - complete deposits before expiry!';
+                return '<strong>Collection Phase Active - Both Parties Need to Deposit</strong><br>' +
+                  '<br><strong>Current Funding Status:</strong><br>' +
+                  '• Alice: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ALPHA (' + alicePercent + '%) on Unicity<br>' +
+                  '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%) on Polygon<br>' +
+                  '<br><strong>⚠️ Action Required:</strong><br>' +
+                  'Both parties must deposit their full amounts to escrow addresses<br>' +
+                  'Timer is running - complete deposits before expiry!<br>' +
+                  '<br><strong>What happens after funding:</strong><br>' +
+                  'Once both parties reach 100%, automatic cross-chain swap executes';
               } else if (aliceCollected >= aliceExpected && bobCollected < bobExpected) {
-                return '<strong>Alice fully funded!</strong><br>' +
-                  'Waiting for Bob to deposit remaining MATIC:<br>' +
-                  '• Bob needs: ' + (bobExpected - bobCollected).toFixed(4) + ' more MATIC<br>' +
-                  'Once both parties are fully funded, assets will be automatically swapped.';
+                return '<strong>Waiting for Bob - Alice Fully Funded!</strong><br>' +
+                  '<br><strong>Current Status:</strong><br>' +
+                  '✅ Alice has deposited ' + aliceExpected.toFixed(4) + ' ALPHA (100%)<br>' +
+                  '⏳ Bob has deposited ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%)<br>' +
+                  '<br><strong>Bob needs to deposit:</strong> ' + (bobExpected - bobCollected).toFixed(4) + ' more MATIC<br>' +
+                  '<br>Once Bob completes funding, the swap will execute automatically';
               } else if (aliceCollected < aliceExpected && bobCollected >= bobExpected) {
-                return '<strong>Bob fully funded!</strong><br>' +
-                  'Waiting for Alice to deposit remaining ALPHA:<br>' +
-                  '• Alice needs: ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ALPHA<br>' +
-                  'Once both parties are fully funded, assets will be automatically swapped.';
+                return '<strong>Waiting for Alice - Bob Fully Funded!</strong><br>' +
+                  '<br><strong>Current Status:</strong><br>' +
+                  '⏳ Alice has deposited ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ALPHA (' + alicePercent + '%)<br>' +
+                  '✅ Bob has deposited ' + bobExpected.toFixed(4) + ' MATIC (100%)<br>' +
+                  '<br><strong>Alice needs to deposit:</strong> ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ALPHA<br>' +
+                  '<br>Once Alice completes funding, the swap will execute automatically';
               } else {
-                return '<strong>Both parties fully funded!</strong><br>' +
-                  'Preparing automatic asset swap...<br>' +
-                  'Assets will be transferred to recipient addresses shortly.';
+                return '<strong>🎉 Both Parties Fully Funded!</strong><br>' +
+                  '<br><strong>Status:</strong> Preparing cross-chain atomic swap<br>' +
+                  '<br><strong>Next Steps:</strong><br>' +
+                  '1. Engine verifying all deposits<br>' +
+                  '2. Creating transfer transactions<br>' +
+                  '3. Executing atomic swap<br>' +
+                  '4. Assets will be sent to recipient addresses';
               }
               
             case 'WAITING':
