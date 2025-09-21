@@ -1308,6 +1308,20 @@ export class RpcServer {
           letter-spacing: 1px;
         }
         
+        .stage-details {
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.8);
+          margin-top: 8px;
+          line-height: 1.4;
+          text-align: center;
+          padding: 0 10px;
+        }
+        
+        .stage-details strong {
+          color: #fff;
+          font-weight: 600;
+        }
+        
         .stage-created { background: rgba(255,255,255,0.2); }
         .stage-collection { background: rgba(255,193,7,0.3); color: #fff3cd; }
         .stage-waiting { background: rgba(33,150,243,0.3); color: #bbdefb; }
@@ -1740,6 +1754,9 @@ export class RpcServer {
             <div id="countdown" class="countdown-timer">--:--:--</div>
           </div>
           
+          <!-- Detailed Status Explanation -->
+          <div id="stageDetails" class="stage-details"></div>
+          
           <!-- Balance Cards -->
           <div class="balance-grid">
             <div class="balance-card your-balance">
@@ -1942,9 +1959,16 @@ export class RpcServer {
           
           // Update stage
           const stageEl = document.getElementById('dealStage');
+          const detailsEl = document.getElementById('stageDetails');
+          
           if (stageEl) {
             stageEl.textContent = dealData.stage;
             stageEl.className = 'stage-badge stage-' + dealData.stage.toLowerCase();
+          }
+          
+          // Update detailed status explanation
+          if (detailsEl) {
+            detailsEl.innerHTML = getDetailedStatus();
           }
           
           // Update countdown
@@ -1955,7 +1979,7 @@ export class RpcServer {
             const countdownEl = document.getElementById('countdown');
             if (dealData.stage === 'CREATED') {
               countdownEl.className = 'countdown-timer';
-              countdownEl.textContent = '⏳ Waiting for both parties';
+              countdownEl.textContent = '⏳ Timer not started';
               countdownEl.title = 'Timer starts when both parties submit their addresses';
             } else {
               countdownEl.className = 'countdown-timer';
@@ -1997,6 +2021,76 @@ export class RpcServer {
             document.getElementById('cancelSection').style.display = 'block';
           } else {
             document.getElementById('cancelSection').style.display = 'none';
+          }
+        }
+        
+        // Get detailed status explanation
+        function getDetailedStatus() {
+          const hasAliceDetails = dealData.aliceDetails && dealData.aliceDetails.paybackAddress;
+          const hasBobDetails = dealData.bobDetails && dealData.bobDetails.paybackAddress;
+          const aliceDeposits = dealData.collection?.sideA?.deposits?.length || 0;
+          const bobDeposits = dealData.collection?.sideB?.deposits?.length || 0;
+          const aliceCollected = Object.values(dealData.collection?.sideA?.collectedByAsset || {}).reduce((sum, val) => sum + parseFloat(val), 0);
+          const bobCollected = Object.values(dealData.collection?.sideB?.collectedByAsset || {}).reduce((sum, val) => sum + parseFloat(val), 0);
+          const aliceExpected = parseFloat(dealData.alice.amount);
+          const bobExpected = parseFloat(dealData.bob.amount);
+          
+          switch(dealData.stage) {
+            case 'CREATED':
+              if (!hasAliceDetails && !hasBobDetails) {
+                return '<strong>Deal initialized.</strong><br>Waiting for both parties to provide their wallet addresses.<br>Alice (Asset Seller) and Bob (Asset Buyer) need to submit their details.';
+              } else if (hasAliceDetails && !hasBobDetails) {
+                return '<strong>Alice has submitted details.</strong><br>Waiting for <strong>Bob (Asset Buyer)</strong> to provide wallet addresses for Polygon chain.<br>Once Bob submits, the collection phase will begin with a 1-hour timer.';
+              } else if (!hasAliceDetails && hasBobDetails) {
+                return '<strong>Bob has submitted details.</strong><br>Waiting for <strong>Alice (Asset Seller)</strong> to provide wallet addresses for Unicity chain.<br>Once Alice submits, the collection phase will begin with a 1-hour timer.';
+              }
+              return '<strong>Both parties ready.</strong><br>Transitioning to collection phase...';
+              
+            case 'COLLECTION':
+              const alicePercent = Math.min(100, (aliceCollected / aliceExpected) * 100).toFixed(1);
+              const bobPercent = Math.min(100, (bobCollected / bobExpected) * 100).toFixed(1);
+              
+              if (aliceCollected < aliceExpected && bobCollected < bobExpected) {
+                return '<strong>Collection phase active.</strong><br>' +
+                  'Both parties need to deposit assets to their escrow addresses:<br>' +
+                  '• Alice: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ALPHA (' + alicePercent + '%)<br>' +
+                  '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%)<br>' +
+                  'Timer is running - complete deposits before expiry!';
+              } else if (aliceCollected >= aliceExpected && bobCollected < bobExpected) {
+                return '<strong>Alice fully funded!</strong><br>' +
+                  'Waiting for Bob to deposit remaining MATIC:<br>' +
+                  '• Bob needs: ' + (bobExpected - bobCollected).toFixed(4) + ' more MATIC<br>' +
+                  'Once both parties are fully funded, assets will be automatically swapped.';
+              } else if (aliceCollected < aliceExpected && bobCollected >= bobExpected) {
+                return '<strong>Bob fully funded!</strong><br>' +
+                  'Waiting for Alice to deposit remaining ALPHA:<br>' +
+                  '• Alice needs: ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ALPHA<br>' +
+                  'Once both parties are fully funded, assets will be automatically swapped.';
+              } else {
+                return '<strong>Both parties fully funded!</strong><br>' +
+                  'Preparing automatic asset swap...<br>' +
+                  'Assets will be transferred to recipient addresses shortly.';
+              }
+              
+            case 'WAITING':
+              return '<strong>Processing swap...</strong><br>' +
+                'The engine is executing the cross-chain swap.<br>' +
+                'Assets are being transferred to recipient addresses.<br>' +
+                'This may take a few minutes for confirmations.';
+              
+            case 'CLOSED':
+              return '<strong>Deal completed successfully!</strong><br>' +
+                'All assets have been swapped and delivered.<br>' +
+                'Alice received ' + bobExpected.toFixed(4) + ' MATIC on Polygon.<br>' +
+                'Bob received ' + aliceExpected.toFixed(4) + ' ALPHA on Unicity.';
+              
+            case 'REVERTED':
+              return '<strong>Deal cancelled/expired.</strong><br>' +
+                'Any deposited assets have been returned to payback addresses.<br>' +
+                'You can create a new deal if needed.';
+              
+            default:
+              return '<strong>Status: ' + dealData.stage + '</strong>';
           }
         }
         
