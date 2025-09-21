@@ -135,7 +135,10 @@ export class EthereumPlugin implements ChainPlugin {
       const currentBlock = await this.provider.getBlockNumber();
       
       // For native currency, check balance
-      if (asset === 'ETH' || asset === 'MATIC') {
+      // Support both simple and fully qualified asset names
+      const isNative = asset === 'ETH' || asset === 'ETH@ETH' || 
+                      asset === 'MATIC' || asset === 'MATIC@POLYGON';
+      if (isNative) {
         const balance = await this.provider.getBalance(address);
         if (balance > 0n) {
           deposits.push({

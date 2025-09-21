@@ -8,7 +8,9 @@ export type AssetCode =
   | 'ALPHA' // native Alpha on Unicity (without chain suffix)
   | 'ALPHA@UNICITY' // alias to native Alpha on Unicity
   | 'ALPHA@ETH'
-  | 'ETH' | 'MATIC' | 'SOL' | 'USDT' | 'USDC' | 'BTC'
+  | 'ETH' | 'ETH@ETH' // native ETH on Ethereum
+  | 'MATIC' | 'MATIC@POLYGON' // native MATIC on Polygon
+  | 'SOL' | 'USDT' | 'USDC' | 'BTC'
   | `ERC20:${string}` // 0x… address
   | `SPL:${string}`
   | `CUSTOM:${string}`;
