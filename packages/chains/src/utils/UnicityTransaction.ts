@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as secp256k1 from 'secp256k1';
 import { bech32 } from 'bech32';
 
-interface UTXO {
+export interface UTXO {
   tx_hash: string;
   tx_pos: number;
   value: number; // in satoshis
@@ -137,13 +137,15 @@ export function buildAndSignSegWitTransaction(
   // Calculate change
   const change = totalInput - totalOutput - fee;
   
-  if (change < 0) {
+  // If changeAddress is empty, we're sending all funds (minus fees already calculated)
+  // In this case, we don't check for insufficient funds as fees are already deducted
+  if (changeAddress && change < 0) {
     throw new Error('Insufficient funds: total input less than output + fees');
   }
   
-  // Add change output if significant (more than dust threshold)
+  // Add change output if significant (more than dust threshold) and changeAddress provided
   const dustThreshold = 546; // satoshis
-  if (change > dustThreshold) {
+  if (changeAddress && change > dustThreshold) {
     outputs.push({
       address: changeAddress,
       value: change

@@ -3,7 +3,7 @@ import * as crypto from 'crypto';
 import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx } from './ChainPlugin';
 import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts } from '@otc-broker/core';
 import { generateDeterministicKey, deriveChildPrivateKey, privateKeyToAddress } from './utils/UnicityAddress';
-import { buildAndSignSegWitTransaction, selectUTXOs } from './utils/UnicityTransaction';
+import { buildAndSignSegWitTransaction, selectUTXOs, UTXO } from './utils/UnicityTransaction';
 
 interface ElectrumRequest {
   id: number;
@@ -310,6 +310,9 @@ export class UnicityPlugin implements ChainPlugin {
     to: string,
     amount: string
   ): Promise<SubmittedTx> {
+    // For UNICITY, when we need to send the total amount from multiple UTXOs,
+    // we need to create multiple transactions (one per UTXO)
+    // This method will handle the first transaction and queue the rest
     // Accept both ALPHA and ALPHA@UNICITY formats
     if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
@@ -348,40 +351,143 @@ export class UnicityPlugin implements ChainPlugin {
     // Convert amount to satoshis
     const amountSatoshis = Math.floor(parseFloat(amount) * 100000000);
     
-    // Select UTXOs and calculate fee
-    const feeRate = 1; // 1 satoshi per byte
-    const { selectedUtxos, totalValue, estimatedFee } = selectUTXOs(utxos, amountSatoshis, feeRate);
+    // Check if we're trying to send the entire balance (for escrow returns)
+    const totalAvailable = utxos.reduce((sum: number, utxo: UTXO) => sum + utxo.value, 0);
+    const totalAvailableAlpha = totalAvailable / 100000000;
     
-    console.log(`Sending ${amount} ALPHA (${amountSatoshis} satoshis) from ${from.address} to ${to}`);
-    console.log(`Selected ${selectedUtxos.length} UTXOs with total value ${totalValue} satoshis`);
-    console.log(`Estimated fee: ${estimatedFee} satoshis`);
+    // For UNICITY: each transaction can only use ONE input UTXO
+    // If we need to send from multiple UTXOs, we need multiple transactions
     
-    // Build and sign the transaction
-    const { hex: rawTx, txid } = buildAndSignSegWitTransaction(
-      selectedUtxos,
-      [{ address: to, value: amountSatoshis }],
-      walletInfo.privateKey,
-      from.address, // use same address for change
-      feeRate
-    );
-    
-    console.log(`Built transaction ${txid}, broadcasting...`);
-    
-    // Broadcast transaction
-    const broadcastResult = await this.electrumRequest('blockchain.transaction.broadcast', [rawTx]);
-    
-    // Electrum returns the txid on success, or throws on error
-    if (broadcastResult !== txid) {
-      console.warn(`Broadcast returned different txid: expected ${txid}, got ${broadcastResult}`);
+    if (Math.abs(totalAvailableAlpha - parseFloat(amount)) < 0.000001) {
+      // We're trying to send ALL funds from ALL UTXOs
+      // We'll need to create multiple transactions, one per UTXO
+      console.log(`[UNICITY] Sending entire balance from ${utxos.length} UTXOs requires ${utxos.length} transactions`);
+      
+      if (utxos.length === 0) {
+        throw new Error('No UTXOs available to send');
+      }
+      
+      // Process UTXOs one by one, sending each to the recipient
+      let totalSent = 0;
+      const txids: string[] = [];
+      
+      for (let i = 0; i < utxos.length; i++) {
+        const utxo = utxos[i];
+        console.log(`[UNICITY] Processing UTXO ${i + 1}/${utxos.length}: ${utxo.value} satoshis`);
+        
+        // Calculate fee for this single-input transaction
+        const feeRate = 1; // 1 satoshi per byte
+        const baseSize = 10 + 34; // overhead + 1 output (no change since we're sending all)
+        const inputSize = 148;
+        const estimatedSize = baseSize + inputSize;
+        const fee = Math.ceil(estimatedSize * feeRate);
+        
+        // Amount to send from this UTXO (minus fee)
+        const sendAmount = utxo.value - fee;
+        
+        if (sendAmount <= 0) {
+          console.log(`[UNICITY] Skipping dust UTXO ${utxo.tx_hash}:${utxo.tx_pos} (value ${utxo.value} <= fee ${fee})`);
+          continue;
+        }
+        
+        console.log(`[UNICITY] Sending ${sendAmount / 100000000} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
+        
+        // Build and sign transaction for this single UTXO
+        const { hex: rawTx, txid } = buildAndSignSegWitTransaction(
+          [utxo],
+          [{ address: to, value: sendAmount }],
+          walletInfo.privateKey,
+          '', // No change output - sending entire UTXO minus fee
+          feeRate
+        );
+        
+        console.log(`[UNICITY] Broadcasting transaction ${txid}...`);
+        
+        // Broadcast transaction
+        try {
+          const broadcastResult = await this.electrumRequest('blockchain.transaction.broadcast', [rawTx]);
+          
+          if (broadcastResult !== txid) {
+            console.warn(`Broadcast returned different txid: expected ${txid}, got ${broadcastResult}`);
+          }
+          
+          console.log(`[UNICITY] Transaction ${txid} broadcast successfully`);
+          txids.push(txid);
+          totalSent += sendAmount;
+        } catch (error) {
+          console.error(`[UNICITY] Failed to broadcast transaction ${i + 1}:`, error);
+          // Continue with remaining UTXOs even if one fails
+        }
+      }
+      
+      if (txids.length === 0) {
+        throw new Error('Failed to send any transactions');
+      }
+      
+      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${totalSent / 100000000} ALPHA`);
+      
+      // Return the first transaction ID (we can't return all of them in current interface)
+      return {
+        txid: txids[0],
+        submittedAt: new Date().toISOString(),
+        nonceOrInputs: JSON.stringify(txids), // Store all txids in nonceOrInputs field
+      };
+      
+    } else {
+      // Normal send - find a single UTXO that can cover the amount
+      const feeRate = 1; // 1 satoshi per byte
+      
+      // Find the smallest UTXO that can cover amount + fees
+      let selectedUtxo = null;
+      let estimatedFee = 0;
+      
+      for (const utxo of utxos.sort((a: UTXO, b: UTXO) => a.value - b.value)) {
+        const baseSize = 10 + 34 + 34; // overhead + 1 output + 1 change output
+        const inputSize = 148;
+        const estimatedSize = baseSize + inputSize;
+        estimatedFee = Math.ceil(estimatedSize * feeRate);
+        
+        if (utxo.value >= amountSatoshis + estimatedFee) {
+          selectedUtxo = utxo;
+          break;
+        }
+      }
+      
+      if (!selectedUtxo) {
+        throw new Error(`No single UTXO large enough to cover ${amount} ALPHA plus fees`);
+      }
+      
+      console.log(`[UNICITY] Sending ${amount} ALPHA using single UTXO`);
+      console.log(`Selected UTXO with value ${selectedUtxo.value} satoshis`);
+      console.log(`Estimated fee: ${estimatedFee} satoshis`);
+      
+      // Build and sign transaction
+      const { hex: rawTx, txid } = buildAndSignSegWitTransaction(
+        [selectedUtxo],
+        [{ address: to, value: amountSatoshis }],
+        walletInfo.privateKey,
+        from.address, // Send change back to same address
+        feeRate
+      );
+      
+      console.log(`Built transaction ${txid}, broadcasting...`);
+      
+      // Broadcast transaction
+      const broadcastResult = await this.electrumRequest('blockchain.transaction.broadcast', [rawTx]);
+      
+      // Electrum returns the txid on success, or throws on error
+      if (broadcastResult !== txid) {
+        console.warn(`Broadcast returned different txid: expected ${txid}, got ${broadcastResult}`);
+      }
+      
+      console.log(`Transaction ${txid} broadcast successfully`);
+      
+      return {
+        txid,
+        submittedAt: new Date().toISOString(),
+        nonceOrInputs: JSON.stringify([`${selectedUtxo.tx_hash}:${selectedUtxo.tx_pos}`]),
+      };
     }
-    
-    console.log(`Transaction ${txid} broadcast successfully`);
-    
-    return {
-      txid,
-      submittedAt: new Date().toISOString(),
-      nonceOrInputs: JSON.stringify(selectedUtxos.map(u => `${u.tx_hash}:${u.tx_pos}`)),
-    };
   }
 
 

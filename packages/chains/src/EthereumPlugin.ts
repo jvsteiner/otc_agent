@@ -241,12 +241,31 @@ export class EthereumPlugin implements ChainPlugin {
         const nonce = await this.provider.getTransactionCount(wallet.address);
         const gasPrice = await this.provider.getFeeData();
         
+        // Calculate gas cost for the transaction
+        const gasLimit = 21000n; // Standard ETH transfer gas limit
+        const gasCost = gasLimit * (gasPrice.gasPrice || 0n);
+        
+        // Check if we have enough balance including gas
+        // Use from.address (escrow address) not wallet.address (derived address)
+        const balance = await this.provider.getBalance(from.address);
+        
+        let finalValue = value;
+        if (balance < value + gasCost) {
+          // If we don't have enough for value + gas, deduct gas from value
+          // This is useful for escrow returns where we want to send everything
+          finalValue = value - gasCost;
+          if (finalValue <= 0n) {
+            throw new Error(`Insufficient balance: gas cost ${ethers.formatEther(gasCost)} exceeds available amount ${amount}`);
+          }
+          console.log(`Deducting gas cost ${ethers.formatEther(gasCost)} from transfer amount ${amount}`);
+        }
+        
         tx = await wallet.sendTransaction({
           to: to,
-          value: value,
+          value: finalValue,
           nonce: nonce,
           gasPrice: gasPrice.gasPrice,
-          gasLimit: 21000, // Standard ETH transfer gas limit
+          gasLimit: gasLimit, // Standard ETH transfer gas limit
         });
       } else if (asset.startsWith('ERC20:')) {
         // ERC20 token transfer
