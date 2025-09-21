@@ -1,6 +1,6 @@
 import express from 'express';
 import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, getAssetRegistry, formatAssetCode, parseAssetCode } from '@otc-broker/core';
-import { DealRepository } from '../db/repositories';
+import { DealRepository, QueueRepository } from '../db/repositories';
 import { DB } from '../db/database';
 import { PluginManager } from '@otc-broker/chains';
 import * as crypto from 'crypto';
@@ -41,6 +41,7 @@ interface SendInviteParams {
 export class RpcServer {
   private app: express.Application;
   private dealRepo: DealRepository;
+  private queueRepo: QueueRepository;
   private pluginManager: PluginManager;
   private emailService: EmailService;
 
@@ -48,6 +49,7 @@ export class RpcServer {
     this.app = express();
     this.app.use(express.json());
     this.dealRepo = new DealRepository(db);
+    this.queueRepo = new QueueRepository(db);
     this.pluginManager = pluginManager;
     this.emailService = new EmailService(db);
     
@@ -388,6 +390,9 @@ export class RpcServer {
       throw new Error('Deal not found');
     }
     
+    // Get all queue items (transactions) for this deal
+    const queueItems = this.queueRepo.getByDeal(params.dealId);
+    
     // Build instructions
     const instructions = {
       sideA: [] as any[],
@@ -452,6 +457,9 @@ export class RpcServer {
       bobDetails: deal.bobDetails,
       alice: deal.alice,
       bob: deal.bob,
+      escrowA: deal.escrowA,
+      escrowB: deal.escrowB,
+      transactions: queueItems,
     };
   }
 
@@ -1599,6 +1607,25 @@ export class RpcServer {
           color: #991b1b;
         }
         
+        .tx-purpose {
+          font-size: 12px;
+          color: #6b7280;
+          margin: 2px 0;
+        }
+        
+        .tx-escrow {
+          font-size: 11px;
+          color: #9ca3af;
+          font-style: italic;
+        }
+        
+        .tx-recipient {
+          font-size: 11px;
+          color: #6b7280;
+          margin-top: 2px;
+          font-family: 'Courier New', monospace;
+        }
+        
         /* Empty State */
         .empty-state {
           text-align: center;
@@ -2224,8 +2251,13 @@ export class RpcServer {
           const listEl = document.getElementById('transactionList');
           const transactions = [];
           
-          // Add deposits from collection
+          // Add deposits from collection for both sides
           const yourSide = party === 'ALICE' ? 'sideA' : 'sideB';
+          const theirSide = party === 'ALICE' ? 'sideB' : 'sideA';
+          const yourEscrow = party === 'ALICE' ? dealData?.escrowA : dealData?.escrowB;
+          const theirEscrow = party === 'ALICE' ? dealData?.escrowB : dealData?.escrowA;
+          
+          // Your deposits
           if (dealData?.collection?.[yourSide]?.deposits) {
             dealData.collection[yourSide].deposits.forEach(dep => {
               transactions.push({
@@ -2234,22 +2266,53 @@ export class RpcServer {
                 amount: dep.amount,
                 asset: dep.asset,
                 confirmations: dep.confirms,
+                escrow: 'Your escrow',
                 time: dep.blockTime || new Date().toISOString()
               });
             });
           }
           
-          // Add outgoing transactions
-          if (dealData?.outQueue) {
-            dealData.outQueue.forEach(item => {
-              if (item.from?.address === dealData.instructions?.[yourSide]?.[0]?.to) {
+          // Their deposits
+          if (dealData?.collection?.[theirSide]?.deposits) {
+            dealData.collection[theirSide].deposits.forEach(dep => {
+              transactions.push({
+                type: 'in',
+                txid: dep.txid,
+                amount: dep.amount,
+                asset: dep.asset,
+                confirmations: dep.confirms,
+                escrow: 'Their escrow',
+                time: dep.blockTime || new Date().toISOString()
+              });
+            });
+          }
+          
+          // Add queue transactions from transactions array
+          if (dealData?.transactions) {
+            dealData.transactions.forEach(item => {
+              const isFromYourEscrow = yourEscrow && item.from?.address === yourEscrow.address;
+              const isFromTheirEscrow = theirEscrow && item.from?.address === theirEscrow.address;
+              
+              if (isFromYourEscrow || isFromTheirEscrow) {
+                const purposeLabels = {
+                  'SWAP_PAYOUT': '💱 Swap',
+                  'OP_COMMISSION': '💰 Commission',
+                  'TIMEOUT_REFUND': '↩️ Refund',
+                  'SURPLUS_REFUND': '💵 Surplus Return'
+                };
+                
                 transactions.push({
                   type: 'out',
                   txid: item.submittedTx?.txid,
                   amount: item.amount,
                   asset: item.asset,
                   to: item.to,
-                  status: item.submittedTx?.status,
+                  status: item.status,
+                  submittedStatus: item.submittedTx?.status,
+                  confirms: item.submittedTx?.confirms || 0,
+                  requiredConfirms: item.submittedTx?.requiredConfirms || 0,
+                  purpose: purposeLabels[item.purpose] || item.purpose,
+                  escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
                   time: item.createdAt
                 });
               }
@@ -2300,17 +2363,50 @@ export class RpcServer {
             } else {
               const typeIcon = tx.type === 'in' ? '⬇️' : '⬆️';
               const typeClass = tx.type === 'in' ? 'tx-in' : 'tx-out';
-              const statusClass = tx.status === 'CONFIRMED' ? 'confirmed' : tx.status === 'DROPPED' ? 'failed' : 'pending';
-              const statusText = tx.status || (tx.confirmations > 0 ? 'CONFIRMED' : 'PENDING');
+              
+              // Determine status based on transaction type and status fields
+              let statusClass = 'pending';
+              let statusText = 'PENDING';
+              
+              if (tx.type === 'in') {
+                // For deposits, use confirmations
+                statusText = tx.confirmations > 0 ? \`\${tx.confirmations} conf\` : 'PENDING';
+                statusClass = tx.confirmations >= 6 ? 'confirmed' : 'pending';
+              } else {
+                // For outgoing transactions, use status field
+                if (tx.status === 'COMPLETED') {
+                  statusClass = 'confirmed';
+                  statusText = 'COMPLETED';
+                } else if (tx.status === 'SUBMITTED') {
+                  statusClass = 'pending';
+                  if (tx.confirms !== undefined && tx.requiredConfirms) {
+                    statusText = \`\${tx.confirms}/\${tx.requiredConfirms} conf\`;
+                  } else {
+                    statusText = 'SUBMITTED';
+                  }
+                } else if (tx.submittedStatus === 'DROPPED' || tx.submittedStatus === 'FAILED') {
+                  statusClass = 'failed';
+                  statusText = 'FAILED';
+                } else {
+                  statusClass = 'pending';
+                  statusText = tx.status || 'PENDING';
+                }
+              }
+              
+              const purposeStr = tx.purpose ? \`<div class="tx-purpose">\${tx.purpose}</div>\` : '';
+              const escrowStr = tx.escrow ? \`<div class="tx-escrow">\${tx.escrow}</div>\` : '';
               
               return \`
                 <div class="transaction-item">
                   <div class="tx-info">
                     <div class="tx-type \${typeClass}">
                       <span>\${typeIcon}</span>
-                      <span>\${tx.type === 'in' ? 'Received' : 'Sent'}</span>
+                      <span>\${tx.type === 'in' ? 'Deposit' : 'Transfer'}</span>
                     </div>
-                    \${tx.txid ? '<div class="tx-hash">TxID: <a href="#" onclick="alert(\\'' + tx.txid + '\\'); return false;">' + tx.txid.substr(0, 10) + '...</a></div>' : ''}
+                    \${purposeStr}
+                    \${escrowStr}
+                    \${tx.txid ? '<div class="tx-hash">TxID: <a href="#" onclick="alert(\\'Full TX ID:\\n' + tx.txid + '\\'); return false;" title="' + tx.txid + '">' + tx.txid.substr(0, 10) + '...</a></div>' : ''}
+                    \${tx.to && tx.type === 'out' ? '<div class="tx-recipient">To: ' + tx.to.substr(0, 10) + '...</div>' : ''}
                   </div>
                   <div class="tx-details">
                     <div class="tx-amount">\${tx.amount} \${tx.asset}</div>
