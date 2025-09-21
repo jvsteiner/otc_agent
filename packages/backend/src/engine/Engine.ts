@@ -127,18 +127,12 @@ export class Engine {
       // Check if all queues are complete
       const pendingCount = this.queueRepo.getPendingCount(deal.id);
       if (pendingCount === 0) {
-        console.log(`Deal ${deal.id} all transfers complete, processing escrow returns...`);
-        
-        // Before closing, check for remaining balances and return them
-        await this.queueEscrowReturns(deal);
-        
-        // Check again if there are new pending items after queuing returns
-        const newPendingCount = this.queueRepo.getPendingCount(deal.id);
-        if (newPendingCount === 0) {
-          console.log(`Deal ${deal.id} closing...`);
-          this.dealRepo.updateStage(deal.id, 'CLOSED');
-        }
+        console.log(`Deal ${deal.id} all transfers complete, closing...`);
+        this.dealRepo.updateStage(deal.id, 'CLOSED');
       }
+    } else if (deal.stage === 'CLOSED') {
+      // Continuously monitor escrows for any funds and return them immediately
+      await this.monitorAndReturnEscrowFunds(deal);
     }
   }
 
@@ -485,15 +479,17 @@ export class Engine {
     }
   }
 
-  private async queueEscrowReturns(deal: Deal) {
-    console.log(`Checking for remaining escrow balances for deal ${deal.id}`);
+  private async monitorAndReturnEscrowFunds(deal: Deal) {
+    // Continuously monitor and return any funds found in escrows
+    // This runs even after deal is CLOSED to handle mistaken payments
     
-    // Check Alice's escrow for remaining balances
+    // Check Alice's escrow for any balances
     if (deal.escrowA && deal.aliceDetails) {
       const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
       const escrowAddress = await plugin.getManagedAddress(deal.escrowA);
       
-      // Get the asset for Alice's side
+      // Check for ANY asset balance (not just the deal asset)
+      // First check the primary asset
       const aliceAsset = deal.alice.asset;
       const deposits = await plugin.listConfirmedDeposits(
         aliceAsset,
@@ -503,26 +499,67 @@ export class Engine {
       
       const remainingBalance = parseFloat(deposits.totalConfirmed);
       if (remainingBalance > 0.000001) { // Small threshold to avoid dust
-        console.log(`Found ${remainingBalance} ${aliceAsset} remaining in Alice's escrow`);
-        this.queueRepo.enqueue({
-          dealId: deal.id,
-          chainId: deal.alice.chainId,
-          from: deal.escrowA,
-          to: deal.aliceDetails.paybackAddress,
-          asset: aliceAsset,
-          amount: deposits.totalConfirmed,
-          purpose: 'SWAP_PAYOUT', // Use existing purpose type for returns
-        });
-        this.dealRepo.addEvent(deal.id, `Queued return of ${deposits.totalConfirmed} ${aliceAsset} from Alice's escrow`);
+        // Check if we already have a pending return for this escrow
+        const pendingCount = this.queueRepo.getPendingCount(deal.id);
+        const existingQueues = this.queueRepo.getByDeal(deal.id)
+          .filter(q => q.from.address === escrowAddress && 
+                      q.asset === aliceAsset &&
+                      Math.abs(parseFloat(q.amount) - remainingBalance) < 0.000001);
+        
+        if (existingQueues.length === 0) {
+          console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${aliceAsset} in Alice's escrow ${escrowAddress}`);
+          this.queueRepo.enqueue({
+            dealId: deal.id,
+            chainId: deal.alice.chainId,
+            from: deal.escrowA,
+            to: deal.aliceDetails.paybackAddress,
+            asset: aliceAsset,
+            amount: deposits.totalConfirmed,
+            purpose: 'TIMEOUT_REFUND', // Use TIMEOUT_REFUND for post-deal returns
+          });
+          this.dealRepo.addEvent(deal.id, `Auto-returning ${deposits.totalConfirmed} ${aliceAsset} from Alice's escrow`);
+        }
+      }
+      
+      // Also check for native currency if the deal asset wasn't native
+      const nativeAsset = getNativeAsset(deal.alice.chainId);
+      if (aliceAsset !== nativeAsset) {
+        const nativeDeposits = await plugin.listConfirmedDeposits(
+          nativeAsset,
+          escrowAddress,
+          1
+        );
+        
+        const nativeBalance = parseFloat(nativeDeposits.totalConfirmed);
+        if (nativeBalance > 0.000001) {
+          const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
+            .filter(q => q.from.address === escrowAddress && 
+                        q.asset === nativeAsset &&
+                        Math.abs(parseFloat(q.amount) - nativeBalance) < 0.000001);
+          
+          if (existingNativeQueues.length === 0) {
+            console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Alice's escrow ${escrowAddress}`);
+            this.queueRepo.enqueue({
+              dealId: deal.id,
+              chainId: deal.alice.chainId,
+              from: deal.escrowA,
+              to: deal.aliceDetails.paybackAddress,
+              asset: nativeAsset,
+              amount: nativeDeposits.totalConfirmed,
+              purpose: 'TIMEOUT_REFUND',
+            });
+            this.dealRepo.addEvent(deal.id, `Auto-returning ${nativeDeposits.totalConfirmed} ${nativeAsset} from Alice's escrow`);
+          }
+        }
       }
     }
     
-    // Check Bob's escrow for remaining balances
+    // Check Bob's escrow for any balances
     if (deal.escrowB && deal.bobDetails) {
       const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
       const escrowAddress = await plugin.getManagedAddress(deal.escrowB);
       
-      // Get the asset for Bob's side
+      // Check for the primary asset
       const bobAsset = deal.bob.asset;
       const deposits = await plugin.listConfirmedDeposits(
         bobAsset,
@@ -532,18 +569,61 @@ export class Engine {
       
       const remainingBalance = parseFloat(deposits.totalConfirmed);
       if (remainingBalance > 0.000001) { // Small threshold to avoid dust
-        console.log(`Found ${remainingBalance} ${bobAsset} remaining in Bob's escrow`);
-        this.queueRepo.enqueue({
-          dealId: deal.id,
-          chainId: deal.bob.chainId,
-          from: deal.escrowB,
-          to: deal.bobDetails.paybackAddress,
-          asset: bobAsset,
-          amount: deposits.totalConfirmed,
-          purpose: 'SWAP_PAYOUT', // Use existing purpose type for returns
-        });
-        this.dealRepo.addEvent(deal.id, `Queued return of ${deposits.totalConfirmed} ${bobAsset} from Bob's escrow`);
+        // Check if we already have a pending return for this escrow
+        const existingQueues = this.queueRepo.getByDeal(deal.id)
+          .filter(q => q.from.address === escrowAddress && 
+                      q.asset === bobAsset &&
+                      Math.abs(parseFloat(q.amount) - remainingBalance) < 0.000001);
+        
+        if (existingQueues.length === 0) {
+          console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${bobAsset} in Bob's escrow ${escrowAddress}`);
+          this.queueRepo.enqueue({
+            dealId: deal.id,
+            chainId: deal.bob.chainId,
+            from: deal.escrowB,
+            to: deal.bobDetails.paybackAddress,
+            asset: bobAsset,
+            amount: deposits.totalConfirmed,
+            purpose: 'TIMEOUT_REFUND', // Use TIMEOUT_REFUND for post-deal returns
+          });
+          this.dealRepo.addEvent(deal.id, `Auto-returning ${deposits.totalConfirmed} ${bobAsset} from Bob's escrow`);
+        }
+      }
+      
+      // Also check for native currency if the deal asset wasn't native
+      const nativeAsset = getNativeAsset(deal.bob.chainId);
+      if (bobAsset !== nativeAsset) {
+        const nativeDeposits = await plugin.listConfirmedDeposits(
+          nativeAsset,
+          escrowAddress,
+          1
+        );
+        
+        const nativeBalance = parseFloat(nativeDeposits.totalConfirmed);
+        if (nativeBalance > 0.000001) {
+          const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
+            .filter(q => q.from.address === escrowAddress && 
+                        q.asset === nativeAsset &&
+                        Math.abs(parseFloat(q.amount) - nativeBalance) < 0.000001);
+          
+          if (existingNativeQueues.length === 0) {
+            console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Bob's escrow ${escrowAddress}`);
+            this.queueRepo.enqueue({
+              dealId: deal.id,
+              chainId: deal.bob.chainId,
+              from: deal.escrowB,
+              to: deal.bobDetails.paybackAddress,
+              asset: nativeAsset,
+              amount: nativeDeposits.totalConfirmed,
+              purpose: 'TIMEOUT_REFUND',
+            });
+            this.dealRepo.addEvent(deal.id, `Auto-returning ${nativeDeposits.totalConfirmed} ${nativeAsset} from Bob's escrow`);
+          }
+        }
       }
     }
+    
+    // Process any pending queue items for this closed deal
+    await this.processQueues(deal);
   }
 }

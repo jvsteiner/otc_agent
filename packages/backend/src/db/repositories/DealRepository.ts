@@ -134,7 +134,7 @@ export class DealRepository {
   getActiveDeals(): Deal[] {
     const stmt = this.db.prepare(`
       SELECT json FROM deals 
-      WHERE stage IN ('CREATED', 'COLLECTION', 'WAITING')
+      WHERE stage IN ('CREATED', 'COLLECTION', 'WAITING', 'CLOSED')
     `);
     
     const rows = stmt.all() as { json: string }[];
