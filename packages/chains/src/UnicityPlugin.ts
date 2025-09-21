@@ -266,7 +266,7 @@ export class UnicityPlugin implements ChainPlugin {
           txid: utxo.tx_hash,
           index: utxo.tx_pos,
           amount: (utxo.value / 100000000).toString(), // Convert from satoshis
-          asset: 'ALPHA@UNICITY',
+          asset: 'ALPHA', // Use ALPHA to match deal asset format
           blockHeight: utxo.height,
           blockTime: new Date(tx.time * 1000).toISOString(),
           confirms,
@@ -278,7 +278,7 @@ export class UnicityPlugin implements ChainPlugin {
     
     return {
       address,
-      asset,
+      asset: 'ALPHA', // Normalize to ALPHA for consistency
       minConf,
       deposits,
       totalConfirmed,
