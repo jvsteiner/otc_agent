@@ -1967,8 +1967,12 @@ export class RpcServer {
           const yourSide = party === 'ALICE' ? 'sideA' : 'sideB';
           const theirSide = party === 'ALICE' ? 'sideB' : 'sideA';
           
-          updateBalance('your', dealData.collection?.[yourSide], dealData.instructions?.[yourSide]);
-          updateBalance('their', dealData.collection?.[theirSide], dealData.instructions?.[theirSide]);
+          // Get expected amounts from deal data
+          const yourExpected = party === 'ALICE' ? dealData.alice : dealData.bob;
+          const theirExpected = party === 'ALICE' ? dealData.bob : dealData.alice;
+          
+          updateBalance('your', dealData.collection?.[yourSide], dealData.instructions?.[yourSide], yourExpected);
+          updateBalance('their', dealData.collection?.[theirSide], dealData.instructions?.[theirSide], theirExpected);
           
           // Show escrow address
           if (dealData.instructions?.[yourSide]?.[0]) {
@@ -1997,22 +2001,33 @@ export class RpcServer {
         }
         
         // Update balance display
-        function updateBalance(type, collection, instructions) {
+        function updateBalance(type, collection, instructions, expectedDeal) {
           const balanceEl = document.getElementById(type + 'Balance');
           const progressEl = document.getElementById(type + 'Progress');
           const percentageEl = document.getElementById(type + 'Percentage');
           const statusEl = document.getElementById(type + 'Status');
           
+          // Use expected amount from deal if instructions are empty
+          let required, assetCode;
           if (!instructions || instructions.length === 0) {
-            balanceEl.textContent = '0.0000 / 0.0000';
-            progressEl.style.width = '0%';
-            percentageEl.textContent = '0%';
-            statusEl.textContent = 'No deposits required';
-            return;
+            if (!expectedDeal) {
+              balanceEl.textContent = '0.0000 / 0.0000';
+              progressEl.style.width = '0%';
+              percentageEl.textContent = '0%';
+              statusEl.textContent = 'Waiting for party details...';
+              return;
+            }
+            // Use expected amounts from deal
+            required = parseFloat(expectedDeal.amount);
+            assetCode = expectedDeal.asset.includes('@') ? 
+              expectedDeal.asset : 
+              expectedDeal.asset + '@' + expectedDeal.chainId;
+          } else {
+            required = parseFloat(instructions[0].amount);
+            assetCode = instructions[0].assetCode;
           }
           
-          const required = parseFloat(instructions[0].amount);
-          const collected = parseFloat(collection?.collectedByAsset?.[instructions[0].assetCode] || '0');
+          const collected = parseFloat(collection?.collectedByAsset?.[assetCode] || '0');
           const percentage = Math.min(100, (collected / required) * 100);
           
           balanceEl.textContent = collected.toFixed(4) + ' / ' + required.toFixed(4);
