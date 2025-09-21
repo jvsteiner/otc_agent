@@ -127,8 +127,17 @@ export class Engine {
       // Check if all queues are complete
       const pendingCount = this.queueRepo.getPendingCount(deal.id);
       if (pendingCount === 0) {
-        console.log(`Deal ${deal.id} all transfers complete, closing...`);
-        this.dealRepo.updateStage(deal.id, 'CLOSED');
+        console.log(`Deal ${deal.id} all transfers complete, processing escrow returns...`);
+        
+        // Before closing, check for remaining balances and return them
+        await this.queueEscrowReturns(deal);
+        
+        // Check again if there are new pending items after queuing returns
+        const newPendingCount = this.queueRepo.getPendingCount(deal.id);
+        if (newPendingCount === 0) {
+          console.log(`Deal ${deal.id} closing...`);
+          this.dealRepo.updateStage(deal.id, 'CLOSED');
+        }
       }
     }
   }
@@ -472,6 +481,68 @@ export class Engine {
       } catch (error: any) {
         console.error(`Failed to submit tx for queue item ${nextItem.id}:`, error);
         this.dealRepo.addEvent(deal.id, `Failed to submit ${nextItem.purpose}: ${error.message}`);
+      }
+    }
+  }
+
+  private async queueEscrowReturns(deal: Deal) {
+    console.log(`Checking for remaining escrow balances for deal ${deal.id}`);
+    
+    // Check Alice's escrow for remaining balances
+    if (deal.escrowA && deal.aliceDetails) {
+      const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
+      const escrowAddress = await plugin.getManagedAddress(deal.escrowA);
+      
+      // Get the asset for Alice's side
+      const aliceAsset = deal.alice.asset;
+      const deposits = await plugin.listConfirmedDeposits(
+        aliceAsset,
+        escrowAddress,
+        1 // Min 1 confirmation
+      );
+      
+      const remainingBalance = parseFloat(deposits.totalConfirmed);
+      if (remainingBalance > 0.000001) { // Small threshold to avoid dust
+        console.log(`Found ${remainingBalance} ${aliceAsset} remaining in Alice's escrow`);
+        this.queueRepo.enqueue({
+          dealId: deal.id,
+          chainId: deal.alice.chainId,
+          from: deal.escrowA,
+          to: deal.aliceDetails.paybackAddress,
+          asset: aliceAsset,
+          amount: deposits.totalConfirmed,
+          purpose: 'SWAP_PAYOUT', // Use existing purpose type for returns
+        });
+        this.dealRepo.addEvent(deal.id, `Queued return of ${deposits.totalConfirmed} ${aliceAsset} from Alice's escrow`);
+      }
+    }
+    
+    // Check Bob's escrow for remaining balances
+    if (deal.escrowB && deal.bobDetails) {
+      const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
+      const escrowAddress = await plugin.getManagedAddress(deal.escrowB);
+      
+      // Get the asset for Bob's side
+      const bobAsset = deal.bob.asset;
+      const deposits = await plugin.listConfirmedDeposits(
+        bobAsset,
+        escrowAddress,
+        1 // Min 1 confirmation
+      );
+      
+      const remainingBalance = parseFloat(deposits.totalConfirmed);
+      if (remainingBalance > 0.000001) { // Small threshold to avoid dust
+        console.log(`Found ${remainingBalance} ${bobAsset} remaining in Bob's escrow`);
+        this.queueRepo.enqueue({
+          dealId: deal.id,
+          chainId: deal.bob.chainId,
+          from: deal.escrowB,
+          to: deal.bobDetails.paybackAddress,
+          asset: bobAsset,
+          amount: deposits.totalConfirmed,
+          purpose: 'SWAP_PAYOUT', // Use existing purpose type for returns
+        });
+        this.dealRepo.addEvent(deal.id, `Queued return of ${deposits.totalConfirmed} ${bobAsset} from Bob's escrow`);
       }
     }
   }
