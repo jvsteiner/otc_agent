@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { UnicityPluginV2 } from '@otc-broker/chains/src/UnicityPluginV2';
 import { UnicityKeyManager } from '@otc-broker/chains/src/utils/UnicityKeyManager';
 import * as fs from 'fs';
 import * as path from 'path';

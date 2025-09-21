@@ -159,4 +159,8 @@ export class EvmPlugin implements ChainPlugin {
   validateAddress(address: string): boolean {
     return ethers.isAddress(address);
   }
+
+  getOperatorAddress(): string {
+    return this.config?.operator?.address || '0x0000000000000000000000000000000000000000';
+  }
 }

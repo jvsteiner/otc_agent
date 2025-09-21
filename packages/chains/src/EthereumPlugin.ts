@@ -236,9 +236,17 @@ export class EthereumPlugin implements ChainPlugin {
       if (asset === 'ETH' || asset === 'MATIC') {
         // Native currency transfer
         const value = ethers.parseEther(amount);
+        
+        // Build transaction directly to avoid ENS resolution
+        const nonce = await this.provider.getTransactionCount(wallet.address);
+        const gasPrice = await this.provider.getFeeData();
+        
         tx = await wallet.sendTransaction({
           to: to,
           value: value,
+          nonce: nonce,
+          gasPrice: gasPrice.gasPrice,
+          gasLimit: 21000, // Standard ETH transfer gas limit
         });
       } else if (asset.startsWith('ERC20:')) {
         // ERC20 token transfer
@@ -295,5 +303,9 @@ export class EthereumPlugin implements ChainPlugin {
 
   validateAddress(address: string): boolean {
     return ethers.isAddress(address);
+  }
+
+  getOperatorAddress(): string {
+    return this.config?.operator?.address || '0x0000000000000000000000000000000000000000';
   }
 }

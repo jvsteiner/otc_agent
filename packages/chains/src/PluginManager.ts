@@ -1,7 +1,6 @@
 import { ChainId } from '@otc-broker/core';
 import { ChainPlugin, ChainConfig } from './ChainPlugin';
 import { UnicityPlugin } from './UnicityPlugin';
-import { UnicityMockPlugin } from './UnicityMockPlugin';
 import { EvmPlugin } from './EvmPlugin';
 import { EthereumPlugin } from './EthereumPlugin';
 import { PolygonPlugin } from './PolygonPlugin';
@@ -15,12 +14,7 @@ export class PluginManager {
     
     switch (config.chainId) {
       case 'UNICITY':
-        // Use mock plugin if MOCK_MODE is set
-        if (process.env.MOCK_MODE === 'true') {
-          plugin = new UnicityMockPlugin();
-        } else {
-          plugin = new UnicityPlugin();
-        }
+        plugin = new UnicityPlugin();
         break;
       case 'ETH':
         plugin = new EthereumPlugin(config);

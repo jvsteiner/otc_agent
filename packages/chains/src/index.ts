@@ -1,6 +1,5 @@
 export * from './ChainPlugin';
 export * from './UnicityPlugin';
-export * from './UnicityPluginV2';
 export * from './EvmPlugin';
 export * from './EthereumPlugin';
 export * from './PolygonPlugin';

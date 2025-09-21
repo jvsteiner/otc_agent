@@ -80,4 +80,5 @@ export interface ChainPlugin {
   ensureFeeBudget(from: EscrowAccountRef, asset: AssetCode, intent: 'NATIVE'|'TOKEN', minNative: string): Promise<void>;
   getTxConfirmations(txid: string): Promise<number>;
   validateAddress(address: string): boolean;
+  getOperatorAddress(): string;
 }

@@ -449,4 +449,8 @@ export class UnicityPlugin implements ChainPlugin {
     
     return false;
   }
+
+  getOperatorAddress(): string {
+    return this.config?.operator?.address || 'alpha1qv003pgutceeewj4fzvpdy58rem3xf6lnlv88ku';
+  }
 }

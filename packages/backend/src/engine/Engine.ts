@@ -357,7 +357,7 @@ export class Engine {
           dealId: deal.id,
           chainId: deal.alice.chainId,
           from: deal.escrowA,
-          to: plugin.chainId, // Should be operator address from config
+          to: plugin.getOperatorAddress(),
           asset: commAsset,
           amount: sideACommission,
           purpose: 'OP_COMMISSION',
@@ -374,7 +374,7 @@ export class Engine {
           dealId: deal.id,
           chainId: deal.bob.chainId,
           from: deal.escrowB,
-          to: plugin.chainId, // Should be operator address from config
+          to: plugin.getOperatorAddress(),
           asset: commAsset,
           amount: sideBCommission,
           purpose: 'OP_COMMISSION',
