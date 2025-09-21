@@ -201,7 +201,7 @@ export class Engine {
       // Check locks
       const commissionAmount = this.calculateCommissionAmount(deal, 'A');
       const commissionAsset = deal.commissionPlan.sideA.currency === 'ASSET' 
-        ? deal.alice.asset 
+        ? normalizedAsset  // Use normalized asset to match deposits
         : getNativeAsset(deal.alice.chainId);
       
       // For CREATED stage, use a far future date as we're just monitoring
@@ -264,7 +264,7 @@ export class Engine {
       
       const commissionAmount = this.calculateCommissionAmount(deal, 'B');
       const commissionAsset = deal.commissionPlan.sideB.currency === 'ASSET' 
-        ? deal.bob.asset 
+        ? normalizedAssetB  // Use normalized asset to match deposits
         : getNativeAsset(deal.bob.chainId);
       
       // For CREATED stage, use a far future date as we're just monitoring
@@ -440,11 +440,19 @@ export class Engine {
       if (!nextItem) continue;
       
       try {
+        // Get the full escrow account ref with keyRef from the deal
+        let fromAccountWithKey = nextItem.from;
+        if (deal.escrowA && deal.escrowA.address === address) {
+          fromAccountWithKey = deal.escrowA;
+        } else if (deal.escrowB && deal.escrowB.address === address) {
+          fromAccountWithKey = deal.escrowB;
+        }
+        
         // Submit transaction
         const plugin = this.pluginManager.getPlugin(nextItem.chainId);
         const tx = await plugin.send(
           nextItem.asset,
-          nextItem.from,
+          fromAccountWithKey,
           nextItem.to,
           nextItem.amount
         );

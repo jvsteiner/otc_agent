@@ -215,6 +215,12 @@ export class EthereumPlugin implements ChainPlugin {
         const newWallet = new ethers.Wallet(from.keyRef, this.provider);
         this.wallets.set(from.keyRef, newWallet as any);
         wallet = newWallet as any;
+      } else if (from.keyRef.startsWith('m/') && this.rootWallet) {
+        // Recreate HD wallet from path
+        const childWallet = this.rootWallet.derivePath(from.keyRef);
+        const connectedWallet = childWallet.connect(this.provider);
+        this.wallets.set(from.keyRef, connectedWallet);
+        wallet = connectedWallet;
       } else {
         throw new Error(`No wallet found for keyRef: ${from.keyRef}`);
       }

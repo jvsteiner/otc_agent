@@ -316,7 +316,23 @@ export class UnicityPlugin implements ChainPlugin {
     }
 
     // Get the wallet info for this escrow account
-    const walletInfo = this.wallets.get(from.keyRef || '');
+    let walletInfo = this.wallets.get(from.keyRef || '');
+    if (!walletInfo && from.keyRef) {
+      // Try to recreate wallet if it's an HD wallet
+      if (from.keyRef.startsWith('unicity-hd-') && this.masterPrivateKey) {
+        const index = parseInt(from.keyRef.replace('unicity-hd-', ''));
+        const regeneratedWallet = generateDeterministicKey(this.masterPrivateKey, index);
+        walletInfo = {
+          privateKey: regeneratedWallet.privateKey,
+          address: regeneratedWallet.address,
+          index,
+          wif: regeneratedWallet.wif
+        };
+        this.wallets.set(from.keyRef, walletInfo);
+        console.log(`Recreated HD wallet at index ${index}: ${regeneratedWallet.address}`);
+      }
+    }
+    
     if (!walletInfo) {
       throw new Error(`No wallet found for escrow account ${from.address}`);
     }
