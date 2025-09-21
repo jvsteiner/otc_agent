@@ -59,6 +59,9 @@ export class Engine {
       // Clean up expired leases
       this.leaseRepo.cleanupExpired();
       
+      // Monitor submitted transactions for confirmation
+      await this.monitorSubmittedTransactions();
+      
       // Get active deals
       const activeDeals = this.dealRepo.getActiveDeals();
       
@@ -499,14 +502,18 @@ export class Engine {
       
       const remainingBalance = parseFloat(deposits.totalConfirmed);
       if (remainingBalance > 0.000001) { // Small threshold to avoid dust
-        // Check if we already have a pending return for this escrow
-        const pendingCount = this.queueRepo.getPendingCount(deal.id);
+        // Check if we already have a pending or submitted return for this escrow
         const existingQueues = this.queueRepo.getByDeal(deal.id)
           .filter(q => q.from.address === escrowAddress && 
                       q.asset === aliceAsset &&
-                      Math.abs(parseFloat(q.amount) - remainingBalance) < 0.000001);
+                      (q.status === 'PENDING' || q.status === 'SUBMITTED'));
         
-        if (existingQueues.length === 0) {
+        // Check if we already have a queue item for approximately this amount
+        const alreadyQueued = existingQueues.some(q => 
+          Math.abs(parseFloat(q.amount) - remainingBalance) < 0.01 // Within 0.01 ALPHA
+        );
+        
+        if (!alreadyQueued) {
           console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${aliceAsset} in Alice's escrow ${escrowAddress}`);
           this.queueRepo.enqueue({
             dealId: deal.id,
@@ -535,9 +542,13 @@ export class Engine {
           const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
             .filter(q => q.from.address === escrowAddress && 
                         q.asset === nativeAsset &&
-                        Math.abs(parseFloat(q.amount) - nativeBalance) < 0.000001);
+                        (q.status === 'PENDING' || q.status === 'SUBMITTED'));
           
-          if (existingNativeQueues.length === 0) {
+          const alreadyQueued = existingNativeQueues.some(q => 
+            Math.abs(parseFloat(q.amount) - nativeBalance) < 0.01
+          );
+          
+          if (!alreadyQueued) {
             console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Alice's escrow ${escrowAddress}`);
             this.queueRepo.enqueue({
               dealId: deal.id,
@@ -569,11 +580,12 @@ export class Engine {
       
       const remainingBalance = parseFloat(deposits.totalConfirmed);
       if (remainingBalance > 0.000001) { // Small threshold to avoid dust
-        // Check if we already have a pending return for this escrow
+        // Check if we already have a pending or submitted return for this escrow
         const existingQueues = this.queueRepo.getByDeal(deal.id)
           .filter(q => q.from.address === escrowAddress && 
                       q.asset === bobAsset &&
-                      Math.abs(parseFloat(q.amount) - remainingBalance) < 0.000001);
+                      (q.status === 'PENDING' || q.status === 'SUBMITTED') &&
+                      Math.abs(parseFloat(q.amount) - remainingBalance) < 0.01);
         
         if (existingQueues.length === 0) {
           console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${bobAsset} in Bob's escrow ${escrowAddress}`);
@@ -604,9 +616,13 @@ export class Engine {
           const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
             .filter(q => q.from.address === escrowAddress && 
                         q.asset === nativeAsset &&
-                        Math.abs(parseFloat(q.amount) - nativeBalance) < 0.000001);
+                        (q.status === 'PENDING' || q.status === 'SUBMITTED'));
           
-          if (existingNativeQueues.length === 0) {
+          const alreadyQueued = existingNativeQueues.some(q => 
+            Math.abs(parseFloat(q.amount) - nativeBalance) < 0.01
+          );
+          
+          if (!alreadyQueued) {
             console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Bob's escrow ${escrowAddress}`);
             this.queueRepo.enqueue({
               dealId: deal.id,
@@ -625,5 +641,41 @@ export class Engine {
     
     // Process any pending queue items for this closed deal
     await this.processQueues(deal);
+  }
+  
+  private async monitorSubmittedTransactions() {
+    // Get all SUBMITTED queue items
+    const submittedItems = this.queueRepo.getAll()
+      .filter(q => q.status === 'SUBMITTED' && q.submittedTx);
+    
+    for (const item of submittedItems) {
+      try {
+        const txRef = item.submittedTx!;
+        const plugin = this.pluginManager.getPlugin(item.chainId);
+        
+        // Check transaction confirmations
+        const confirmations = await plugin.getTxConfirmations(txRef.txid);
+        
+        if (confirmations >= txRef.requiredConfirms) {
+          // Transaction is confirmed, mark as COMPLETED
+          this.queueRepo.updateStatus(item.id, 'COMPLETED', {
+            ...txRef,
+            confirms: confirmations,
+            status: 'CONFIRMED'
+          });
+          
+          console.log(`[Engine] Queue item ${item.id} completed: ${item.purpose} tx ${txRef.txid} confirmed`);
+          this.dealRepo.addEvent(item.dealId, `${item.purpose} completed: ${txRef.txid}`);
+        } else {
+          // Update confirmation count
+          this.queueRepo.updateStatus(item.id, 'SUBMITTED', {
+            ...txRef,
+            confirms: confirmations
+          });
+        }
+      } catch (error) {
+        console.error(`Failed to check confirmations for queue item ${item.id}:`, error);
+      }
+    }
   }
 }

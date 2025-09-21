@@ -5,7 +5,7 @@ import * as crypto from 'crypto';
 export class QueueRepository {
   constructor(private db: DB) {}
 
-  enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq'>): QueueItem {
+  enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq' | 'status'>): QueueItem {
     // Get next sequence number for this deal+sender
     const seqStmt = this.db.prepare(`
       SELECT COALESCE(MAX(seq), 0) + 1 as nextSeq
@@ -23,6 +23,7 @@ export class QueueRepository {
       ...item,
       id,
       seq,
+      status: 'PENDING',
       createdAt,
     };
     
@@ -100,6 +101,16 @@ export class QueueRepository {
     return row.count;
   }
 
+  getAll(): QueueItem[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM queue_items
+      ORDER BY createdAt DESC
+    `);
+    
+    const rows = stmt.all() as any[];
+    return rows.map(row => this.mapRowToQueueItem(row));
+  }
+
   private mapRowToQueueItem(row: any): QueueItem {
     return {
       id: row.id,
@@ -114,6 +125,7 @@ export class QueueRepository {
       amount: row.amount,
       purpose: row.purpose as QueuePurpose,
       seq: row.seq,
+      status: row.status,
       createdAt: row.createdAt,
       submittedTx: row.submittedTx ? JSON.parse(row.submittedTx) : undefined,
     };

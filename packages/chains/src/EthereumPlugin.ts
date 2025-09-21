@@ -219,6 +219,14 @@ export class EthereumPlugin implements ChainPlugin {
         // Recreate HD wallet from path
         const childWallet = this.rootWallet.derivePath(from.keyRef);
         const connectedWallet = childWallet.connect(this.provider);
+        
+        // Verify the derived address matches the escrow address
+        if (childWallet.address.toLowerCase() !== from.address.toLowerCase()) {
+          console.error(`Address mismatch! Derived: ${childWallet.address}, Expected: ${from.address}`);
+          console.error(`KeyRef: ${from.keyRef}`);
+          // The wallet doesn't match - this is a problem with how the escrow was generated
+        }
+        
         this.wallets.set(from.keyRef, connectedWallet);
         wallet = connectedWallet;
       } else {
@@ -238,7 +246,11 @@ export class EthereumPlugin implements ChainPlugin {
         const value = ethers.parseEther(amount);
         
         // Build transaction directly to avoid ENS resolution
-        const nonce = await this.provider.getTransactionCount(wallet.address);
+        console.log(`[EVM] Preparing transaction from wallet: ${wallet.address} (escrow: ${from.address})`);
+        
+        // Use the escrow address for nonce, not wallet address (in case they differ)
+        const nonceAddress = from.address || wallet.address;
+        const nonce = await this.provider.getTransactionCount(nonceAddress);
         const gasPrice = await this.provider.getFeeData();
         
         // Calculate gas cost for the transaction

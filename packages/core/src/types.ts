@@ -101,6 +101,7 @@ export interface QueueItem {
   amount: string;
   purpose: QueuePurpose;
   seq: number;            // strict per (dealId, from.address)
+  status: 'PENDING' | 'SUBMITTED' | 'COMPLETED';
   createdAt: string;
   submittedTx?: TxRef;
 }
