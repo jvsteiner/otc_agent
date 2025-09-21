@@ -234,14 +234,24 @@ export class UnicityPlugin implements ChainPlugin {
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
     }
 
+    console.log(`[UnicityPlugin] listConfirmedDeposits called:`, {
+      asset,
+      address,
+      minConf,
+      since
+    });
+
     const scriptHash = this.addressToScriptHash(address);
+    console.log(`[UnicityPlugin] Script hash for ${address}: ${scriptHash}`);
     
     // Get UTXOs
     const utxos = await this.electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
+    console.log(`[UnicityPlugin] Found ${utxos.length} UTXOs for address ${address}`);
     
     // Get current block height for confirmation calculation
     const headers = await this.electrumRequest('blockchain.headers.subscribe', []);
     const currentHeight = headers.height;
+    console.log(`[UnicityPlugin] Current block height: ${currentHeight}`);
     
     const deposits: EscrowDeposit[] = [];
     

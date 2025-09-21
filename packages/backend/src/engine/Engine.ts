@@ -80,31 +80,34 @@ export class Engine {
   private async processDeal(deal: Deal) {
     console.log(`Processing deal ${deal.id} in stage ${deal.stage}`);
     
-    // Step 1: Read deposits for both sides
-    if (deal.stage === 'COLLECTION') {
+    // Step 1: Read deposits for both sides (even in CREATED stage to show progress)
+    if (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') {
       await this.updateDeposits(deal);
       
-      // Check if timeout expired
-      if (deal.expiresAt && new Date() > new Date(deal.expiresAt)) {
-        console.log(`Deal ${deal.id} expired, reverting...`);
-        await this.revertDeal(deal);
-        return;
-      }
-      
-      // Check if both sides have locks
-      const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
-      const sideBLocked = deal.sideBState?.locks.tradeLockedAt && deal.sideBState?.locks.commissionLockedAt;
-      
-      if (sideALocked && sideBLocked) {
-        console.log(`Deal ${deal.id} both sides locked, planning distribution...`);
+      // Only check timeout and locks in COLLECTION stage
+      if (deal.stage === 'COLLECTION') {
+        // Check if timeout expired
+        if (deal.expiresAt && new Date() > new Date(deal.expiresAt)) {
+          console.log(`Deal ${deal.id} expired, reverting...`);
+          await this.revertDeal(deal);
+          return;
+        }
         
-        // Preflight checks
-        if (await this.preflightChecks(deal)) {
-          // Build and persist transfer plan
-          await this.buildTransferPlan(deal);
+        // Check if both sides have locks
+        const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
+        const sideBLocked = deal.sideBState?.locks.tradeLockedAt && deal.sideBState?.locks.commissionLockedAt;
+        
+        if (sideALocked && sideBLocked) {
+          console.log(`Deal ${deal.id} both sides locked, planning distribution...`);
           
-          // Move to WAITING stage
-          this.dealRepo.updateStage(deal.id, 'WAITING');
+          // Preflight checks
+          if (await this.preflightChecks(deal)) {
+            // Build and persist transfer plan
+            await this.buildTransferPlan(deal);
+            
+            // Move to WAITING stage
+            this.dealRepo.updateStage(deal.id, 'WAITING');
+          }
         }
       }
     } else if (deal.stage === 'WAITING' || deal.stage === 'REVERTED') {
@@ -142,6 +145,12 @@ export class Engine {
       const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
       const minConf = getConfirmationThreshold(deal.alice.chainId);
       
+      console.log(`[Engine] Checking deposits for Alice (${deal.alice.chainId}):`, {
+        asset: deal.alice.asset,
+        escrowAddress: deal.escrowA.address,
+        minConf
+      });
+      
       // Get deposits for trade asset
       const tradeDeposits = await plugin.listConfirmedDeposits(
         deal.alice.asset,
@@ -149,17 +158,22 @@ export class Engine {
         minConf
       );
       
+      console.log(`[Engine] Found ${tradeDeposits.deposits.length} deposits for Alice:`, {
+        totalConfirmed: tradeDeposits.totalConfirmed,
+        deposits: tradeDeposits.deposits
+      });
+      
       // Store deposits in DB
       for (const deposit of tradeDeposits.deposits) {
         this.depositRepo.upsert(deal.id, deposit, deal.alice.chainId, deal.escrowA.address);
       }
       
       // Get commission deposits if different currency
-      let commissionDeposits = tradeDeposits;
+      let allDeposits = tradeDeposits.deposits;
       if (deal.commissionPlan.sideA.currency === 'NATIVE' && 
           deal.commissionPlan.sideA.mode === 'FIXED_USD_NATIVE') {
         const nativeAsset = getNativeAsset(deal.alice.chainId);
-        commissionDeposits = await plugin.listConfirmedDeposits(
+        const commissionDeposits = await plugin.listConfirmedDeposits(
           nativeAsset,
           deal.escrowA.address,
           minConf
@@ -168,6 +182,9 @@ export class Engine {
         for (const deposit of commissionDeposits.deposits) {
           this.depositRepo.upsert(deal.id, deposit, deal.alice.chainId, deal.escrowA.address);
         }
+        
+        // Combine trade and commission deposits (different assets)
+        allDeposits = [...tradeDeposits.deposits, ...commissionDeposits.deposits];
       }
       
       // Check locks
@@ -176,17 +193,20 @@ export class Engine {
         ? deal.alice.asset 
         : getNativeAsset(deal.alice.chainId);
       
+      // For CREATED stage, use a far future date as we're just monitoring
+      const expiresAt = deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+      
       const locks = checkLocks(
-        [...tradeDeposits.deposits, ...commissionDeposits.deposits],
+        allDeposits,
         deal.alice.asset,
         deal.alice.amount,
         commissionAsset,
         commissionAmount,
         minConf,
-        deal.expiresAt!
+        expiresAt
       );
       
-      deal.sideAState.deposits = [...tradeDeposits.deposits, ...commissionDeposits.deposits];
+      deal.sideAState.deposits = allDeposits;
       deal.sideAState.locks = {
         tradeLockedAt: locks.tradeLocked ? new Date().toISOString() : undefined,
         commissionLockedAt: locks.commissionLocked ? new Date().toISOString() : undefined,
@@ -212,11 +232,11 @@ export class Engine {
         this.depositRepo.upsert(deal.id, deposit, deal.bob.chainId, deal.escrowB.address);
       }
       
-      let commissionDeposits = tradeDeposits;
+      let allDepositsB = tradeDeposits.deposits;
       if (deal.commissionPlan.sideB.currency === 'NATIVE' && 
           deal.commissionPlan.sideB.mode === 'FIXED_USD_NATIVE') {
         const nativeAsset = getNativeAsset(deal.bob.chainId);
-        commissionDeposits = await plugin.listConfirmedDeposits(
+        const commissionDeposits = await plugin.listConfirmedDeposits(
           nativeAsset,
           deal.escrowB.address,
           minConf
@@ -225,6 +245,9 @@ export class Engine {
         for (const deposit of commissionDeposits.deposits) {
           this.depositRepo.upsert(deal.id, deposit, deal.bob.chainId, deal.escrowB.address);
         }
+        
+        // Combine trade and commission deposits (different assets)
+        allDepositsB = [...tradeDeposits.deposits, ...commissionDeposits.deposits];
       }
       
       const commissionAmount = this.calculateCommissionAmount(deal, 'B');
@@ -232,17 +255,20 @@ export class Engine {
         ? deal.bob.asset 
         : getNativeAsset(deal.bob.chainId);
       
+      // For CREATED stage, use a far future date as we're just monitoring
+      const expiresAtB = deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+      
       const locks = checkLocks(
-        [...tradeDeposits.deposits, ...commissionDeposits.deposits],
+        allDepositsB,
         deal.bob.asset,
         deal.bob.amount,
         commissionAsset,
         commissionAmount,
         minConf,
-        deal.expiresAt!
+        expiresAtB
       );
       
-      deal.sideBState.deposits = [...tradeDeposits.deposits, ...commissionDeposits.deposits];
+      deal.sideBState.deposits = allDepositsB;
       deal.sideBState.locks = {
         tradeLockedAt: locks.tradeLocked ? new Date().toISOString() : undefined,
         commissionLockedAt: locks.commissionLocked ? new Date().toISOString() : undefined,
