@@ -1311,11 +1311,15 @@ export class RpcServer {
         
         .stage-details {
           font-size: 11px;
-          color: rgba(255, 255, 255, 0.8);
-          margin-top: 8px;
-          line-height: 1.4;
-          text-align: center;
-          padding: 0 10px;
+          color: rgba(255, 255, 255, 0.9);
+          background: rgba(0, 0, 0, 0.2);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 8px;
+          margin-top: 12px;
+          padding: 12px 15px;
+          line-height: 1.5;
+          text-align: left;
+          backdrop-filter: blur(10px);
         }
         
         .stage-details strong {
