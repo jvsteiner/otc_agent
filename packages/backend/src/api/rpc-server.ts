@@ -395,8 +395,12 @@ export class RpcServer {
     };
     
     if (deal.escrowA) {
+      // Use fully qualified asset name to match collectedByAsset keys
+      const assetCode = deal.alice.asset.includes('@') ? 
+        deal.alice.asset : 
+        `${deal.alice.asset}@${deal.alice.chainId}`;
       instructions.sideA.push({
-        assetCode: deal.alice.asset,
+        assetCode: assetCode,
         amount: deal.alice.amount,
         to: deal.escrowA.address,
       });
@@ -413,8 +417,12 @@ export class RpcServer {
     }
     
     if (deal.escrowB) {
+      // Use fully qualified asset name to match collectedByAsset keys
+      const assetCodeB = deal.bob.asset.includes('@') ? 
+        deal.bob.asset : 
+        `${deal.bob.asset}@${deal.bob.chainId}`;
       instructions.sideB.push({
-        assetCode: deal.bob.asset,
+        assetCode: assetCodeB,
         amount: deal.bob.amount,
         to: deal.escrowB.address,
       });

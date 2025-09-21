@@ -1,8 +1,18 @@
-import { Deal, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
+import { Deal, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
 import { DB } from '../db/database';
 import { DealRepository, DepositRepository, LeaseRepository, QueueRepository } from '../db/repositories';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import * as crypto from 'crypto';
+
+// Helper function to normalize asset codes for comparison
+function normalizeAssetCode(asset: string, chainId: string): string {
+  // If asset already includes chain suffix, return as is
+  if (asset.includes('@')) {
+    return asset;
+  }
+  // Add chain suffix for fully qualified name
+  return `${asset}@${chainId}`;
+}
 
 export class Engine {
   private running = false;
@@ -151,9 +161,10 @@ export class Engine {
         minConf
       });
       
-      // Get deposits for trade asset
+      // Get deposits for trade asset (use normalized asset code)
+      const normalizedAsset = normalizeAssetCode(deal.alice.asset, deal.alice.chainId);
       const tradeDeposits = await plugin.listConfirmedDeposits(
-        deal.alice.asset,
+        normalizedAsset as AssetCode,
         deal.escrowA.address,
         minConf
       );
@@ -198,7 +209,7 @@ export class Engine {
       
       const locks = checkLocks(
         allDeposits,
-        deal.alice.asset,
+        normalizedAsset, // Use normalized asset for comparison
         deal.alice.amount,
         commissionAsset,
         commissionAmount,
@@ -211,8 +222,8 @@ export class Engine {
         tradeLockedAt: locks.tradeLocked ? new Date().toISOString() : undefined,
         commissionLockedAt: locks.commissionLocked ? new Date().toISOString() : undefined,
       };
-      deal.sideAState.collectedByAsset[deal.alice.asset] = locks.tradeCollected;
-      if (commissionAsset !== deal.alice.asset) {
+      deal.sideAState.collectedByAsset[normalizedAsset] = locks.tradeCollected;
+      if (commissionAsset !== normalizedAsset) {
         deal.sideAState.collectedByAsset[commissionAsset] = locks.commissionCollected;
       }
     }
@@ -222,8 +233,9 @@ export class Engine {
       const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
       const minConf = getConfirmationThreshold(deal.bob.chainId);
       
+      const normalizedAssetB = normalizeAssetCode(deal.bob.asset, deal.bob.chainId);
       const tradeDeposits = await plugin.listConfirmedDeposits(
-        deal.bob.asset,
+        normalizedAssetB as AssetCode,
         deal.escrowB.address,
         minConf
       );
@@ -260,7 +272,7 @@ export class Engine {
       
       const locks = checkLocks(
         allDepositsB,
-        deal.bob.asset,
+        normalizedAssetB,
         deal.bob.amount,
         commissionAsset,
         commissionAmount,
@@ -273,8 +285,8 @@ export class Engine {
         tradeLockedAt: locks.tradeLocked ? new Date().toISOString() : undefined,
         commissionLockedAt: locks.commissionLocked ? new Date().toISOString() : undefined,
       };
-      deal.sideBState.collectedByAsset[deal.bob.asset] = locks.tradeCollected;
-      if (commissionAsset !== deal.bob.asset) {
+      deal.sideBState.collectedByAsset[normalizedAssetB] = locks.tradeCollected;
+      if (commissionAsset !== normalizedAssetB) {
         deal.sideBState.collectedByAsset[commissionAsset] = locks.commissionCollected;
       }
     }
