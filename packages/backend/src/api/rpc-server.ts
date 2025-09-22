@@ -1906,6 +1906,14 @@ export class RpcServer {
         </div>
       </div>
       
+      <!-- Load ethers.js v6 from CDN for direct blockchain queries -->
+      <script type="module">
+        import { ethers } from 'https://cdn.jsdelivr.net/npm/ethers@6.9.0/dist/ethers.min.js';
+        
+        // Make ethers available globally
+        window.ethers = ethers;
+      </script>
+      
       <script>
         const dealId = '${dealId}';
         const token = '${token}';
@@ -1924,6 +1932,128 @@ export class RpcServer {
         let refreshInterval = null;
         let countdownInterval = null;
         let dealData = null;
+        let blockchainProviders = {};
+        let blockchainQueryCache = {};
+        
+        // Public RPC endpoints for read-only access
+        const RPC_ENDPOINTS = {
+          'ETH': 'https://ethereum-rpc.publicnode.com',
+          'POLYGON': 'https://polygon-rpc.com',
+          'BASE': 'https://base-rpc.publicnode.com',
+          'UNICITY': null // Unicity doesn't use ethers.js
+        };
+        
+        // Initialize blockchain providers when ethers is loaded
+        function initializeProviders() {
+          if (!window.ethers) {
+            setTimeout(initializeProviders, 100);
+            return;
+          }
+          
+          for (const [chain, rpcUrl] of Object.entries(RPC_ENDPOINTS)) {
+            if (rpcUrl) {
+              try {
+                blockchainProviders[chain] = new ethers.JsonRpcProvider(rpcUrl);
+                console.log(\`Initialized provider for \${chain}\`);
+              } catch (err) {
+                console.error(\`Failed to initialize \${chain} provider:\`, err);
+              }
+            }
+          }
+        }
+        
+        // Query balance directly from blockchain
+        async function queryBlockchainBalance(chainId, address, assetCode) {
+          const provider = blockchainProviders[chainId];
+          if (!provider) return null;
+          
+          const cacheKey = \`balance_\${chainId}_\${address}_\${assetCode}\`;
+          const cached = blockchainQueryCache[cacheKey];
+          
+          // Use cache if less than 10 seconds old
+          if (cached && Date.now() - cached.timestamp < 10000) {
+            return cached.value;
+          }
+          
+          try {
+            let balance;
+            
+            // Check if it's native asset or ERC20
+            if (assetCode === 'ETH' || assetCode === 'MATIC' || 
+                assetCode === 'ETH@ETH' || assetCode === 'MATIC@POLYGON') {
+              // Native currency balance
+              balance = await provider.getBalance(address);
+              balance = ethers.formatEther(balance);
+            } else if (assetCode.startsWith('ERC20:')) {
+              // ERC20 token balance
+              const tokenAddress = assetCode.split(':')[1];
+              const abi = ['function balanceOf(address) view returns (uint256)',
+                          'function decimals() view returns (uint8)'];
+              const contract = new ethers.Contract(tokenAddress, abi, provider);
+              const rawBalance = await contract.balanceOf(address);
+              const decimals = await contract.decimals();
+              balance = ethers.formatUnits(rawBalance, decimals);
+            } else {
+              return null;
+            }
+            
+            // Cache the result
+            blockchainQueryCache[cacheKey] = {
+              value: balance,
+              timestamp: Date.now()
+            };
+            
+            return balance;
+          } catch (err) {
+            console.error(\`Failed to query balance for \${address} on \${chainId}:\`, err);
+            return null;
+          }
+        }
+        
+        // Query transaction status directly from blockchain
+        async function queryTransactionStatus(chainId, txHash) {
+          const provider = blockchainProviders[chainId];
+          if (!provider || !txHash) return null;
+          
+          const cacheKey = \`tx_\${chainId}_\${txHash}\`;
+          const cached = blockchainQueryCache[cacheKey];
+          
+          // Use cache if less than 5 seconds old
+          if (cached && Date.now() - cached.timestamp < 5000) {
+            return cached.value;
+          }
+          
+          try {
+            const receipt = await provider.getTransactionReceipt(txHash);
+            if (!receipt) {
+              return { status: 'pending', confirmations: 0 };
+            }
+            
+            const currentBlock = await provider.getBlockNumber();
+            const confirmations = currentBlock - receipt.blockNumber + 1;
+            
+            const result = {
+              status: receipt.status === 1 ? 'success' : 'failed',
+              confirmations: confirmations,
+              blockNumber: receipt.blockNumber,
+              gasUsed: receipt.gasUsed.toString()
+            };
+            
+            // Cache the result
+            blockchainQueryCache[cacheKey] = {
+              value: result,
+              timestamp: Date.now()
+            };
+            
+            return result;
+          } catch (err) {
+            console.error(\`Failed to query transaction \${txHash} on \${chainId}:\`, err);
+            return null;
+          }
+        }
+        
+        // Initialize providers when page loads
+        setTimeout(initializeProviders, 100);
         
         // Submit party details
         async function submitDetails() {
@@ -2005,6 +2135,44 @@ export class RpcServer {
         function startStatusUpdates() {
           updateStatus();
           refreshInterval = setInterval(updateStatus, 5000); // Update every 5 seconds
+          
+          // Also start blockchain refresh for live data
+          setInterval(refreshBlockchainData, 10000); // Refresh blockchain data every 10 seconds
+        }
+        
+        // Refresh blockchain data directly
+        async function refreshBlockchainData() {
+          if (!dealData || !blockchainProviders) return;
+          
+          // Refresh escrow balances if we have addresses
+          if (dealData.escrowA?.address) {
+            const chainId = dealData.alice.chainId;
+            const asset = dealData.alice.asset;
+            if (blockchainProviders[chainId]) {
+              await updateBalance('your', 
+                dealData.collection?.sideA, 
+                dealData.instructions?.sideA,
+                party === 'ALICE' ? dealData.alice : dealData.bob);
+            }
+          }
+          
+          if (dealData.escrowB?.address) {
+            const chainId = dealData.bob.chainId;
+            const asset = dealData.bob.asset;
+            if (blockchainProviders[chainId]) {
+              await updateBalance('their',
+                dealData.collection?.sideB,
+                dealData.instructions?.sideB,
+                party === 'ALICE' ? dealData.bob : dealData.alice);
+            }
+          }
+          
+          // Refresh transaction statuses
+          const txList = document.getElementById('transactionList');
+          if (txList && dealData?.transactions) {
+            // Re-render with updated blockchain data
+            updateTransactionLog();
+          }
         }
         
         // Update status from server
@@ -2225,14 +2393,14 @@ export class RpcServer {
         }
         
         // Update balance display
-        function updateBalance(type, collection, instructions, expectedDeal) {
+        async function updateBalance(type, collection, instructions, expectedDeal) {
           const balanceEl = document.getElementById(type + 'Balance');
           const progressEl = document.getElementById(type + 'Progress');
           const percentageEl = document.getElementById(type + 'Percentage');
           const statusEl = document.getElementById(type + 'Status');
           
           // Use expected amount from deal if instructions are empty
-          let required, assetCode;
+          let required, assetCode, escrowAddress, chainId;
           if (!instructions || instructions.length === 0) {
             if (!expectedDeal) {
               balanceEl.textContent = '0.0000 / 0.0000';
@@ -2246,15 +2414,55 @@ export class RpcServer {
             assetCode = expectedDeal.asset.includes('@') ? 
               expectedDeal.asset : 
               expectedDeal.asset + '@' + expectedDeal.chainId;
+            chainId = expectedDeal.chainId;
           } else {
             required = parseFloat(instructions[0].amount);
             assetCode = instructions[0].assetCode;
+            escrowAddress = instructions[0].to;
+            
+            // Determine chainId from asset code
+            if (type === 'your') {
+              chainId = party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId;
+            } else {
+              chainId = party === 'ALICE' ? dealData.bob.chainId : dealData.alice.chainId;
+            }
           }
           
-          const collected = parseFloat(collection?.collectedByAsset?.[assetCode] || '0');
+          let collected = parseFloat(collection?.collectedByAsset?.[assetCode] || '0');
+          
+          // Try to get real-time balance from blockchain for supported chains
+          if (escrowAddress && chainId && blockchainProviders[chainId]) {
+            const liveBalance = await queryBlockchainBalance(chainId, escrowAddress, assetCode);
+            if (liveBalance !== null) {
+              const liveBalanceNum = parseFloat(liveBalance);
+              
+              // If blockchain shows more than our cached value, update display
+              if (liveBalanceNum > collected) {
+                collected = liveBalanceNum;
+                
+                // Add visual indicator for live data
+                const liveIndicator = document.createElement('span');
+                liveIndicator.style.cssText = 'color: #10b981; font-size: 10px; margin-left: 5px;';
+                liveIndicator.textContent = '🔄 Live';
+                liveIndicator.id = type + 'LiveIndicator';
+                
+                const existing = document.getElementById(type + 'LiveIndicator');
+                if (existing) existing.remove();
+                
+                balanceEl.appendChild(liveIndicator);
+              }
+            }
+          }
+          
           const percentage = Math.min(100, (collected / required) * 100);
           
-          balanceEl.textContent = collected.toFixed(4) + ' / ' + required.toFixed(4);
+          const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4);
+          if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
+            balanceEl.firstChild.textContent = balanceText;
+          } else {
+            balanceEl.textContent = balanceText;
+          }
+          
           progressEl.style.width = percentage + '%';
           percentageEl.textContent = Math.round(percentage) + '%';
           
@@ -2372,11 +2580,22 @@ export class RpcServer {
           
           // Add queue transactions from transactions array
           if (dealData?.transactions) {
-            dealData.transactions.forEach(item => {
+            dealData.transactions.forEach(async (item) => {
               const isFromYourEscrow = yourEscrow && item.from?.address === yourEscrow.address;
               const isFromTheirEscrow = theirEscrow && item.from?.address === theirEscrow.address;
               
               if (isFromYourEscrow || isFromTheirEscrow) {
+                // Try to get real-time status from blockchain
+                if (item.submittedTx?.txid && item.chainId && blockchainProviders[item.chainId]) {
+                  const liveStatus = await queryTransactionStatus(item.chainId, item.submittedTx.txid);
+                  if (liveStatus) {
+                    // Update with live blockchain data
+                    item.submittedTx.confirms = liveStatus.confirmations;
+                    if (liveStatus.confirmations >= (item.submittedTx.requiredConfirms || 6)) {
+                      item.status = 'COMPLETED';
+                    }
+                  }
+                }
                 const purposeLabels = {
                   'SWAP_PAYOUT': '💱 Swap',
                   'OP_COMMISSION': '💰 Commission',
