@@ -1749,24 +1749,40 @@ export class RpcServer {
           to { transform: rotate(360deg); }
         }
         
-        /* Refresh Indicator */
-        .refresh-indicator {
+        /* Sync Status Indicator */
+        .sync-status {
           position: fixed;
-          top: 20px;
-          right: 20px;
+          top: 15px;
+          right: 15px;
+          padding: 5px 10px;
+          border-radius: 6px;
+          font-size: 10px;
+          font-weight: 600;
           display: flex;
           align-items: center;
-          gap: 8px;
-          padding: 8px 12px;
-          background: white;
-          border-radius: 20px;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          font-size: 12px;
-          color: #6b7280;
+          gap: 5px;
+          transition: all 0.3s ease;
+          z-index: 100;
         }
         
-        .refresh-indicator.active .loading-spinner {
-          display: inline-block;
+        .sync-status.synced {
+          background: rgba(16, 185, 129, 0.1);
+          color: #065f46;
+          border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        
+        .sync-status.disconnected {
+          background: rgba(239, 68, 68, 0.1);
+          color: #991b1b;
+          border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+        
+        .sync-status .status-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: currentColor;
+          animation: pulse 2s infinite;
         }
         
         .deal-summary {
@@ -1826,10 +1842,10 @@ export class RpcServer {
       <div class="container">
         <h1>${partyIcon} ${partyLabel}</h1>
         
-        <!-- Refresh Indicator -->
-        <div class="refresh-indicator" id="refreshIndicator">
-          <div class="loading-spinner" style="display: none;"></div>
-          <span>Auto-refresh: <span id="refreshStatus">ON</span></span>
+        <!-- Sync Status -->
+        <div class="sync-status synced" id="syncStatus">
+          <span class="status-dot"></span>
+          <span id="syncText">In sync</span>
         </div>
         
         <!-- Deal Summary (Always Visible) -->
@@ -2083,6 +2099,7 @@ export class RpcServer {
         let dealData = null;
         let blockchainProviders = {};
         let blockchainQueryCache = {};
+        let lastSyncTime = Date.now();
         
         // RPC endpoints will be populated from backend
         let RPC_ENDPOINTS = {};
@@ -2463,6 +2480,9 @@ export class RpcServer {
           
           // Also start blockchain refresh for live data
           setInterval(refreshBlockchainData, 10000); // Refresh blockchain data every 10 seconds
+          
+          // Check sync status every second
+          setInterval(updateSyncStatus, 1000);
         }
         
         // Refresh blockchain data directly
@@ -2498,14 +2518,33 @@ export class RpcServer {
             // Re-render with updated blockchain data
             updateTransactionLog();
           }
+          
+          // Update sync time if we successfully queried blockchain
+          if ((dealData.escrowA?.address && blockchainProviders[dealData.alice.chainId]) ||
+              (dealData.escrowB?.address && blockchainProviders[dealData.bob.chainId]) ||
+              electrumConnected) {
+            lastSyncTime = Date.now();
+            updateSyncStatus();
+          }
+        }
+        
+        // Update sync status indicator
+        function updateSyncStatus() {
+          const syncStatus = document.getElementById('syncStatus');
+          const syncText = document.getElementById('syncText');
+          const timeSinceSync = Date.now() - lastSyncTime;
+          
+          if (timeSinceSync < 60000) { // Within 1 minute
+            syncStatus.className = 'sync-status synced';
+            syncText.textContent = 'In sync';
+          } else {
+            syncStatus.className = 'sync-status disconnected';
+            syncText.textContent = 'Disconnected';
+          }
         }
         
         // Update status from server
         async function updateStatus() {
-          const indicator = document.getElementById('refreshIndicator');
-          const spinner = indicator.querySelector('.loading-spinner');
-          spinner.style.display = 'inline-block';
-          
           try {
             const response = await fetch('/rpc', {
               method: 'POST',
@@ -2521,6 +2560,7 @@ export class RpcServer {
             const result = await response.json();
             if (result.result) {
               dealData = result.result;
+              lastSyncTime = Date.now(); // Update sync time on successful fetch
               
               // Initialize blockchain providers with endpoints from backend
               if (dealData.rpcEndpoints && Object.keys(blockchainProviders).length === 0) {
@@ -2528,11 +2568,12 @@ export class RpcServer {
               }
               
               updateDisplay();
+              updateSyncStatus();
             }
           } catch (error) {
             console.error('Failed to update status:', error);
-          } finally {
-            spinner.style.display = 'none';
+            // Don't update lastSyncTime on error
+            updateSyncStatus();
           }
         }
         
