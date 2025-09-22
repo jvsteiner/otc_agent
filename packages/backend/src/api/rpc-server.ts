@@ -1512,10 +1512,11 @@ export class RpcServer {
         .transaction-item {
           display: flex;
           justify-content: space-between;
-          align-items: center;
-          padding: 15px;
-          border-bottom: 1px solid #f3f4f6;
+          align-items: flex-start;
+          padding: 8px 10px;
+          border-bottom: 1px solid #e5e7eb;
           transition: background 0.2s;
+          font-size: 11px;
         }
         
         .transaction-item:hover {
@@ -1526,16 +1527,68 @@ export class RpcServer {
           border-bottom: none;
         }
         
-        .tx-info {
+        .tx-left {
           flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
         }
         
-        .tx-type {
+        .tx-right {
+          text-align: right;
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+        }
+        
+        .tx-header {
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
           font-weight: 600;
-          margin-bottom: 5px;
+        }
+        
+        .tx-chain-badge {
+          display: inline-block;
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-size: 9px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        
+        .chain-unicity { background: #e0f2fe; color: #0369a1; }
+        .chain-polygon { background: #f3e8ff; color: #7c3aed; }
+        .chain-eth { background: #e0e7ff; color: #4f46e5; }
+        .chain-base { background: #dbeafe; color: #1d4ed8; }
+        
+        .escrow-a { border-left: 3px solid #10b981; }
+        .escrow-b { border-left: 3px solid #3b82f6; }
+        
+        .tx-addresses {
+          display: flex;
+          gap: 8px;
+          font-family: 'Courier New', monospace;
+          font-size: 10px;
+          color: #6b7280;
+          margin-top: 2px;
+        }
+        
+        .tx-addr-label {
+          color: #9ca3af;
+          font-weight: 600;
+        }
+        
+        .tx-hash-link {
+          font-family: 'Courier New', monospace;
+          font-size: 10px;
+          color: #667eea;
+          text-decoration: none;
+        }
+        
+        .tx-hash-link:hover {
+          text-decoration: underline;
         }
         
         .tx-in {
@@ -1552,9 +1605,8 @@ export class RpcServer {
         
         .tx-hash {
           font-family: 'Courier New', monospace;
-          font-size: 12px;
+          font-size: 10px;
           color: #6b7280;
-          margin-top: 5px;
         }
         
         .tx-hash a {
@@ -2246,6 +2298,33 @@ export class RpcServer {
           }, 1000);
         }
         
+        // Format address with truncation
+        function formatAddress(addr) {
+          if (!addr) return '';
+          if (addr.length <= 20) return addr;
+          return addr.substr(0, 10) + '...' + addr.substr(-8);
+        }
+        
+        // Get blockchain explorer URL
+        function getExplorerUrl(chainId, type, value) {
+          const explorers = {
+            'UNICITY': { base: 'https://unicity.network', tx: '/tx/', addr: '/address/' },
+            'POLYGON': { base: 'https://polygonscan.com', tx: '/tx/', addr: '/address/' },
+            'ETH': { base: 'https://etherscan.io', tx: '/tx/', addr: '/address/' },
+            'BASE': { base: 'https://basescan.org', tx: '/tx/', addr: '/address/' }
+          };
+          
+          const explorer = explorers[chainId];
+          if (!explorer) return '#';
+          
+          if (type === 'tx') {
+            return explorer.base + explorer.tx + value;
+          } else if (type === 'address') {
+            return explorer.base + explorer.addr + value;
+          }
+          return '#';
+        }
+        
         // Update transaction log
         function updateTransactionLog() {
           const listEl = document.getElementById('transactionList');
@@ -2259,6 +2338,7 @@ export class RpcServer {
           
           // Your deposits
           if (dealData?.collection?.[yourSide]?.deposits) {
+            const yourChainId = party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId;
             dealData.collection[yourSide].deposits.forEach(dep => {
               transactions.push({
                 type: 'in',
@@ -2266,6 +2346,7 @@ export class RpcServer {
                 amount: dep.amount,
                 asset: dep.asset,
                 confirmations: dep.confirms,
+                chainId: yourChainId,
                 escrow: 'Your escrow',
                 time: dep.blockTime || new Date().toISOString()
               });
@@ -2274,6 +2355,7 @@ export class RpcServer {
           
           // Their deposits
           if (dealData?.collection?.[theirSide]?.deposits) {
+            const theirChainId = party === 'ALICE' ? dealData.bob.chainId : dealData.alice.chainId;
             dealData.collection[theirSide].deposits.forEach(dep => {
               transactions.push({
                 type: 'in',
@@ -2281,6 +2363,7 @@ export class RpcServer {
                 amount: dep.amount,
                 asset: dep.asset,
                 confirmations: dep.confirms,
+                chainId: theirChainId,
                 escrow: 'Their escrow',
                 time: dep.blockTime || new Date().toISOString()
               });
@@ -2312,6 +2395,7 @@ export class RpcServer {
                   confirms: item.submittedTx?.confirms || 0,
                   requiredConfirms: item.submittedTx?.requiredConfirms || 0,
                   purpose: purposeLabels[item.purpose] || item.purpose,
+                  chainId: item.chainId,
                   escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
                   time: item.createdAt
                 });
@@ -2349,68 +2433,106 @@ export class RpcServer {
             if (tx.type === 'event') {
               return \`
                 <div class="transaction-item">
-                  <div class="tx-info">
-                    <div class="tx-type">
+                  <div class="tx-left">
+                    <div class="tx-header">
                       <span>📝</span>
                       <span>\${tx.message}</span>
                     </div>
                   </div>
-                  <div class="tx-details">
+                  <div class="tx-right">
                     <div class="tx-time">\${new Date(tx.time).toLocaleString()}</div>
                   </div>
                 </div>
               \`;
             } else {
+              // Determine chain and escrow
+              const chainId = tx.chainId || (tx.escrow === 'Your escrow' ? 
+                (party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId) :
+                (party === 'ALICE' ? dealData.bob.chainId : dealData.alice.chainId));
+              
+              const escrowClass = tx.escrow === 'Your escrow' ? 'escrow-a' : 'escrow-b';
+              const chainClass = 'chain-' + chainId.toLowerCase();
+              const chainBadge = \`<span class="tx-chain-badge \${chainClass}">\${chainId}</span>\`;
+              
+              // Determine addresses
+              let fromAddr = '';
+              let toAddr = '';
+              
+              if (tx.type === 'in') {
+                // Deposit - from external to escrow
+                fromAddr = tx.from || 'External';
+                toAddr = tx.escrow === 'Your escrow' ? 
+                  (dealData?.escrowA?.address || dealData?.escrowB?.address) : 
+                  (dealData?.escrowB?.address || dealData?.escrowA?.address);
+              } else {
+                // Transfer - from escrow to recipient
+                fromAddr = tx.escrow === 'Your escrow' ? 
+                  (dealData?.escrowA?.address || dealData?.escrowB?.address) : 
+                  (dealData?.escrowB?.address || dealData?.escrowA?.address);
+                toAddr = tx.to || '';
+              }
+              
               const typeIcon = tx.type === 'in' ? '⬇️' : '⬆️';
               const typeClass = tx.type === 'in' ? 'tx-in' : 'tx-out';
               
-              // Determine status based on transaction type and status fields
+              // Determine status and confirmations
               let statusClass = 'pending';
               let statusText = 'PENDING';
+              let confirmations = 0;
               
               if (tx.type === 'in') {
-                // For deposits, use confirmations
-                statusText = tx.confirmations > 0 ? \`\${tx.confirmations} conf\` : 'PENDING';
-                statusClass = tx.confirmations >= 6 ? 'confirmed' : 'pending';
+                confirmations = tx.confirmations || 0;
+                statusText = confirmations > 0 ? \`\${confirmations} conf\` : 'PENDING';
+                statusClass = confirmations >= 6 ? 'confirmed' : 'pending';
               } else {
-                // For outgoing transactions, use status field
                 if (tx.status === 'COMPLETED') {
                   statusClass = 'confirmed';
-                  statusText = 'COMPLETED';
+                  confirmations = tx.requiredConfirms || 6;
+                  statusText = \`\${confirmations} conf\`;
                 } else if (tx.status === 'SUBMITTED') {
                   statusClass = 'pending';
-                  if (tx.confirms !== undefined && tx.requiredConfirms) {
-                    statusText = \`\${tx.confirms}/\${tx.requiredConfirms} conf\`;
-                  } else {
-                    statusText = 'SUBMITTED';
-                  }
-                } else if (tx.submittedStatus === 'DROPPED' || tx.submittedStatus === 'FAILED') {
-                  statusClass = 'failed';
-                  statusText = 'FAILED';
+                  confirmations = tx.confirms || 0;
+                  const required = tx.requiredConfirms || 6;
+                  statusText = \`\${confirmations}/\${required} conf\`;
                 } else {
                   statusClass = 'pending';
                   statusText = tx.status || 'PENDING';
                 }
               }
               
-              const purposeStr = tx.purpose ? \`<div class="tx-purpose">\${tx.purpose}</div>\` : '';
-              const escrowStr = tx.escrow ? \`<div class="tx-escrow">\${tx.escrow}</div>\` : '';
+              // Explorer links
+              const txLink = tx.txid ? 
+                \`<a href="\${getExplorerUrl(chainId, 'tx', tx.txid)}" target="_blank" class="tx-hash-link">\${formatAddress(tx.txid)}</a>\` :
+                '<span class="tx-hash">Pending...</span>';
+              
+              const fromLink = fromAddr && fromAddr !== 'External' ? 
+                \`<a href="\${getExplorerUrl(chainId, 'address', fromAddr)}" target="_blank" class="tx-hash-link">\${formatAddress(fromAddr)}</a>\` :
+                formatAddress(fromAddr);
+                
+              const toLink = toAddr ? 
+                \`<a href="\${getExplorerUrl(chainId, 'address', toAddr)}" target="_blank" class="tx-hash-link">\${formatAddress(toAddr)}</a>\` :
+                '';
               
               return \`
-                <div class="transaction-item">
-                  <div class="tx-info">
-                    <div class="tx-type \${typeClass}">
-                      <span>\${typeIcon}</span>
-                      <span>\${tx.type === 'in' ? 'Deposit' : 'Transfer'}</span>
+                <div class="transaction-item \${escrowClass}">
+                  <div class="tx-left">
+                    <div class="tx-header">
+                      <span class="\${typeClass}">\${typeIcon}</span>
+                      <span>\${tx.type === 'in' ? 'Deposit' : tx.purpose || 'Transfer'}</span>
+                      \${chainBadge}
+                      <span class="tx-amount">\${tx.amount} \${tx.asset}</span>
                     </div>
-                    \${purposeStr}
-                    \${escrowStr}
-                    \${tx.txid ? '<div class="tx-hash">TxID: <a href="#" onclick="alert(\\'Full TX ID:\\n' + tx.txid + '\\'); return false;" title="' + tx.txid + '">' + tx.txid.substr(0, 10) + '...</a></div>' : ''}
-                    \${tx.to && tx.type === 'out' ? '<div class="tx-recipient">To: ' + tx.to.substr(0, 10) + '...</div>' : ''}
+                    <div class="tx-addresses">
+                      <span class="tx-addr-label">From:</span> \${fromLink}
+                      <span class="tx-addr-label">To:</span> \${toLink}
+                    </div>
+                    <div class="tx-hash">
+                      <span class="tx-addr-label">TxID:</span> \${txLink}
+                    </div>
                   </div>
-                  <div class="tx-details">
-                    <div class="tx-amount">\${tx.amount} \${tx.asset}</div>
-                    <div class="tx-time">\${new Date(tx.time).toLocaleString()}</div>
+                  <div class="tx-right">
+                    <div class="tx-time">\${new Date(tx.time).toLocaleTimeString()}</div>
+                    <div class="tx-time">\${new Date(tx.time).toLocaleDateString()}</div>
                     <span class="tx-status \${statusClass}">\${statusText}</span>
                   </div>
                 </div>
