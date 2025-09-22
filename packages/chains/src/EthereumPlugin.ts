@@ -9,6 +9,7 @@ import {
   PriceQuote
 } from './ChainPlugin';
 import ERC20_ABI from './abi/ERC20.json';
+import { EtherscanAPI } from './utils/EtherscanAPI';
 
 export class EthereumPlugin implements ChainPlugin {
   readonly chainId: ChainId;
@@ -17,6 +18,7 @@ export class EthereumPlugin implements ChainPlugin {
   private wallets: Map<string, ethers.HDNodeWallet> = new Map();
   private rootWallet?: ethers.HDNodeWallet;
   private walletIndex: number = 0;
+  private etherscanAPI?: EtherscanAPI;
 
   constructor(config?: Partial<ChainConfig>) {
     this.chainId = config?.chainId || 'ETH';
@@ -32,6 +34,10 @@ export class EthereumPlugin implements ChainPlugin {
     this.provider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
       staticNetwork: true // Skip network detection to avoid timeout
     });
+    
+    // Initialize Etherscan API for transaction history
+    // No API key needed for basic queries
+    this.etherscanAPI = new EtherscanAPI(this.chainId);
     
     // Initialize hot wallet if seed provided
     if (cfg.hotWalletSeed) {
@@ -134,37 +140,143 @@ export class EthereumPlugin implements ChainPlugin {
     try {
       const currentBlock = await this.provider.getBlockNumber();
       
-      // For native currency, check balance
+      // For native currency, fetch transaction history
       // Support both simple and fully qualified asset names
       const isNative = asset === 'ETH' || asset === 'ETH@ETH' || 
                       asset === 'MATIC' || asset === 'MATIC@POLYGON';
+      
       if (isNative) {
+        // Get balance for total confirmation
         const balance = await this.provider.getBalance(address);
+        
         if (balance > 0n) {
-          deposits.push({
-            txid: 'balance',
-            amount: ethers.formatEther(balance),
-            asset: asset,
-            confirms: minConf + 1 // Consider balance as confirmed
-          });
           totalConfirmed = ethers.formatEther(balance);
+          
+          // Try to fetch real transaction history from Etherscan
+          if (this.etherscanAPI) {
+            try {
+              // Look back up to 1000 blocks for incoming transactions
+              const startBlock = Math.max(0, currentBlock - 1000);
+              const txs = await this.etherscanAPI.getIncomingTransactions(address, 0n, startBlock);
+              
+              // Add each transaction as a deposit
+              for (const tx of txs) {
+                if (tx.confirmations >= minConf) {
+                  deposits.push({
+                    txid: tx.txid,
+                    amount: tx.amount,
+                    asset: asset,
+                    confirms: tx.confirmations,
+                    blockHeight: tx.blockHeight,
+                    blockTime: tx.blockTime
+                  });
+                }
+              }
+            } catch (err) {
+              console.warn('Failed to fetch transaction history from Etherscan:', err);
+              // We have balance but couldn't get transaction history
+              // Return the balance total but no individual deposits
+              // The engine should handle this case
+            }
+          } else {
+            console.log('No Etherscan API configured, cannot fetch transaction history');
+          }
         }
       } else if (asset.startsWith('ERC20:')) {
         // For ERC20 tokens
         const tokenAddress = asset.split(':')[1];
         const contract = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
-        const balance = await contract.balanceOf(address);
         const decimals = await contract.decimals();
         
+        // Get current balance for total
+        const balance = await contract.balanceOf(address);
         if (balance > 0n) {
-          const formattedBalance = ethers.formatUnits(balance, decimals);
-          deposits.push({
-            txid: 'balance',
-            amount: formattedBalance,
-            asset: asset,
-            confirms: minConf + 1
-          });
-          totalConfirmed = formattedBalance;
+          totalConfirmed = ethers.formatUnits(balance, decimals);
+        }
+        
+        // Try to fetch from Etherscan first
+        if (this.etherscanAPI) {
+          try {
+            const startBlock = Math.max(0, currentBlock - 1000);
+            const transfers = await this.etherscanAPI.getERC20Transfers(tokenAddress, address, startBlock);
+            
+            for (const transfer of transfers) {
+              if (transfer.confirmations >= minConf) {
+                deposits.push({
+                  txid: transfer.txid,
+                  amount: transfer.amount,
+                  asset: asset,
+                  confirms: transfer.confirmations,
+                  blockHeight: transfer.blockHeight,
+                  blockTime: transfer.blockTime
+                });
+              }
+            }
+          } catch (err) {
+            console.warn('Failed to fetch ERC20 transfers from Etherscan:', err);
+            // Fall back to event queries
+            try {
+              const blocksToScan = 100;
+              const fromBlock = Math.max(0, currentBlock - blocksToScan);
+              const filter = contract.filters.Transfer(null, address);
+              const events = await contract.queryFilter(filter, fromBlock, currentBlock);
+              
+              for (const event of events) {
+                if (event.blockNumber) {
+                  const confirms = currentBlock - event.blockNumber + 1;
+                  if (confirms >= minConf) {
+                    // Cast to EventLog to access args
+                    const eventLog = event as ethers.EventLog;
+                    const amount = ethers.formatUnits(eventLog.args?.[2] || 0, decimals);
+                    deposits.push({
+                      txid: event.transactionHash,
+                      index: event.index,
+                      amount: amount,
+                      asset: asset,
+                      confirms: confirms,
+                      blockHeight: event.blockNumber,
+                      blockTime: new Date().toISOString()
+                    });
+                  }
+                }
+              }
+            } catch (err2) {
+              console.warn('Event query also failed:', err2);
+              // No deposits can be listed without transaction history
+            }
+          }
+        } else {
+          // No Etherscan API, use event queries
+          try {
+            const blocksToScan = 100;
+            const fromBlock = Math.max(0, currentBlock - blocksToScan);
+            const filter = contract.filters.Transfer(null, address);
+            const events = await contract.queryFilter(filter, fromBlock, currentBlock);
+            
+            for (const event of events) {
+              if (event.blockNumber) {
+                const confirms = currentBlock - event.blockNumber + 1;
+                if (confirms >= minConf) {
+                  // Cast to EventLog to access args
+                  const eventLog = event as ethers.EventLog;
+                  const amount = ethers.formatUnits(eventLog.args?.[2] || 0, decimals);
+                  deposits.push({
+                    txid: event.transactionHash,
+                    index: event.index,
+                    amount: amount,
+                    asset: asset,
+                    confirms: confirms,
+                    blockHeight: event.blockNumber,
+                    blockTime: new Date().toISOString()
+                  });
+                }
+              }
+            }
+            
+          } catch (err) {
+            console.warn('Event query failed:', err);
+            // No deposits can be listed without transaction history
+          }
         }
       }
     } catch (error) {

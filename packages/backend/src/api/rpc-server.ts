@@ -2774,7 +2774,7 @@ export class RpcServer {
                 }
               }
               
-              // Explorer links
+              // Explorer links - always use real txids
               const txLink = tx.txid ? 
                 \`<a href="\${getExplorerUrl(chainId, 'tx', tx.txid)}" target="_blank" class="tx-hash-link">\${formatAddress(tx.txid)}</a>\` :
                 '<span class="tx-hash">Pending...</span>';
