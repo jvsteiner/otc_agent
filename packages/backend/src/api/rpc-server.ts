@@ -1957,6 +1957,112 @@ export class RpcServer {
         window.ethers = ethers;
       </script>
       
+      <style>
+        /* More compact fonts and spacing for seller pages */
+        body { font-size: 11px !important; }
+        h1 { font-size: 16px !important; padding-bottom: 5px !important; }
+        h2 { font-size: 14px !important; }
+        h3 { font-size: 12px !important; margin: 0 0 6px 0 !important; }
+        h4 { font-size: 11px !important; }
+        
+        .container { padding: 12px !important; }
+        .form-group { margin: 6px 0 !important; }
+        .asset-section { padding: 8px !important; }
+        
+        .escrow-info { padding: 8px !important; margin-bottom: 10px !important; }
+        .escrow-address { font-size: 9px !important; padding: 4px 6px !important; margin-top: 4px !important; }
+        .escrow-label { font-size: 11px !important; }
+        .escrow-copy-btn { padding: 5px 10px !important; font-size: 10px !important; }
+        
+        .countdown-timer { 
+          padding: 3px 6px !important; 
+          font-size: 9px !important; 
+          margin-left: 6px !important;
+          min-width: 55px !important;
+        }
+        
+        .deal-info h2 { font-size: 14px !important; }
+        .deal-status { font-size: 11px !important; }
+        .stage-badge { 
+          font-size: 9px !important; 
+          padding: 2px 6px !important;
+        }
+        
+        input, select { 
+          padding: 4px 6px !important; 
+          font-size: 10px !important; 
+          margin: 2px 0 !important;
+        }
+        button { 
+          padding: 6px 12px !important; 
+          font-size: 11px !important; 
+        }
+        
+        label {
+          font-size: 10px !important;
+          margin-bottom: 2px !important;
+        }
+        
+        .asset-display { 
+          padding: 3px 5px !important; 
+          font-size: 10px !important; 
+          gap: 4px !important;
+        }
+        .asset-icon { font-size: 14px !important; }
+        .asset-name { font-size: 10px !important; }
+        .asset-details { font-size: 9px !important; }
+        
+        .balance-card { padding: 10px !important; }
+        .balance-label { font-size: 10px !important; }
+        .balance-amount { font-size: 11px !important; }
+        .balance-percentage { font-size: 14px !important; }
+        .balance-progress { height: 16px !important; }
+        .balance-details { font-size: 9px !important; margin-top: 6px !important; }
+        
+        .transaction-item { 
+          padding: 6px !important; 
+          margin: 4px 0 !important; 
+        }
+        .tx-hash { font-size: 9px !important; }
+        .tx-amount { font-size: 10px !important; }
+        .tx-tag { 
+          font-size: 8px !important; 
+          padding: 1px 4px !important; 
+        }
+        
+        .chain-badge {
+          font-size: 8px !important;
+          padding: 1px 4px !important;
+        }
+        
+        .transaction-log h3 { font-size: 11px !important; }
+        .empty-state { padding: 15px !important; }
+        .empty-state-icon { font-size: 20px !important; }
+        .empty-state p { font-size: 11px !important; }
+        .empty-state small { font-size: 9px !important; }
+        
+        .live-indicator {
+          display: inline-block;
+          animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+        
+        .automatic-return-notice {
+          animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+          from { opacity: 0; transform: translateY(-10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        
+        small { font-size: 9px !important; }
+      </style>
+      
       <script>
         const dealId = '${dealId}';
         const token = '${token}';
@@ -1980,6 +2086,183 @@ export class RpcServer {
         
         // RPC endpoints will be populated from backend
         let RPC_ENDPOINTS = {};
+        
+        // ===== UNICITY FULCRUM SUPPORT =====
+        let electrumSocket = null;
+        let electrumConnected = false;
+        let electrumRequestId = 1;
+        let electrumCallbacks = {};
+        
+        // Bech32 decode for Unicity addresses
+        const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+        
+        function bech32Decode(str) {
+          let data = [];
+          let p = str.lastIndexOf('1');
+          if (p === -1) return null;
+          
+          for (let i = p + 1; i < str.length; i++) {
+            let d = CHARSET.indexOf(str[i]);
+            if (d === -1) return null;
+            data.push(d);
+          }
+          
+          return { prefix: str.substring(0, p), words: data };
+        }
+        
+        function bech32FromWords(words) {
+          let bits = 0;
+          let value = 0;
+          let output = [];
+          for (let i = 0; i < words.length; i++) {
+            value = (value << 5) | words[i];
+            bits += 5;
+            while (bits >= 8) {
+              bits -= 8;
+              output.push((value >> bits) & 0xff);
+            }
+          }
+          return new Uint8Array(output);
+        }
+        
+        // Simple SHA256 for browser
+        async function sha256(data) {
+          if (window.crypto && window.crypto.subtle) {
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            return new Uint8Array(hashBuffer);
+          }
+          return new Uint8Array(32);
+        }
+        
+        // Convert Unicity address to script hash for Electrum
+        async function addressToScriptHash(address) {
+          if (!address) return null;
+          
+          try {
+            const decoded = bech32Decode(address);
+            if (!decoded) return null;
+            
+            const witnessVersion = decoded.words[0];
+            const witnessProgram = bech32FromWords(decoded.words.slice(1));
+            
+            // Create scriptPubKey (P2WPKH)
+            const scriptPubKey = new Uint8Array([0x00, 0x14, ...witnessProgram]);
+            
+            // SHA256 hash
+            const hash = await sha256(scriptPubKey);
+            
+            // Reverse for Electrum (little-endian)
+            return Array.from(hash).reverse().map(b => b.toString(16).padStart(2, '0')).join('');
+          } catch (err) {
+            console.error('Error converting address to script hash:', err);
+            return null;
+          }
+        }
+        
+        // Connect to Unicity Fulcrum
+        function connectToUnicity() {
+          return new Promise((resolve, reject) => {
+            const wsUrl = 'wss://fulcrum.unicity.network:50004';
+            
+            try {
+              electrumSocket = new WebSocket(wsUrl);
+              
+              electrumSocket.onopen = function() {
+                electrumConnected = true;
+                console.log('Connected to Unicity Fulcrum');
+                
+                // Get server version
+                electrumRequest('server.version', ['OTC-Broker', '1.4'], function(result) {
+                  console.log('Unicity server version:', result);
+                });
+                
+                resolve();
+              };
+              
+              electrumSocket.onmessage = function(event) {
+                try {
+                  const response = JSON.parse(event.data);
+                  
+                  if (response.id && electrumCallbacks[response.id]) {
+                    const callback = electrumCallbacks[response.id];
+                    delete electrumCallbacks[response.id];
+                    
+                    if (response.error) {
+                      console.error('Electrum error:', response.error);
+                      callback(null, response.error);
+                    } else {
+                      callback(response.result);
+                    }
+                  }
+                } catch (err) {
+                  console.error('Error parsing Electrum response:', err);
+                }
+              };
+              
+              electrumSocket.onerror = function(error) {
+                console.error('Unicity WebSocket error:', error);
+                electrumConnected = false;
+                reject(error);
+              };
+              
+              electrumSocket.onclose = function() {
+                electrumConnected = false;
+                console.log('Disconnected from Unicity Fulcrum');
+              };
+            } catch (err) {
+              reject(err);
+            }
+          });
+        }
+        
+        // Send Electrum request
+        function electrumRequest(method, params, callback) {
+          if (!electrumSocket || electrumSocket.readyState !== WebSocket.OPEN) {
+            if (callback) callback(null, 'Not connected');
+            return;
+          }
+          
+          const id = electrumRequestId++;
+          
+          if (callback) {
+            electrumCallbacks[id] = callback;
+          }
+          
+          const request = {
+            jsonrpc: '2.0',
+            method: method,
+            params: params,
+            id: id
+          };
+          
+          electrumSocket.send(JSON.stringify(request));
+        }
+        
+        // Get balance for a Unicity address
+        async function getUnicityBalance(address) {
+          const scriptHash = await addressToScriptHash(address);
+          if (!scriptHash) return 0;
+          
+          return new Promise((resolve) => {
+            electrumRequest('blockchain.scripthash.get_balance', [scriptHash], function(result, error) {
+              if (error) {
+                console.error('Failed to get Unicity balance:', error);
+                resolve(0);
+              } else {
+                // Balance is in satoshis
+                const balanceInAlpha = (result.confirmed || 0) / 100000000;
+                resolve(balanceInAlpha);
+              }
+            });
+          });
+        }
+        
+        // Initialize Unicity connection
+        if (!electrumConnected) {
+          connectToUnicity().catch(err => {
+            console.error('Failed to connect to Unicity:', err);
+          });
+        }
         
         // Initialize blockchain providers when ethers is loaded
         function initializeProviders(endpoints) {
@@ -2320,6 +2603,11 @@ export class RpcServer {
           // Update transaction log
           updateTransactionLog();
           
+          // Handle closed deal notice
+          if (dealData.stage === 'CLOSED' || dealData.stage === 'REVERTED') {
+            handleClosedDeal();
+          }
+          
           // Show/hide cancel button based on whether assets are locked
           const hasDeposits = 
             (dealData.collection?.sideA?.deposits?.length > 0) ||
@@ -2440,12 +2728,14 @@ export class RpcServer {
           }
         }
         
-        // Update balance display
+        // Update balance display (modified for closed deals and live data)
         async function updateBalance(type, collection, instructions, expectedDeal) {
           const balanceEl = document.getElementById(type + 'Balance');
           const progressEl = document.getElementById(type + 'Progress');
           const percentageEl = document.getElementById(type + 'Percentage');
           const statusEl = document.getElementById(type + 'Status');
+          
+          const isClosedDeal = dealData && (dealData.stage === 'CLOSED' || dealData.stage === 'REVERTED');
           
           // Use expected amount from deal if instructions are empty
           let required, assetCode, escrowAddress, chainId;
@@ -2478,20 +2768,33 @@ export class RpcServer {
           
           let collected = parseFloat(collection?.collectedByAsset?.[assetCode] || '0');
           
-          // Try to get real-time balance from blockchain for supported chains
-          if (escrowAddress && chainId && blockchainProviders[chainId]) {
-            const liveBalance = await queryBlockchainBalance(chainId, escrowAddress, assetCode);
-            if (liveBalance !== null) {
-              const liveBalanceNum = parseFloat(liveBalance);
+          // Try to get real-time balance from blockchain
+          if (escrowAddress && chainId) {
+            try {
+              let liveBalance = null;
               
-              // If blockchain shows more than our cached value, update display
-              if (liveBalanceNum > collected) {
-                collected = liveBalanceNum;
+              if (chainId === 'UNICITY') {
+                // Use Fulcrum for Unicity
+                if (electrumConnected) {
+                  liveBalance = await getUnicityBalance(escrowAddress);
+                }
+              } else if (blockchainProviders[chainId]) {
+                // Use ethers for EVM chains
+                const queryResult = await queryBlockchainBalance(chainId, escrowAddress, assetCode);
+                if (queryResult !== null) {
+                  liveBalance = parseFloat(queryResult);
+                }
+              }
+              
+              // Use live balance if available (always use live data, not just if higher)
+              if (liveBalance !== null) {
+                collected = liveBalance;
                 
-                // Add visual indicator for live data
+                // Add live indicator
                 const liveIndicator = document.createElement('span');
-                liveIndicator.style.cssText = 'color: #10b981; font-size: 10px; margin-left: 5px;';
-                liveIndicator.textContent = '🔄 Live';
+                liveIndicator.style.cssText = 'color: #10b981; font-size: 8px; margin-left: 4px;';
+                liveIndicator.innerHTML = '🟢';
+                liveIndicator.title = 'Live blockchain data';
                 liveIndicator.id = type + 'LiveIndicator';
                 
                 const existing = document.getElementById(type + 'LiveIndicator');
@@ -2499,27 +2802,52 @@ export class RpcServer {
                 
                 balanceEl.appendChild(liveIndicator);
               }
+            } catch (err) {
+              console.error('Failed to get live balance:', err);
             }
           }
           
-          const percentage = Math.min(100, (collected / required) * 100);
-          
-          const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4);
-          if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
-            balanceEl.firstChild.textContent = balanceText;
+          // Display logic for closed deals
+          if (isClosedDeal) {
+            // Show only current balance for closed deals
+            const balanceText = collected.toFixed(4) + ' ' + (assetCode || '');
+            if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
+              balanceEl.firstChild.textContent = balanceText;
+            } else {
+              balanceEl.textContent = balanceText;
+            }
+            balanceEl.style.color = collected > 0 ? '#f59e0b' : '#888';
+            
+            // Hide progress bar
+            if (progressEl) progressEl.style.display = 'none';
+            if (percentageEl) percentageEl.style.display = 'none';
+            
+            // Update status
+            if (statusEl) {
+              statusEl.textContent = collected > 0 ? '⚠️ Balance will be auto-returned' : '✅ No remaining balance';
+              statusEl.style.color = collected > 0 ? '#f59e0b' : '#10b981';
+            }
           } else {
-            balanceEl.textContent = balanceText;
-          }
-          
-          progressEl.style.width = percentage + '%';
-          percentageEl.textContent = Math.round(percentage) + '%';
-          
-          if (percentage === 100) {
-            statusEl.textContent = '✅ Fully funded';
-          } else if (percentage > 0) {
-            statusEl.textContent = '⏳ Partial funding (' + percentage.toFixed(1) + '%)';
-          } else {
-            statusEl.textContent = '⏰ Waiting for deposits...';
+            // Normal display for active deals
+            const percentage = Math.min(100, (collected / required) * 100);
+            
+            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4);
+            if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
+              balanceEl.firstChild.textContent = balanceText;
+            } else {
+              balanceEl.textContent = balanceText;
+            }
+            
+            progressEl.style.width = percentage + '%';
+            percentageEl.textContent = Math.round(percentage) + '%';
+            
+            if (percentage === 100) {
+              statusEl.textContent = '✅ Fully funded';
+            } else if (percentage > 0) {
+              statusEl.textContent = '⏳ Partial funding (' + percentage.toFixed(1) + '%)';
+            } else {
+              statusEl.textContent = '⏰ Waiting for deposits...';
+            }
           }
         }
         
@@ -2579,6 +2907,47 @@ export class RpcServer {
             return explorer.base + explorer.addr + value;
           }
           return '#';
+        }
+        
+        // Handle closed deals - add automatic return notice
+        function handleClosedDeal() {
+          if (!dealData || (dealData.stage !== 'CLOSED' && dealData.stage !== 'REVERTED')) {
+            return;
+          }
+          
+          // Check if notice already exists
+          if (document.getElementById('automatic-return-notice')) {
+            return;
+          }
+          
+          // Calculate monitoring end time (24 hours after closure)
+          const closedAt = new Date(dealData.closedAt || Date.now());
+          const monitoringEndTime = new Date(closedAt.getTime() + 24 * 60 * 60 * 1000);
+          
+          // Add explanation about automatic returns
+          const explanationDiv = document.createElement('div');
+          explanationDiv.id = 'automatic-return-notice';
+          explanationDiv.className = 'automatic-return-notice';
+          explanationDiv.style.cssText = 'background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 10px; margin: 12px 0;';
+          explanationDiv.innerHTML = \`
+            <h4 style="color: #92400e; margin: 0 0 6px 0; font-size: 12px;">
+              ⚠️ Automatic Return Policy
+            </h4>
+            <p style="color: #78350f; margin: 0; font-size: 10px; line-height: 1.4;">
+              This deal has been <strong>\${dealData.stage === 'CLOSED' ? 'successfully completed' : 'cancelled'}</strong>.
+              Any funds sent to the escrow addresses will be automatically returned to the respective payback addresses.
+              Automatic monitoring and returns will continue until:
+            </p>
+            <p style="color: #92400e; margin: 6px 0 0 0; font-size: 11px; font-weight: 600;">
+              📅 \${monitoringEndTime.toLocaleString()}
+            </p>
+          \`;
+          
+          // Insert after deal info section
+          const dealInfoSection = document.querySelector('.deal-info');
+          if (dealInfoSection) {
+            dealInfoSection.parentNode.insertBefore(explanationDiv, dealInfoSection.nextSibling);
+          }
         }
         
         // Update transaction log
