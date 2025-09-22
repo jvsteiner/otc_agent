@@ -443,6 +443,37 @@ export class RpcServer {
       }
     }
     
+    // Get RPC endpoints for chains
+    const rpcEndpoints: Record<string, string> = {};
+    const chains = new Set([deal.alice.chainId, deal.bob.chainId]);
+    
+    for (const chainId of chains) {
+      switch (chainId) {
+        case 'ETH':
+          rpcEndpoints[chainId] = 'https://ethereum-rpc.publicnode.com';
+          break;
+        case 'POLYGON':
+          rpcEndpoints[chainId] = 'https://polygon-rpc.com';
+          break;
+        case 'BASE':
+          rpcEndpoints[chainId] = 'https://base-rpc.publicnode.com';
+          break;
+        case 'UNICITY':
+          rpcEndpoints[chainId] = 'wss://fulcrum.unicity.network:50004'; // Electrum endpoint
+          break;
+      }
+    }
+    
+    // Tag transactions properly
+    const taggedTransactions = queueItems.map(item => ({
+      ...item,
+      tag: item.purpose === 'SWAP_PAYOUT' ? 'swap' :
+           item.purpose === 'OP_COMMISSION' ? 'commission' :
+           item.purpose === 'TIMEOUT_REFUND' ? 'refund' :
+           item.purpose === 'SURPLUS_REFUND' ? 'return' : 'unknown',
+      blockTime: item.submittedTx?.submittedAt || item.createdAt
+    }));
+    
     return {
       stage: deal.stage,
       timeoutSeconds: deal.timeoutSeconds,
@@ -459,7 +490,8 @@ export class RpcServer {
       bob: deal.bob,
       escrowA: deal.escrowA,
       escrowB: deal.escrowB,
-      transactions: queueItems,
+      transactions: taggedTransactions,
+      rpcEndpoints,
     };
   }
 
@@ -1659,11 +1691,22 @@ export class RpcServer {
           color: #991b1b;
         }
         
-        .tx-purpose {
-          font-size: 12px;
-          color: #6b7280;
-          margin: 2px 0;
+        .tx-tag {
+          display: inline-block;
+          padding: 2px 8px;
+          border-radius: 12px;
+          font-size: 9px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-right: 6px;
         }
+        
+        .tag-deposit { background: #d1fae5; color: #065f46; }
+        .tag-swap { background: #dbeafe; color: #1e40af; }
+        .tag-commission { background: #fef3c7; color: #92400e; }
+        .tag-refund { background: #fce7f3; color: #9f1239; }
+        .tag-return { background: #ede9fe; color: #6b21a8; }
         
         .tx-escrow {
           font-size: 11px;
@@ -1935,26 +1978,26 @@ export class RpcServer {
         let blockchainProviders = {};
         let blockchainQueryCache = {};
         
-        // Public RPC endpoints for read-only access
-        const RPC_ENDPOINTS = {
-          'ETH': 'https://ethereum-rpc.publicnode.com',
-          'POLYGON': 'https://polygon-rpc.com',
-          'BASE': 'https://base-rpc.publicnode.com',
-          'UNICITY': null // Unicity doesn't use ethers.js
-        };
+        // RPC endpoints will be populated from backend
+        let RPC_ENDPOINTS = {};
         
         // Initialize blockchain providers when ethers is loaded
-        function initializeProviders() {
+        function initializeProviders(endpoints) {
           if (!window.ethers) {
-            setTimeout(initializeProviders, 100);
+            setTimeout(() => initializeProviders(endpoints), 100);
             return;
           }
           
+          // Use endpoints from backend if provided
+          if (endpoints) {
+            RPC_ENDPOINTS = endpoints;
+          }
+          
           for (const [chain, rpcUrl] of Object.entries(RPC_ENDPOINTS)) {
-            if (rpcUrl) {
+            if (rpcUrl && !rpcUrl.startsWith('wss://')) { // Skip WebSocket endpoints (Unicity)
               try {
                 blockchainProviders[chain] = new ethers.JsonRpcProvider(rpcUrl);
-                console.log(\`Initialized provider for \${chain}\`);
+                console.log(\`Initialized provider for \${chain} with \${rpcUrl}\`);
               } catch (err) {
                 console.error(\`Failed to initialize \${chain} provider:\`, err);
               }
@@ -2052,8 +2095,7 @@ export class RpcServer {
           }
         }
         
-        // Initialize providers when page loads
-        setTimeout(initializeProviders, 100);
+        // Initialize providers when page loads (will be called with endpoints from updateStatus)
         
         // Submit party details
         async function submitDetails() {
@@ -2196,6 +2238,12 @@ export class RpcServer {
             const result = await response.json();
             if (result.result) {
               dealData = result.result;
+              
+              // Initialize blockchain providers with endpoints from backend
+              if (dealData.rpcEndpoints && Object.keys(blockchainProviders).length === 0) {
+                initializeProviders(dealData.rpcEndpoints);
+              }
+              
               updateDisplay();
             }
           } catch (error) {
@@ -2550,13 +2598,15 @@ export class RpcServer {
             dealData.collection[yourSide].deposits.forEach(dep => {
               transactions.push({
                 type: 'in',
+                tag: 'deposit',
                 txid: dep.txid,
                 amount: dep.amount,
                 asset: dep.asset,
                 confirmations: dep.confirms,
                 chainId: yourChainId,
                 escrow: 'Your escrow',
-                time: dep.blockTime || new Date().toISOString()
+                time: dep.blockTime || dep.createdAt || new Date().toISOString(),
+                blockNumber: dep.blockHeight
               });
             });
           }
@@ -2567,13 +2617,15 @@ export class RpcServer {
             dealData.collection[theirSide].deposits.forEach(dep => {
               transactions.push({
                 type: 'in',
+                tag: 'deposit',
                 txid: dep.txid,
                 amount: dep.amount,
                 asset: dep.asset,
                 confirmations: dep.confirms,
                 chainId: theirChainId,
                 escrow: 'Their escrow',
-                time: dep.blockTime || new Date().toISOString()
+                time: dep.blockTime || dep.createdAt || new Date().toISOString(),
+                blockNumber: dep.blockHeight
               });
             });
           }
@@ -2594,17 +2646,13 @@ export class RpcServer {
                     if (liveStatus.confirmations >= (item.submittedTx.requiredConfirms || 6)) {
                       item.status = 'COMPLETED';
                     }
+                    item.blockNumber = liveStatus.blockNumber;
                   }
                 }
-                const purposeLabels = {
-                  'SWAP_PAYOUT': '💱 Swap',
-                  'OP_COMMISSION': '💰 Commission',
-                  'TIMEOUT_REFUND': '↩️ Refund',
-                  'SURPLUS_REFUND': '💵 Surplus Return'
-                };
                 
                 transactions.push({
                   type: 'out',
+                  tag: item.tag || 'unknown', // Use tag from backend
                   txid: item.submittedTx?.txid,
                   amount: item.amount,
                   asset: item.asset,
@@ -2613,10 +2661,10 @@ export class RpcServer {
                   submittedStatus: item.submittedTx?.status,
                   confirms: item.submittedTx?.confirms || 0,
                   requiredConfirms: item.submittedTx?.requiredConfirms || 0,
-                  purpose: purposeLabels[item.purpose] || item.purpose,
                   chainId: item.chainId,
                   escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
-                  time: item.createdAt
+                  time: item.blockTime || item.createdAt,
+                  blockNumber: item.blockNumber
                 });
               }
             });
@@ -2644,8 +2692,15 @@ export class RpcServer {
             return;
           }
           
-          // Sort by time (newest first)
-          transactions.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+          // Sort transactions by time/block number (newest first)
+          transactions.sort((a, b) => {
+            // First try block number if both have it
+            if (a.blockNumber && b.blockNumber && a.chainId === b.chainId) {
+              return b.blockNumber - a.blockNumber;
+            }
+            // Otherwise sort by time
+            return new Date(b.time).getTime() - new Date(a.time).getTime();
+          });
           
           // Render transactions
           listEl.innerHTML = transactions.map(tx => {
@@ -2732,12 +2787,24 @@ export class RpcServer {
                 \`<a href="\${getExplorerUrl(chainId, 'address', toAddr)}" target="_blank" class="tx-hash-link">\${formatAddress(toAddr)}</a>\` :
                 '';
               
+              // Create tag element
+              const tagLabels = {
+                'deposit': 'Deposit',
+                'swap': 'Swap',
+                'commission': 'Fees',
+                'refund': 'Refund',
+                'return': 'Return'
+              };
+              
+              const tagLabel = tagLabels[tx.tag] || tx.tag;
+              const tagHtml = \`<span class="tx-tag tag-\${tx.tag}">\${tagLabel}</span>\`;
+              
               return \`
                 <div class="transaction-item \${escrowClass}">
                   <div class="tx-left">
                     <div class="tx-header">
                       <span class="\${typeClass}">\${typeIcon}</span>
-                      <span>\${tx.type === 'in' ? 'Deposit' : tx.purpose || 'Transfer'}</span>
+                      \${tagHtml}
                       \${chainBadge}
                       <span class="tx-amount">\${tx.amount} \${tx.asset}</span>
                     </div>
