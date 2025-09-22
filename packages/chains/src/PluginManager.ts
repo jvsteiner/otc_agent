@@ -8,8 +8,18 @@ import { BasePlugin } from './BasePlugin';
 
 export class PluginManager {
   private plugins = new Map<ChainId, ChainPlugin>();
+  private database?: any;
+
+  constructor(database?: any) {
+    this.database = database;
+  }
 
   async registerPlugin(config: ChainConfig): Promise<void> {
+    // Pass database to config if available
+    if (this.database && !config.database) {
+      config.database = this.database;
+    }
+    
     let plugin: ChainPlugin;
     
     switch (config.chainId) {

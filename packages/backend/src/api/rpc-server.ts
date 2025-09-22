@@ -312,13 +312,13 @@ export class RpcServer {
     
     if (params.party === 'ALICE') {
       deal.aliceDetails = details;
-      // Generate escrow for Alice's send chain
-      deal.escrowA = await sendPlugin.generateEscrowAccount(deal.alice.asset);
+      // Generate escrow for Alice's send chain with dealId for uniqueness
+      deal.escrowA = await sendPlugin.generateEscrowAccount(deal.alice.asset, deal.id, 'ALICE');
       escrowRef = deal.escrowA;
     } else {
       deal.bobDetails = details;
-      // Generate escrow for Bob's send chain
-      deal.escrowB = await sendPlugin.generateEscrowAccount(deal.bob.asset);
+      // Generate escrow for Bob's send chain with dealId for uniqueness
+      deal.escrowB = await sendPlugin.generateEscrowAccount(deal.bob.asset, deal.id, 'BOB');
       escrowRef = deal.escrowB;
     }
     

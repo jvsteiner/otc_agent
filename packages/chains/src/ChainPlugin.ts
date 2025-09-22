@@ -18,6 +18,7 @@ export interface ChainConfig {
 
   hotWalletSeed?: string;   // derivation root for escrows
   feePayerKeyRef?: string;  // optional fee payer for gas top-ups
+  database?: any;           // Optional database reference for persistence
 }
 
 export interface BalanceView {
@@ -59,7 +60,7 @@ export interface ChainPlugin {
   init(cfg: ChainConfig): Promise<void>;
 
   // Managed escrows
-  generateEscrowAccount(asset: AssetCode): Promise<EscrowAccountRef>;
+  generateEscrowAccount(asset: AssetCode, dealId?: string, party?: 'ALICE' | 'BOB'): Promise<EscrowAccountRef>;
   getManagedAddress(ref: EscrowAccountRef): Promise<string>;
 
   // Deposit enumeration (confirmed only)

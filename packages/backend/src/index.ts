@@ -17,8 +17,8 @@ async function main() {
   const db = initDatabase();
   runMigrations(db);
   
-  // Initialize plugin manager
-  const pluginManager = new PluginManager();
+  // Initialize plugin manager with database for wallet index persistence
+  const pluginManager = new PluginManager(db);
   
   // Register Unicity plugin (mandatory)
   await pluginManager.registerPlugin({

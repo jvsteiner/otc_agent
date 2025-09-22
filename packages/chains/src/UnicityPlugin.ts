@@ -4,6 +4,7 @@ import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, 
 import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts } from '@otc-broker/core';
 import { generateDeterministicKey, deriveChildPrivateKey, privateKeyToAddress } from './utils/UnicityAddress';
 import { buildAndSignSegWitTransaction, selectUTXOs, UTXO } from './utils/UnicityTransaction';
+import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
 
 interface ElectrumRequest {
   id: number;
@@ -25,11 +26,13 @@ export class UnicityPlugin implements ChainPlugin {
   private pendingRequests = new Map<number, { resolve: Function; reject: Function }>();
   private connected = false;
   private wallets = new Map<string, { privateKey: string; address: string; index: number; wif: string }>();
-  private nextWalletIndex = 0;
+  private nextWalletIndex?: number; // Fallback counter when no database
   private masterPrivateKey?: string;
+  private database?: any;
 
   async init(cfg: ChainConfig): Promise<void> {
     this.config = cfg;
+    this.database = cfg.database;
     
     // Initialize master private key from seed
     if (cfg.hotWalletSeed) {
@@ -160,8 +163,8 @@ export class UnicityPlugin implements ChainPlugin {
     }
   }
 
-  async generateEscrowAccount(asset: AssetCode): Promise<EscrowAccountRef> {
-    console.log('UnicityPlugin.generateEscrowAccount called with asset:', asset);
+  async generateEscrowAccount(asset: AssetCode, dealId?: string, party?: 'ALICE' | 'BOB'): Promise<EscrowAccountRef> {
+    console.log('UnicityPlugin.generateEscrowAccount called with asset:', asset, 'dealId:', dealId?.slice(0, 8), 'party:', party);
     
     // Accept both ALPHA and ALPHA@UNICITY formats
     if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
@@ -175,13 +178,31 @@ export class UnicityPlugin implements ChainPlugin {
     
     if (this.masterPrivateKey) {
       // Use deterministic derivation from master key
-      const index = this.nextWalletIndex++;
+      let index: number;
+      if (dealId && party) {
+        // Use deal-based derivation for guaranteed uniqueness
+        index = deriveIndexFromDealId(dealId, party);
+      } else {
+        // Fallback to sequential index (for backward compatibility)
+        console.warn('generateEscrowAccount called without dealId/party - using fallback sequential index');
+        if (!this.nextWalletIndex) this.nextWalletIndex = 0;
+        index = this.nextWalletIndex++;
+      }
+      
       const walletInfo = generateDeterministicKey(this.masterPrivateKey, index);
       
       privateKey = walletInfo.privateKey;
       address = walletInfo.address;
       wif = walletInfo.wif;
-      keyRef = `unicity-hd-${index}`;
+      // Use proper BIP44-style path for UNICITY
+      keyRef = `m/44'/0'/0'/0/${index}`;
+      
+      // Check for address collision if database is available
+      if (this.database && this.database.isEscrowAddressInUse && this.database.isEscrowAddressInUse(address)) {
+        console.error(`WARNING: Address ${address} may already be in use!`);
+        console.error(`Deal: ${dealId}, Party: ${party}, Index: ${index}, Path: ${keyRef}`);
+        // Don't throw - just log the warning, as this might be a re-generation of the same escrow
+      }
       
       // Store wallet info for later use
       this.wallets.set(keyRef, {
@@ -191,15 +212,21 @@ export class UnicityPlugin implements ChainPlugin {
         wif
       });
       
-      console.log(`Generated HD wallet at index ${index}: ${address}`);
+      console.log(`[UNICITY] Generated escrow at path ${keyRef} for deal ${dealId?.slice(0, 8)}... ${party}: ${address}`);
     } else {
-      // Generate random key if no master key
-      const randomBytes = crypto.randomBytes(32);
-      privateKey = randomBytes.toString('hex');
+      // For non-HD keys, we need dealId to ensure determinism
+      if (!dealId || !party) {
+        throw new Error('dealId and party are required when no HD wallet seed is configured');
+      }
+      
+      // Generate deterministic key from dealId + party
+      const seed = `UNICITY-${dealId}-${party}`;
+      const seedHash = crypto.createHash('sha256').update(seed).digest();
+      privateKey = seedHash.toString('hex');
       address = privateKeyToAddress(privateKey);
       
-      // Generate unique keyRef
-      keyRef = `unicity-random-${Date.now()}`;
+      // Create a deterministic keyRef based on dealId
+      keyRef = `unicity-${dealId}-${party}`;
       
       // Store wallet info
       this.wallets.set(keyRef, {
@@ -209,7 +236,7 @@ export class UnicityPlugin implements ChainPlugin {
         wif: '' // Will generate if needed
       });
       
-      console.log(`Generated random wallet: ${address}`);
+      console.log(`[UNICITY] Generated deterministic escrow for deal ${dealId?.slice(0, 8)}... ${party}: ${address}`);
     }
     
     return {

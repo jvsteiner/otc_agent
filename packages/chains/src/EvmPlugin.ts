@@ -17,18 +17,25 @@ export class EvmPlugin implements ChainPlugin {
     this.provider = new ethers.JsonRpcProvider(cfg.rpcUrl);
   }
 
-  async generateEscrowAccount(asset: AssetCode): Promise<EscrowAccountRef> {
-    // Generate deterministic wallet from seed
-    const seed = this.config.hotWalletSeed || 'default-seed';
-    const index = Date.now();
-    const wallet = ethers.Wallet.createRandom();
+  async generateEscrowAccount(asset: AssetCode, dealId?: string, party?: 'ALICE' | 'BOB'): Promise<EscrowAccountRef> {
+    // For determinism, we need dealId and party
+    if (!dealId || !party) {
+      throw new Error('dealId and party are required for EVM plugin escrow generation');
+    }
+    
+    // Generate deterministic wallet from dealId + party
+    const seed = `${this.chainId}-${dealId}-${party}`;
+    const seedHash = ethers.keccak256(ethers.toUtf8Bytes(seed));
+    const wallet = new ethers.Wallet(seedHash);
     
     this.wallets.set(wallet.address, wallet as any);
+    
+    console.log(`[${this.chainId}] Generated deterministic escrow for deal ${dealId.slice(0, 8)}... ${party}: ${wallet.address}`);
     
     return {
       chainId: this.chainId,
       address: wallet.address,
-      keyRef: `evm-key-${index}`,
+      keyRef: wallet.privateKey,
     };
   }
 

@@ -50,6 +50,51 @@ export class DB {
     });
     return transaction() as T;
   }
+
+  // Wallet index management
+  getNextWalletIndex(chainId: string): number {
+    return this.runInTransaction(() => {
+      // First ensure the table exists
+      this.exec(`CREATE TABLE IF NOT EXISTS wallet_indices (
+        chainId TEXT PRIMARY KEY,
+        lastIndex INTEGER NOT NULL DEFAULT 0
+      )`);
+      
+      // Get current index
+      const row = this.prepare('SELECT lastIndex FROM wallet_indices WHERE chainId = ?').get(chainId) as { lastIndex: number } | undefined;
+      const currentIndex = row ? row.lastIndex : 0;
+      const nextIndex = currentIndex + 1;
+      
+      // Update or insert the new index
+      this.prepare(`
+        INSERT INTO wallet_indices (chainId, lastIndex) VALUES (?, ?)
+        ON CONFLICT(chainId) DO UPDATE SET lastIndex = excluded.lastIndex
+      `).run(chainId, nextIndex);
+      
+      return nextIndex;
+    });
+  }
+
+  getCurrentWalletIndex(chainId: string): number {
+    // Ensure the table exists
+    this.exec(`CREATE TABLE IF NOT EXISTS wallet_indices (
+      chainId TEXT PRIMARY KEY,
+      lastIndex INTEGER NOT NULL DEFAULT 0
+    )`);
+    
+    const row = this.prepare('SELECT lastIndex FROM wallet_indices WHERE chainId = ?').get(chainId) as { lastIndex: number } | undefined;
+    return row ? row.lastIndex : 0;
+  }
+
+  // Check if an escrow address is already in use
+  isEscrowAddressInUse(address: string): boolean {
+    const result = this.prepare(`
+      SELECT COUNT(*) as count FROM party_details 
+      WHERE escrowAddress = ?
+    `).get(address) as { count: number };
+    
+    return result.count > 0;
+  }
 }
 
 export const initDatabase = (dbPath?: string): DB => {

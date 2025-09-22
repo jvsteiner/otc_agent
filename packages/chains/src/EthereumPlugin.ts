@@ -10,6 +10,7 @@ import {
 } from './ChainPlugin';
 import ERC20_ABI from './abi/ERC20.json';
 import { EtherscanAPI } from './utils/EtherscanAPI';
+import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
 
 export class EthereumPlugin implements ChainPlugin {
   readonly chainId: ChainId;
@@ -17,7 +18,8 @@ export class EthereumPlugin implements ChainPlugin {
   private config!: ChainConfig;
   private wallets: Map<string, ethers.HDNodeWallet> = new Map();
   private rootWallet?: ethers.HDNodeWallet;
-  private walletIndex: number = 0;
+  private walletIndex?: number; // Fallback counter when no database
+  private database?: any;
   private etherscanAPI?: EtherscanAPI;
 
   constructor(config?: Partial<ChainConfig>) {
@@ -26,6 +28,7 @@ export class EthereumPlugin implements ChainPlugin {
 
   async init(cfg: ChainConfig): Promise<void> {
     this.config = cfg;
+    this.database = cfg.database;
     
     // Default to PublicNode if no RPC URL provided
     const rpcUrl = cfg.rpcUrl || 'https://ethereum-rpc.publicnode.com';
@@ -78,10 +81,17 @@ export class EthereumPlugin implements ChainPlugin {
     }
   }
 
-  async generateEscrowAccount(asset: AssetCode): Promise<EscrowAccountRef> {
+  async generateEscrowAccount(asset: AssetCode, dealId?: string, party?: 'ALICE' | 'BOB'): Promise<EscrowAccountRef> {
     if (!this.rootWallet) {
-      // Generate a new random wallet if no root wallet
-      const wallet = ethers.Wallet.createRandom();
+      // For random wallets, we need dealId to ensure uniqueness
+      if (!dealId || !party) {
+        throw new Error('dealId and party are required when no HD wallet seed is configured');
+      }
+      
+      // Generate deterministic wallet from dealId + party
+      const seed = `${this.chainId}-${dealId}-${party}`;
+      const seedHash = ethers.keccak256(ethers.toUtf8Bytes(seed));
+      const wallet = new ethers.Wallet(seedHash);
       const connectedWallet = wallet.connect(this.provider);
       
       const ref: EscrowAccountRef = {
@@ -90,17 +100,36 @@ export class EthereumPlugin implements ChainPlugin {
         keyRef: wallet.privateKey
       };
       
-      // Store wallet
-      this.wallets.set(wallet.privateKey, connectedWallet as ethers.HDNodeWallet);
+      // Store wallet (cast to any for compatibility)
+      this.wallets.set(wallet.privateKey, connectedWallet as any);
+      
+      console.log(`[${this.chainId}] Generated deterministic escrow for deal ${dealId?.slice(0, 8)}... ${party}: ${wallet.address}`);
       
       return ref;
     }
     
-    // Derive from HD wallet
-    const index = this.walletIndex++;
+    // Derive from HD wallet using dealId-based index
+    let index: number;
+    if (dealId && party) {
+      // Use deal-based derivation for guaranteed uniqueness
+      index = deriveIndexFromDealId(dealId, party);
+    } else {
+      // Fallback to sequential index (for backward compatibility)
+      console.warn('generateEscrowAccount called without dealId/party - using fallback sequential index');
+      if (!this.walletIndex) this.walletIndex = 0;
+      index = this.walletIndex++;
+    }
+    
     const path = `m/44'/60'/0'/0/${index}`;
     const childWallet = this.rootWallet.derivePath(path);
     const connectedWallet = childWallet.connect(this.provider);
+    
+    // Check for address collision if database is available
+    if (this.database && this.database.isEscrowAddressInUse && this.database.isEscrowAddressInUse(childWallet.address)) {
+      console.error(`CRITICAL: Address collision detected! Address ${childWallet.address} already in use!`);
+      console.error(`Deal: ${dealId}, Party: ${party}, Index: ${index}, Path: ${path}`);
+      // Don't throw - just log the warning, as this might be a re-generation of the same escrow
+    }
     
     const ref: EscrowAccountRef = {
       chainId: this.chainId,
@@ -109,6 +138,8 @@ export class EthereumPlugin implements ChainPlugin {
     };
     
     this.wallets.set(path, connectedWallet);
+    
+    console.log(`[${this.chainId}] Generated escrow at path ${path} for deal ${dealId?.slice(0, 8)}... ${party}: ${childWallet.address}`);
     
     return ref;
   }
