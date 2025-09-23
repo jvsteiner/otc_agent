@@ -163,6 +163,46 @@ export class UnicityPlugin implements ChainPlugin {
     }
   }
 
+  restoreWalletFromEscrowAccount(escrow: EscrowAccountRef): void {
+    if (!escrow.keyRef || !escrow.keyRef.startsWith('m/44')) {
+      console.warn('Cannot restore wallet: invalid keyRef format', escrow.keyRef);
+      return;
+    }
+    
+    // Check if wallet already exists
+    if (this.wallets.has(escrow.keyRef)) {
+      return;
+    }
+    
+    // Check if we have a master private key
+    if (!this.masterPrivateKey) {
+      console.warn('Cannot restore wallet: no master private key available');
+      return;
+    }
+    
+    // Extract index from path (e.g., m/44'/0'/0'/0/12345)
+    const pathParts = escrow.keyRef.split('/');
+    const index = parseInt(pathParts[pathParts.length - 1], 10);
+    
+    if (isNaN(index)) {
+      console.warn('Cannot restore wallet: invalid index in path', escrow.keyRef);
+      return;
+    }
+    
+    // Use the generateDeterministicKey function for Unicity
+    const regeneratedWallet = generateDeterministicKey(this.masterPrivateKey, index);
+    
+    const walletInfo = {
+      privateKey: regeneratedWallet.privateKey,
+      address: regeneratedWallet.address,
+      index: index,
+      wif: regeneratedWallet.wif
+    };
+    
+    this.wallets.set(escrow.keyRef, walletInfo);
+    console.log(`[UnicityPlugin] Restored wallet for ${escrow.address} at path ${escrow.keyRef}`);
+  }
+
   async generateEscrowAccount(asset: AssetCode, dealId?: string, party?: 'ALICE' | 'BOB'): Promise<EscrowAccountRef> {
     console.log('UnicityPlugin.generateEscrowAccount called with asset:', asset, 'dealId:', dealId?.slice(0, 8), 'party:', party);
     
@@ -345,23 +385,11 @@ export class UnicityPlugin implements ChainPlugin {
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
     }
 
+    // Try to restore wallet if not found
+    this.restoreWalletFromEscrowAccount(from);
+    
     // Get the wallet info for this escrow account
     let walletInfo = this.wallets.get(from.keyRef || '');
-    if (!walletInfo && from.keyRef) {
-      // Try to recreate wallet if it's an HD wallet
-      if (from.keyRef.startsWith('unicity-hd-') && this.masterPrivateKey) {
-        const index = parseInt(from.keyRef.replace('unicity-hd-', ''));
-        const regeneratedWallet = generateDeterministicKey(this.masterPrivateKey, index);
-        walletInfo = {
-          privateKey: regeneratedWallet.privateKey,
-          address: regeneratedWallet.address,
-          index,
-          wif: regeneratedWallet.wif
-        };
-        this.wallets.set(from.keyRef, walletInfo);
-        console.log(`Recreated HD wallet at index ${index}: ${regeneratedWallet.address}`);
-      }
-    }
     
     if (!walletInfo) {
       throw new Error(`No wallet found for escrow account ${from.address}`);
