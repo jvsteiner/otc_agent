@@ -471,7 +471,59 @@ export class Engine {
         });
       }
       
-      // TODO: Queue surplus refunds
+      // Queue surplus refunds (anything left after swap and commission)
+      // This ensures we return any overpayments to the users
+      if (deal.escrowA && deal.aliceDetails) {
+        // Calculate total outgoing from escrow A
+        const swapAmount = parseFloat(deal.alice.amount);
+        const commissionAmount = parseFloat(sideACommission);
+        const totalNeeded = swapAmount + commissionAmount;
+        
+        // Get total deposits
+        const totalDeposited = deal.sideAState?.deposits
+          ?.filter(d => d.asset === deal.alice.asset)
+          .reduce((sum, d) => sum + parseFloat(d.amount), 0) || 0;
+        
+        // If there's surplus, queue a refund
+        const surplus = totalDeposited - totalNeeded;
+        if (surplus > 0.000001) { // Small threshold to avoid dust
+          this.queueRepo.enqueue({
+            dealId: deal.id,
+            chainId: deal.alice.chainId,
+            from: deal.escrowA,
+            to: deal.aliceDetails.recipientAddress,
+            asset: deal.alice.asset,
+            amount: surplus.toString(),
+            purpose: 'SURPLUS_REFUND',
+          });
+        }
+      }
+      
+      if (deal.escrowB && deal.bobDetails) {
+        // Calculate total outgoing from escrow B
+        const swapAmount = parseFloat(deal.bob.amount);
+        const commissionAmount = parseFloat(sideBCommission);
+        const totalNeeded = swapAmount + commissionAmount;
+        
+        // Get total deposits
+        const totalDeposited = deal.sideBState?.deposits
+          ?.filter(d => d.asset === deal.bob.asset)
+          .reduce((sum, d) => sum + parseFloat(d.amount), 0) || 0;
+        
+        // If there's surplus, queue a refund
+        const surplus = totalDeposited - totalNeeded;
+        if (surplus > 0.000001) { // Small threshold to avoid dust
+          this.queueRepo.enqueue({
+            dealId: deal.id,
+            chainId: deal.bob.chainId,
+            from: deal.escrowB,
+            to: deal.bobDetails.recipientAddress,
+            asset: deal.bob.asset,
+            amount: surplus.toString(),
+            purpose: 'SURPLUS_REFUND',
+          });
+        }
+      }
       
       this.dealRepo.addEvent(deal.id, 'Transfer plan created');
     });

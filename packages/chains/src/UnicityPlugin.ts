@@ -524,58 +524,96 @@ export class UnicityPlugin implements ChainPlugin {
       };
       
     } else {
-      // Normal send - find a single UTXO that can cover the amount
+      // Normal send - send multiple transactions if needed to cover the amount
       const feeRate = 1; // 1 satoshi per byte
       
-      // Find the smallest UTXO that can cover amount + fees
-      let selectedUtxo = null;
-      let estimatedFee = 0;
+      console.log(`[UNICITY] Sending ${amount} ALPHA to ${to}`);
+      console.log(`[UNICITY] Available UTXOs: ${utxos.length}`);
       
-      for (const utxo of utxos.sort((a: UTXO, b: UTXO) => a.value - b.value)) {
+      // Sort UTXOs by value (largest first for efficiency)
+      const sortedUtxos = [...utxos].sort((a, b) => b.value - a.value);
+      
+      const txids: string[] = [];
+      let totalSent = 0;
+      let remainingAmount = amountSatoshis;
+      
+      for (let i = 0; i < sortedUtxos.length && remainingAmount > 0; i++) {
+        const utxo = sortedUtxos[i];
+        
+        // Calculate fee for this transaction
         const baseSize = 10 + 34 + 34; // overhead + 1 output + 1 change output
         const inputSize = 148;
         const estimatedSize = baseSize + inputSize;
-        estimatedFee = Math.ceil(estimatedSize * feeRate);
+        const fee = Math.ceil(estimatedSize * feeRate);
         
-        if (utxo.value >= amountSatoshis + estimatedFee) {
-          selectedUtxo = utxo;
-          break;
+        // Skip if UTXO is too small to cover fees
+        if (utxo.value <= fee) {
+          console.log(`[UNICITY] Skipping dust UTXO ${utxo.tx_hash}:${utxo.tx_pos} (value ${utxo.value} <= fee ${fee})`);
+          continue;
+        }
+        
+        // Determine how much to send from this UTXO
+        const availableFromUtxo = utxo.value - fee;
+        const sendAmount = Math.min(remainingAmount, availableFromUtxo);
+        
+        console.log(`[UNICITY] Sending ${sendAmount / 100000000} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
+        
+        // Build outputs
+        const outputs: Array<{ address: string; value: number }> = [
+          { address: to, value: sendAmount }
+        ];
+        
+        // Add change output if there's leftover after sending and fees
+        const change = utxo.value - sendAmount - fee;
+        if (change > 546) { // dust threshold
+          outputs.push({ address: from.address, value: change });
+        }
+        
+        // Build and sign transaction for this single UTXO
+        const { hex: rawTx, txid } = buildAndSignSegWitTransaction(
+          [utxo],
+          outputs,
+          walletInfo.privateKey,
+          '', // Change handled explicitly in outputs
+          feeRate
+        );
+        
+        console.log(`[UNICITY] Broadcasting transaction ${txid}...`);
+        
+        // Broadcast transaction
+        try {
+          const broadcastResult = await this.electrumRequest('blockchain.transaction.broadcast', [rawTx]);
+          
+          if (broadcastResult !== txid) {
+            console.warn(`Broadcast returned different txid: expected ${txid}, got ${broadcastResult}`);
+          }
+          
+          console.log(`[UNICITY] Transaction ${txid} broadcast successfully`);
+          txids.push(txid);
+          totalSent += sendAmount;
+          remainingAmount -= sendAmount;
+        } catch (error) {
+          console.error(`[UNICITY] Failed to broadcast transaction ${i + 1}:`, error);
+          // Continue with remaining UTXOs even if one fails
         }
       }
       
-      if (!selectedUtxo) {
-        throw new Error(`No single UTXO large enough to cover ${amount} ALPHA plus fees`);
+      if (txids.length === 0) {
+        throw new Error('Failed to send any transactions');
       }
       
-      console.log(`[UNICITY] Sending ${amount} ALPHA using single UTXO`);
-      console.log(`Selected UTXO with value ${selectedUtxo.value} satoshis`);
-      console.log(`Estimated fee: ${estimatedFee} satoshis`);
-      
-      // Build and sign transaction
-      const { hex: rawTx, txid } = buildAndSignSegWitTransaction(
-        [selectedUtxo],
-        [{ address: to, value: amountSatoshis }],
-        walletInfo.privateKey,
-        from.address, // Send change back to same address
-        feeRate
-      );
-      
-      console.log(`Built transaction ${txid}, broadcasting...`);
-      
-      // Broadcast transaction
-      const broadcastResult = await this.electrumRequest('blockchain.transaction.broadcast', [rawTx]);
-      
-      // Electrum returns the txid on success, or throws on error
-      if (broadcastResult !== txid) {
-        console.warn(`Broadcast returned different txid: expected ${txid}, got ${broadcastResult}`);
+      if (remainingAmount > 0) {
+        throw new Error(`Insufficient funds: could only send ${totalSent / 100000000} ALPHA out of ${amount} ALPHA requested`);
       }
       
-      console.log(`Transaction ${txid} broadcast successfully`);
+      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${totalSent / 100000000} ALPHA`);
       
+      // Return all transaction IDs for proper tracking
       return {
-        txid,
+        txid: txids[0], // Primary transaction ID
         submittedAt: new Date().toISOString(),
-        nonceOrInputs: JSON.stringify([`${selectedUtxo.tx_hash}:${selectedUtxo.tx_pos}`]),
+        nonceOrInputs: JSON.stringify(txids), // Store all txids for tracking
+        additionalTxids: txids.slice(1), // Store remaining transaction IDs
       };
     }
   }
