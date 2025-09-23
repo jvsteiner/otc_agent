@@ -2124,6 +2124,9 @@ export class RpcServer {
             data.push(d);
           }
           
+          // Remove checksum (last 6 characters)
+          data = data.slice(0, -6);
+          
           return { prefix: str.substring(0, p), words: data };
         }
         
@@ -2139,16 +2142,122 @@ export class RpcServer {
               output.push((value >> bits) & 0xff);
             }
           }
-          return new Uint8Array(output);
+          // Handle remaining bits
+          if (bits > 0) {
+            output.push((value << (8 - bits)) & 0xff);
+          }
+          return new Uint8Array(output.slice(0, 20)); // P2WPKH uses 20 bytes
         }
         
-        // Simple SHA256 for browser
+        // SHA256 implementation for browser (with fallback for non-HTTPS)
         async function sha256(data) {
-          if (window.crypto && window.crypto.subtle) {
-            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-            return new Uint8Array(hashBuffer);
+          // Try native crypto API first (requires HTTPS)
+          if (typeof window !== 'undefined' && window.crypto && window.crypto.subtle) {
+            try {
+              const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+              return new Uint8Array(hashBuffer);
+            } catch (e) {
+              console.warn('Crypto.subtle failed, using fallback:', e.message);
+            }
           }
-          return new Uint8Array(32);
+          
+          // Fallback: Basic SHA256 implementation for HTTP contexts
+          // This is a minimal SHA256 implementation for when crypto.subtle is not available
+          function sha256Fallback(buffer) {
+            const K = [
+              0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+              0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+              0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+              0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+              0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+              0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+              0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+              0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+            ];
+            
+            let H = [
+              0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+              0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+            ];
+            
+            // Pre-processing
+            const msg = new Uint8Array(buffer);
+            const ml = msg.length;
+            const msgBitLength = ml * 8;
+            const msgLen = Math.floor((msgBitLength + 64) / 512) + 1;
+            const padded = new Uint8Array(msgLen * 64);
+            padded.set(msg);
+            padded[ml] = 0x80;
+            
+            const view = new DataView(padded.buffer);
+            view.setUint32(padded.length - 4, msgBitLength, false);
+            
+            // Process each 512-bit chunk
+            for (let chunk = 0; chunk < msgLen; chunk++) {
+              const w = new Uint32Array(64);
+              
+              // Copy chunk into first 16 words
+              for (let i = 0; i < 16; i++) {
+                w[i] = view.getUint32((chunk * 64) + (i * 4), false);
+              }
+              
+              // Extend the first 16 words into remaining 48 words
+              for (let i = 16; i < 64; i++) {
+                const s0 = rightRotate(w[i-15], 7) ^ rightRotate(w[i-15], 18) ^ (w[i-15] >>> 3);
+                const s1 = rightRotate(w[i-2], 17) ^ rightRotate(w[i-2], 19) ^ (w[i-2] >>> 10);
+                w[i] = (w[i-16] + s0 + w[i-7] + s1) >>> 0;
+              }
+              
+              // Initialize working variables
+              let [a, b, c, d, e, f, g, h] = H;
+              
+              // Compression function main loop
+              for (let i = 0; i < 64; i++) {
+                const S1 = rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25);
+                const ch = (e & f) ^ ((~e) & g);
+                const temp1 = (h + S1 + ch + K[i] + w[i]) >>> 0;
+                const S0 = rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22);
+                const maj = (a & b) ^ (a & c) ^ (b & c);
+                const temp2 = (S0 + maj) >>> 0;
+                
+                h = g;
+                g = f;
+                f = e;
+                e = (d + temp1) >>> 0;
+                d = c;
+                c = b;
+                b = a;
+                a = (temp1 + temp2) >>> 0;
+              }
+              
+              // Add compressed chunk to current hash value
+              H[0] = (H[0] + a) >>> 0;
+              H[1] = (H[1] + b) >>> 0;
+              H[2] = (H[2] + c) >>> 0;
+              H[3] = (H[3] + d) >>> 0;
+              H[4] = (H[4] + e) >>> 0;
+              H[5] = (H[5] + f) >>> 0;
+              H[6] = (H[6] + g) >>> 0;
+              H[7] = (H[7] + h) >>> 0;
+            }
+            
+            // Produce final hash
+            const result = new Uint8Array(32);
+            for (let i = 0; i < 8; i++) {
+              result[i * 4] = (H[i] >>> 24) & 0xff;
+              result[i * 4 + 1] = (H[i] >>> 16) & 0xff;
+              result[i * 4 + 2] = (H[i] >>> 8) & 0xff;
+              result[i * 4 + 3] = H[i] & 0xff;
+            }
+            
+            return result;
+            
+            function rightRotate(n, b) {
+              return (n >>> b) | (n << (32 - b));
+            }
+          }
+          
+          return sha256Fallback(data);
         }
         
         // Convert Unicity address to script hash for Electrum
@@ -2157,21 +2266,50 @@ export class RpcServer {
           
           try {
             const decoded = bech32Decode(address);
-            if (!decoded) return null;
+            if (!decoded) {
+              console.error('Failed to decode bech32 address:', address);
+              return null;
+            }
             
+            // Get witness version (first 5-bit group after removing hrp)
             const witnessVersion = decoded.words[0];
+            if (witnessVersion !== 0) {
+              console.error('Unsupported witness version:', witnessVersion);
+              return null;
+            }
+            
+            // Convert remaining words to witness program (should be 20 bytes for P2WPKH)
             const witnessProgram = bech32FromWords(decoded.words.slice(1));
             
-            // Create scriptPubKey (P2WPKH)
-            const scriptPubKey = new Uint8Array([0x00, 0x14, ...witnessProgram]);
+            if (witnessProgram.length !== 20) {
+              console.error('Invalid witness program length:', witnessProgram.length);
+              return null;
+            }
+            
+            // Create scriptPubKey for P2WPKH (OP_0 + push(20) + 20 bytes)
+            const scriptPubKey = new Uint8Array(22);
+            scriptPubKey[0] = 0x00; // OP_0
+            scriptPubKey[1] = 0x14; // Push 20 bytes
+            scriptPubKey.set(witnessProgram, 2);
             
             // SHA256 hash
             const hash = await sha256(scriptPubKey);
             
             // Reverse for Electrum (little-endian)
-            return Array.from(hash).reverse().map(b => b.toString(16).padStart(2, '0')).join('');
+            const reversed = Array.from(hash).reverse();
+            const hexHash = reversed.map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            console.log('Address to script hash conversion:', {
+              address: address,
+              witnessProgram: Array.from(witnessProgram).map(b => b.toString(16).padStart(2, '0')).join(''),
+              scriptPubKey: Array.from(scriptPubKey).map(b => b.toString(16).padStart(2, '0')).join(''),
+              hash: Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join(''),
+              reversedHash: hexHash
+            });
+            
+            return hexHash;
           } catch (err) {
-            console.error('Error converting address to script hash:', err);
+            console.error('Error converting address to script hash:', err, err.stack);
             return null;
           }
         }
@@ -2255,31 +2393,81 @@ export class RpcServer {
           electrumSocket.send(JSON.stringify(request));
         }
         
-        // Get balance for a Unicity address
+        // Get balance and UTXOs for a Unicity address
         async function getUnicityBalance(address) {
           const scriptHash = await addressToScriptHash(address);
-          if (!scriptHash) return 0;
+          if (!scriptHash) {
+            console.error('Failed to convert address to script hash:', address);
+            return { total: 0, confirmed: 0, unconfirmed: 0, utxos: [] };
+          }
+          
+          console.log('Getting Unicity balance for', address, 'scriptHash:', scriptHash);
           
           return new Promise((resolve) => {
-            electrumRequest('blockchain.scripthash.get_balance', [scriptHash], function(result, error) {
+            // Get UTXOs which gives us detailed info including mempool txs
+            electrumRequest('blockchain.scripthash.listunspent', [scriptHash], function(utxos, error) {
               if (error) {
-                console.error('Failed to get Unicity balance:', error);
-                resolve(0);
+                console.error('Failed to get Unicity UTXOs:', error);
+                resolve({ total: 0, confirmed: 0, unconfirmed: 0, utxos: [] });
               } else {
-                // Balance is in satoshis
-                const balanceInAlpha = (result.confirmed || 0) / 100000000;
-                resolve(balanceInAlpha);
+                console.log('Unicity UTXOs:', utxos);
+                
+                let confirmedBalance = 0;
+                let unconfirmedBalance = 0;
+                const utxoList = [];
+                
+                if (Array.isArray(utxos)) {
+                  for (const utxo of utxos) {
+                    const valueInAlpha = (utxo.value || 0) / 100000000;
+                    
+                    // height 0 means mempool (unconfirmed)
+                    if (utxo.height === 0) {
+                      unconfirmedBalance += valueInAlpha;
+                      utxoList.push({ ...utxo, confirmations: 0, amount: valueInAlpha });
+                    } else if (utxo.height > 0) {
+                      confirmedBalance += valueInAlpha;
+                      // Store height for later confirmation calculation
+                      utxoList.push({ ...utxo, confirmations: utxo.height, amount: valueInAlpha });
+                    }
+                  }
+                }
+                
+                resolve({
+                  total: confirmedBalance + unconfirmedBalance,
+                  confirmed: confirmedBalance,
+                  unconfirmed: unconfirmedBalance,
+                  utxos: utxoList
+                });
               }
             });
           });
         }
         
-        // Initialize Unicity connection
-        if (!electrumConnected) {
-          connectToUnicity().catch(err => {
-            console.error('Failed to connect to Unicity:', err);
+        // Get current block height for Unicity
+        async function getUnicityBlockHeight() {
+          return new Promise((resolve) => {
+            electrumRequest('blockchain.headers.subscribe', [], function(result, error) {
+              if (error) {
+                console.error('Failed to get block height:', error);
+                resolve(0);
+              } else {
+                resolve(result.height || 0);
+              }
+            });
           });
         }
+        
+        // Initialize Unicity connection with retry
+        function ensureUnicityConnection() {
+          if (!electrumConnected) {
+            connectToUnicity().catch(err => {
+              console.error('Failed to connect to Unicity:', err);
+              // Retry connection after 5 seconds
+              setTimeout(ensureUnicityConnection, 5000);
+            });
+          }
+        }
+        ensureUnicityConnection();
         
         // Initialize blockchain providers when ethers is loaded
         function initializeProviders(endpoints) {
@@ -2483,6 +2671,13 @@ export class RpcServer {
           
           // Check sync status every second
           setInterval(updateSyncStatus, 1000);
+          
+          // Ensure Unicity connection is maintained
+          setInterval(function() {
+            if (!electrumConnected) {
+              ensureUnicityConnection();
+            }
+          }, 5000);
         }
         
         // Refresh blockchain data directly
@@ -2817,7 +3012,48 @@ export class RpcServer {
               if (chainId === 'UNICITY') {
                 // Use Fulcrum for Unicity
                 if (electrumConnected) {
-                  liveBalance = await getUnicityBalance(escrowAddress);
+                  const balanceInfo = await getUnicityBalance(escrowAddress);
+                  liveBalance = balanceInfo.total;
+                  
+                  // Show confirmation status if there are unconfirmed funds
+                  if (balanceInfo.unconfirmed > 0) {
+                    const unconfirmedIndicator = document.createElement('span');
+                    unconfirmedIndicator.style.cssText = 'color: #f59e0b; font-size: 10px; margin-left: 8px;';
+                    unconfirmedIndicator.innerHTML = '(' + balanceInfo.unconfirmed.toFixed(4) + ' unconfirmed)';
+                    unconfirmedIndicator.id = type + 'UnconfirmedIndicator';
+                    
+                    const existing = document.getElementById(type + 'UnconfirmedIndicator');
+                    if (existing) existing.remove();
+                    
+                    balanceEl.appendChild(unconfirmedIndicator);
+                  }
+                  
+                  // Update confirmation count if we have UTXOs
+                  if (balanceInfo.utxos && balanceInfo.utxos.length > 0) {
+                    const blockHeight = await getUnicityBlockHeight();
+                    let minConfirmations = Infinity;
+                    
+                    for (const utxo of balanceInfo.utxos) {
+                      const confirmations = utxo.height === 0 ? 0 : (blockHeight - utxo.height + 1);
+                      if (confirmations < minConfirmations) {
+                        minConfirmations = confirmations;
+                      }
+                    }
+                    
+                    // Show confirmation progress
+                    const requiredConfirms = escrowData?.minConf || 6;
+                    if (minConfirmations < requiredConfirms) {
+                      const confirmIndicator = document.createElement('span');
+                      confirmIndicator.style.cssText = 'color: #667eea; font-size: 10px; margin-left: 8px;';
+                      confirmIndicator.innerHTML = '(' + minConfirmations + '/' + requiredConfirms + ' confirmations)';
+                      confirmIndicator.id = type + 'ConfirmIndicator';
+                      
+                      const existing = document.getElementById(type + 'ConfirmIndicator');
+                      if (existing) existing.remove();
+                      
+                      balanceEl.appendChild(confirmIndicator);
+                    }
+                  }
                 }
               } else if (blockchainProviders[chainId]) {
                 // Use ethers for EVM chains
