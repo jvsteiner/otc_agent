@@ -3041,7 +3041,7 @@ export class RpcServer {
                     }
                     
                     // Show confirmation progress
-                    const requiredConfirms = escrowData?.minConf || 6;
+                    const requiredConfirms = 6; // Default to 6 for Unicity
                     if (minConfirmations < requiredConfirms) {
                       const confirmIndicator = document.createElement('span');
                       confirmIndicator.style.cssText = 'color: #667eea; font-size: 10px; margin-left: 8px;';
