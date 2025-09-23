@@ -81,6 +81,8 @@ export interface DealSideState {
 
 export type QueuePurpose = 'SWAP_PAYOUT' | 'OP_COMMISSION' | 'SURPLUS_REFUND' | 'TIMEOUT_REFUND';
 
+export type QueuePhase = 'PHASE_1_SWAP' | 'PHASE_2_COMMISSION' | 'PHASE_3_REFUND';
+
 export interface TxRef {
   txid: string;
   chainId: ChainId;
@@ -102,6 +104,7 @@ export interface QueueItem {
   asset: AssetCode;
   amount: string;
   purpose: QueuePurpose;
+  phase?: QueuePhase;     // For UTXO chains, determines execution order
   seq: number;            // strict per (dealId, from.address)
   status: 'PENDING' | 'SUBMITTED' | 'COMPLETED';
   createdAt: string;

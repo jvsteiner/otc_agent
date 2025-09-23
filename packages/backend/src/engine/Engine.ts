@@ -418,6 +418,8 @@ export class Engine {
           asset: deal.alice.asset,
           amount: deal.alice.amount,
           purpose: 'SWAP_PAYOUT',
+          // For Unicity, assign to phase 1
+          phase: deal.alice.chainId === 'UNICITY' ? 'PHASE_1_SWAP' : undefined,
         });
       }
       
@@ -430,6 +432,8 @@ export class Engine {
           asset: deal.bob.asset,
           amount: deal.bob.amount,
           purpose: 'SWAP_PAYOUT',
+          // For Unicity, assign to phase 1
+          phase: deal.bob.chainId === 'UNICITY' ? 'PHASE_1_SWAP' : undefined,
         });
       }
       
@@ -451,6 +455,8 @@ export class Engine {
           asset: commAsset,
           amount: sideACommission,
           purpose: 'OP_COMMISSION',
+          // For Unicity, assign to phase 2 (after swap)
+          phase: deal.alice.chainId === 'UNICITY' ? 'PHASE_2_COMMISSION' : undefined,
         });
       }
       
@@ -468,6 +474,8 @@ export class Engine {
           asset: commAsset,
           amount: sideBCommission,
           purpose: 'OP_COMMISSION',
+          // For Unicity, assign to phase 2 (after swap)
+          phase: deal.bob.chainId === 'UNICITY' ? 'PHASE_2_COMMISSION' : undefined,
         });
       }
       
@@ -495,6 +503,8 @@ export class Engine {
             asset: deal.alice.asset,
             amount: surplus.toString(),
             purpose: 'SURPLUS_REFUND',
+            // For Unicity, assign to phase 3 (after commission)
+            phase: deal.alice.chainId === 'UNICITY' ? 'PHASE_3_REFUND' : undefined,
           });
         }
       }
@@ -521,6 +531,8 @@ export class Engine {
             asset: deal.bob.asset,
             amount: surplus.toString(),
             purpose: 'SURPLUS_REFUND',
+            // For Unicity, assign to phase 3 (after commission)
+            phase: deal.bob.chainId === 'UNICITY' ? 'PHASE_3_REFUND' : undefined,
           });
         }
       }
@@ -570,14 +582,109 @@ export class Engine {
   }
 
   private async processQueues(deal: Deal) {
-    // Get all unique senders
+    // Check if any chain involved is UTXO-based (Unicity)
+    const hasUnicityA = deal.alice.chainId === 'UNICITY';
+    const hasUnicityB = deal.bob.chainId === 'UNICITY';
+    const hasUnicity = hasUnicityA || hasUnicityB;
+    
+    if (hasUnicity) {
+      // For UTXO chains, process in phases
+      await this.processQueuesPhased(deal);
+    } else {
+      // For account-based chains, process normally
+      await this.processQueuesNormal(deal);
+    }
+  }
+  
+  private async processQueuesPhased(deal: Deal) {
+    // Determine current phase based on what's completed
+    let currentPhase: string | undefined;
+    
+    // Check phase 1 (SWAP)
+    const phase1Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_1_SWAP');
+    if (phase1Items.length > 0 && !this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP')) {
+      currentPhase = 'PHASE_1_SWAP';
+    } else if (phase1Items.length > 0 && this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP')) {
+      // Phase 1 complete, check phase 2
+      const phase2Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_2_COMMISSION');
+      if (phase2Items.length > 0 && !this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_2_COMMISSION')) {
+        currentPhase = 'PHASE_2_COMMISSION';
+      } else if (phase2Items.length === 0 || this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_2_COMMISSION')) {
+        // Phase 2 complete or no phase 2 items, check phase 3
+        const phase3Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_3_REFUND');
+        if (phase3Items.length > 0 && !this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_3_REFUND')) {
+          currentPhase = 'PHASE_3_REFUND';
+        }
+      }
+    }
+    
+    if (!currentPhase) {
+      // All phases complete or no phased items
+      // Process any non-phased items (e.g., from account-based chains)
+      await this.processQueuesNormal(deal);
+      return;
+    }
+    
+    console.log(`[Engine] Processing phase ${currentPhase} for deal ${deal.id}`);
+    
+    // Process items from current phase only
     const queues = this.queueRepo.getByDeal(deal.id);
     const senders = new Set(queues.map(q => `${q.chainId}|${q.from.address}`));
     
     for (const senderKey of senders) {
       const [chainId, address] = senderKey.split('|');
       
-      // Get next pending item for this sender
+      // Get next pending item for this sender IN CURRENT PHASE
+      const nextItem = this.queueRepo.getNextPending(deal.id, address, currentPhase);
+      if (!nextItem) continue;
+      
+      try {
+        // Get the full escrow account ref with keyRef from the deal
+        let fromAccountWithKey = nextItem.from;
+        if (deal.escrowA && deal.escrowA.address === address) {
+          fromAccountWithKey = deal.escrowA;
+        } else if (deal.escrowB && deal.escrowB.address === address) {
+          fromAccountWithKey = deal.escrowB;
+        }
+        
+        // Submit transaction
+        const plugin = this.pluginManager.getPlugin(nextItem.chainId);
+        const tx = await plugin.send(
+          nextItem.asset,
+          fromAccountWithKey,
+          nextItem.to,
+          nextItem.amount
+        );
+        
+        // Update queue item with tx info
+        this.queueRepo.updateStatus(nextItem.id, 'SUBMITTED', {
+          txid: tx.txid,
+          chainId: nextItem.chainId,
+          submittedAt: tx.submittedAt,
+          confirms: 0,
+          requiredConfirms: getConfirmationThreshold(nextItem.chainId),
+          status: 'PENDING',
+          nonceOrInputs: tx.nonceOrInputs,
+          additionalTxids: tx.additionalTxids,
+        });
+        
+        this.dealRepo.addEvent(deal.id, `Submitted ${nextItem.purpose} tx (${currentPhase}): ${tx.txid}`);
+      } catch (error: any) {
+        console.error(`Failed to submit tx for queue item ${nextItem.id}:`, error);
+        this.dealRepo.addEvent(deal.id, `Failed to submit ${nextItem.purpose}: ${error.message}`);
+      }
+    }
+  }
+  
+  private async processQueuesNormal(deal: Deal) {
+    // Original implementation for non-UTXO chains
+    const queues = this.queueRepo.getByDeal(deal.id);
+    const senders = new Set(queues.map(q => `${q.chainId}|${q.from.address}`));
+    
+    for (const senderKey of senders) {
+      const [chainId, address] = senderKey.split('|');
+      
+      // Get next pending item for this sender (no phase filter)
       const nextItem = this.queueRepo.getNextPending(deal.id, address);
       if (!nextItem) continue;
       
@@ -608,7 +715,7 @@ export class Engine {
           requiredConfirms: getConfirmationThreshold(nextItem.chainId),
           status: 'PENDING',
           nonceOrInputs: tx.nonceOrInputs,
-          additionalTxids: tx.additionalTxids, // Include additional transaction IDs for Unicity
+          additionalTxids: tx.additionalTxids,
         });
         
         this.dealRepo.addEvent(deal.id, `Submitted ${nextItem.purpose} tx: ${tx.txid}`);

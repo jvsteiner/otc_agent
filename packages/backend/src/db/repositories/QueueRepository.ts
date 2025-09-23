@@ -30,8 +30,8 @@ export class QueueRepository {
     const stmt = this.db.prepare(`
       INSERT INTO queue_items (
         id, dealId, chainId, fromAddr, toAddr, 
-        asset, amount, purpose, seq, status, createdAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        asset, amount, purpose, phase, seq, status, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
@@ -43,6 +43,7 @@ export class QueueRepository {
       queueItem.asset,
       queueItem.amount,
       queueItem.purpose,
+      queueItem.phase || null,
       queueItem.seq,
       'PENDING',
       queueItem.createdAt
@@ -62,18 +63,48 @@ export class QueueRepository {
     return rows.map(row => this.mapRowToQueueItem(row));
   }
 
-  getNextPending(dealId: string, fromAddr: string): QueueItem | null {
-    const stmt = this.db.prepare(`
+  getNextPending(dealId: string, fromAddr: string, phase?: string): QueueItem | null {
+    // If phase specified, only get items from that phase
+    const stmt = phase ? this.db.prepare(`
+      SELECT * FROM queue_items
+      WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING' AND phase = ?
+      ORDER BY seq
+      LIMIT 1
+    `) : this.db.prepare(`
       SELECT * FROM queue_items
       WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING'
       ORDER BY seq
       LIMIT 1
     `);
     
-    const row = stmt.get(dealId, fromAddr) as any;
+    const row = phase 
+      ? stmt.get(dealId, fromAddr, phase) as any
+      : stmt.get(dealId, fromAddr) as any;
     if (!row) return null;
     
     return this.mapRowToQueueItem(row);
+  }
+  
+  hasPhaseCompleted(dealId: string, phase: string): boolean {
+    const stmt = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM queue_items
+      WHERE dealId = ? AND phase = ? AND status != 'COMPLETED'
+    `);
+    
+    const row = stmt.get(dealId, phase) as { count: number };
+    return row.count === 0;
+  }
+  
+  getPhaseItems(dealId: string, phase: string): QueueItem[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM queue_items
+      WHERE dealId = ? AND phase = ?
+      ORDER BY fromAddr, seq
+    `);
+    
+    const rows = stmt.all(dealId, phase) as any[];
+    return rows.map(row => this.mapRowToQueueItem(row));
   }
 
   updateStatus(id: string, status: string, submittedTx?: TxRef): void {
@@ -124,6 +155,7 @@ export class QueueRepository {
       asset: row.asset as AssetCode,
       amount: row.amount,
       purpose: row.purpose as QueuePurpose,
+      phase: row.phase || undefined,
       seq: row.seq,
       status: row.status,
       createdAt: row.createdAt,

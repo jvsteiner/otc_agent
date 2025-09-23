@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS queue_items (
   asset TEXT NOT NULL,
   amount TEXT NOT NULL,
   purpose TEXT NOT NULL,
+  phase TEXT,                  -- For UTXO chains: PHASE_1_SWAP, PHASE_2_COMMISSION, PHASE_3_REFUND
   seq INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'PENDING',
   submittedTx TEXT,            -- JSON TxRef
