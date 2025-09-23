@@ -24,7 +24,17 @@ export class EtherscanAPI {
   private apiKey?: string;
 
   constructor(chainId: string, apiKey?: string) {
-    this.apiKey = apiKey;
+    // Try to get API key from environment variables if not provided
+    const envKeyMap: Record<string, string> = {
+      'ETH': 'ETHERSCAN_API_KEY',
+      'ETHEREUM': 'ETHERSCAN_API_KEY',
+      'POLYGON': 'POLYGONSCAN_API_KEY',
+      'MATIC': 'POLYGONSCAN_API_KEY',
+      'BASE': 'BASESCAN_API_KEY'
+    };
+    
+    const envKey = envKeyMap[chainId.toUpperCase()];
+    this.apiKey = apiKey || (envKey && process.env[envKey]) || undefined;
     
     // Map chain IDs to Etherscan API endpoints
     switch (chainId.toUpperCase()) {
@@ -67,6 +77,15 @@ export class EtherscanAPI {
 
       const response = await fetch(`${this.apiUrl}?${params.toString()}`);
       const data = await response.json() as EtherscanResponse;
+
+      // Check for V2 API deprecation message
+      if (data.message && data.message.includes('deprecated V1 endpoint')) {
+        console.error(`Etherscan API error: ${data.message}. API key required for V2.`);
+        if (!this.apiKey) {
+          console.error(`Please set ${this.apiUrl.includes('polygon') ? 'POLYGONSCAN_API_KEY' : 'ETHERSCAN_API_KEY'} environment variable`);
+        }
+        return [];
+      }
 
       if (data.status === '1' && Array.isArray(data.result)) {
         return data.result;
@@ -148,6 +167,15 @@ export class EtherscanAPI {
 
       const response = await fetch(`${this.apiUrl}?${params.toString()}`);
       const data = await response.json() as any;
+
+      // Check for V2 API deprecation message
+      if (data.message && data.message.includes('deprecated V1 endpoint')) {
+        console.error(`Etherscan API error: ${data.message}. API key required for V2.`);
+        if (!this.apiKey) {
+          console.error(`Please set ${this.apiUrl.includes('polygon') ? 'POLYGONSCAN_API_KEY' : 'ETHERSCAN_API_KEY'} environment variable`);
+        }
+        return [];
+      }
 
       if (data.status === '1' && Array.isArray(data.result)) {
         return data.result

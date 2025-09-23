@@ -2663,6 +2663,118 @@ export class RpcServer {
           updateStatus();
           refreshInterval = setInterval(updateStatus, 5000); // Update every 5 seconds
           
+          // Compare blockchain transactions with backend data
+          window.compareTransactions = async function() {
+            const compBtn = document.getElementById('compareBtn');
+            const compResults = document.getElementById('comparisonResults');
+            const compContent = document.getElementById('comparisonContent');
+            
+            compBtn.disabled = true;
+            compBtn.textContent = '⏳ Comparing...';
+            
+            // Refresh blockchain data first
+            await refreshBlockchainData();
+            
+            // Get backend tracked transactions
+            const backendTxs = [];
+            const yourSide = party === 'ALICE' ? 'sideA' : 'sideB';
+            const theirSide = party === 'ALICE' ? 'sideB' : 'sideA';
+            
+            // Collect backend deposits
+            if (dealData?.collection?.[yourSide]?.deposits) {
+              for (const dep of dealData.collection[yourSide].deposits) {
+                backendTxs.push({ txid: dep.txid, type: 'deposit', side: 'your' });
+              }
+            }
+            if (dealData?.collection?.[theirSide]?.deposits) {
+              for (const dep of dealData.collection[theirSide].deposits) {
+                backendTxs.push({ txid: dep.txid, type: 'deposit', side: 'their' });
+              }
+            }
+            
+            // Collect backend queue transactions
+            if (dealData?.transactions) {
+              for (const tx of dealData.transactions) {
+                if (tx.submittedTx?.txid) {
+                  backendTxs.push({ txid: tx.submittedTx.txid, type: 'queue', purpose: tx.purpose });
+                  // Also add additional txids if present
+                  if (tx.submittedTx.additionalTxids) {
+                    for (const addTxid of tx.submittedTx.additionalTxids) {
+                      backendTxs.push({ txid: addTxid, type: 'queue', purpose: tx.purpose + ' (additional)' });
+                    }
+                  }
+                }
+              }
+            }
+            
+            // Get blockchain transactions
+            const blockchainTxs = [];
+            if (window.blockchainTransactions?.escrowA) {
+              blockchainTxs.push(...window.blockchainTransactions.escrowA.map(tx => ({ 
+                ...tx, 
+                escrow: party === 'ALICE' ? 'your' : 'their' 
+              })));
+            }
+            if (window.blockchainTransactions?.escrowB) {
+              blockchainTxs.push(...window.blockchainTransactions.escrowB.map(tx => ({ 
+                ...tx, 
+                escrow: party === 'BOB' ? 'your' : 'their' 
+              })));
+            }
+            
+            // Compare and find untracked transactions
+            const backendTxIds = new Set(backendTxs.map(tx => tx.txid?.toLowerCase()));
+            const untracked = blockchainTxs.filter(tx => 
+              !backendTxIds.has(tx.txid?.toLowerCase()) && 
+              !tx.txid?.startsWith('pending-') &&
+              !tx.txid?.startsWith('balance-')
+            );
+            
+            // Generate comparison report
+            let html = '';
+            html += '<div style="font-size: 10px;">';
+            html += '<p><strong>Backend Tracked:</strong> ' + backendTxs.length + ' transactions</p>';
+            html += '<p><strong>Blockchain Found:</strong> ' + blockchainTxs.length + ' transactions</p>';
+            
+            if (untracked.length > 0) {
+              html += '<p style="color: #dc2626; font-weight: bold;">⚠️ Found ' + untracked.length + ' untracked transactions:</p>';
+              html += '<ul style="margin: 5px 0; padding-left: 20px; font-size: 9px;">';
+              for (const tx of untracked) {
+                html += '<li>';
+                html += '<strong>' + (tx.direction === 'in' ? '⬇️' : '⬆️') + ' ' + tx.txid?.substring(0, 10) + '...</strong><br>';
+                html += 'Amount: ' + tx.amount + ', Confirms: ' + tx.confirmations + '<br>';
+                html += 'From: ' + tx.from?.substring(0, 10) + '... To: ' + tx.to?.substring(0, 10) + '...';
+                html += '</li>';
+              }
+              html += '</ul>';
+            } else {
+              html += '<p style="color: #059669;">✅ All blockchain transactions are tracked by backend</p>';
+            }
+            
+            // Show tracked transactions summary
+            if (backendTxs.length > 0) {
+              html += '<p style="margin-top: 10px;"><strong>Backend tracking:</strong></p>';
+              html += '<ul style="margin: 5px 0; padding-left: 20px; font-size: 9px;">';
+              const summary = {};
+              for (const tx of backendTxs) {
+                const key = tx.type + (tx.purpose ? '-' + tx.purpose : '');
+                summary[key] = (summary[key] || 0) + 1;
+              }
+              for (const [key, count] of Object.entries(summary)) {
+                html += '<li>' + key + ': ' + count + ' tx(s)</li>';
+              }
+              html += '</ul>';
+            }
+            
+            html += '</div>';
+            
+            compContent.innerHTML = html;
+            compResults.style.display = 'block';
+            
+            compBtn.disabled = false;
+            compBtn.textContent = '🔍 Compare with Blockchain';
+          };
+          
           // Also start blockchain refresh for live data
           setInterval(refreshBlockchainData, 10000); // Refresh blockchain data every 10 seconds
           
@@ -2685,13 +2797,128 @@ export class RpcServer {
           try {
             // Get recent block number
             const currentBlock = await provider.getBlockNumber();
-            const fromBlock = Math.max(0, currentBlock - 10000); // Look back 10000 blocks
+            const transactions = [];
             
-            // Query for incoming transactions (simplified - full implementation would need logs)
-            const balance = await provider.getBalance(address);
+            // Try to fetch from Etherscan/Polygonscan API
+            let apiUrl;
+            if (chainId === 'POLYGON') {
+              apiUrl = 'https://api.polygonscan.com/api';
+            } else if (chainId === 'ETH') {
+              apiUrl = 'https://api.etherscan.io/api';
+            } else if (chainId === 'BASE') {
+              apiUrl = 'https://api.basescan.org/api';
+            }
             
-            // For now, we rely on backend data, but we update confirmation counts
-            return [];
+            if (apiUrl) {
+              try {
+                // Fetch transaction list for the address
+                const params = new URLSearchParams({
+                  module: 'account',
+                  action: 'txlist',
+                  address: address,
+                  startblock: Math.max(0, currentBlock - 10000).toString(),
+                  endblock: currentBlock.toString(),
+                  sort: 'desc'
+                });
+                
+                // Note: Some networks may require an API key for V2 endpoints
+                // For now, we'll try without an API key and handle errors gracefully
+                const response = await fetch(\`\${apiUrl}?\${params.toString()}\`);
+                const data = await response.json();
+                
+                console.log(\`Fetched \${chainId} transactions for \${address}:\`, data);
+                
+                // Check for API errors
+                if (data.message && data.message.includes('deprecated V1 endpoint')) {
+                  console.warn('Etherscan API V1 deprecated. Falling back to blockchain query.');
+                  // Fall back to direct blockchain query
+                  throw new Error('API V1 deprecated');
+                }
+                
+                if (data.status === '1' && Array.isArray(data.result)) {
+                  // Process transactions
+                  for (const tx of data.result) {
+                    // Filter for incoming transactions (where 'to' is our address)
+                    if (tx.to && tx.to.toLowerCase() === address.toLowerCase()) {
+                      const confirms = currentBlock - parseInt(tx.blockNumber) + 1;
+                      transactions.push({
+                        txid: tx.hash,
+                        from: tx.from,
+                        to: tx.to,
+                        amount: ethers.formatEther(tx.value),
+                        blockHeight: parseInt(tx.blockNumber),
+                        confirmations: confirms,
+                        timestamp: new Date(parseInt(tx.timeStamp) * 1000).toISOString(),
+                        direction: 'in',
+                        source: 'blockchain'
+                      });
+                    } else if (tx.from && tx.from.toLowerCase() === address.toLowerCase()) {
+                      // Outgoing transaction
+                      const confirms = currentBlock - parseInt(tx.blockNumber) + 1;
+                      transactions.push({
+                        txid: tx.hash,
+                        from: tx.from,
+                        to: tx.to,
+                        amount: ethers.formatEther(tx.value),
+                        blockHeight: parseInt(tx.blockNumber),
+                        confirmations: confirms,
+                        timestamp: new Date(parseInt(tx.timeStamp) * 1000).toISOString(),
+                        direction: 'out',
+                        source: 'blockchain'
+                      });
+                    }
+                  }
+                } else {
+                  console.log(\`No transactions found or API error for \${address}:\`, data.message);
+                }
+              } catch (err) {
+                console.error('Failed to fetch from Etherscan/Polygonscan:', err);
+                
+                // Fallback: Query recent blocks directly from blockchain
+                try {
+                  console.log('Falling back to direct blockchain query for', chainId, address);
+                  const blocksToScan = 1000; // Scan last 1000 blocks
+                  const fromBlock = Math.max(0, currentBlock - blocksToScan);
+                  
+                  // Get logs for incoming transfers to this address
+                  const logs = await provider.getLogs({
+                    fromBlock: fromBlock,
+                    toBlock: currentBlock,
+                    address: null, // All addresses
+                    topics: [
+                      null, // Any event
+                      null, // From any address
+                      ethers.zeroPadValue(address, 32) // To our address
+                    ]
+                  });
+                  
+                  // Process logs to find transactions
+                  for (const log of logs) {
+                    const tx = await provider.getTransaction(log.transactionHash);
+                    if (tx && tx.to && tx.to.toLowerCase() === address.toLowerCase()) {
+                      const block = await provider.getBlock(log.blockNumber);
+                      const confirms = currentBlock - log.blockNumber + 1;
+                      transactions.push({
+                        txid: log.transactionHash,
+                        from: tx.from,
+                        to: tx.to,
+                        amount: ethers.formatEther(tx.value),
+                        blockNumber: log.blockNumber,
+                        blockTime: new Date((block?.timestamp || 0) * 1000).toISOString(),
+                        confirmations: confirms,
+                        direction: 'in'
+                      });
+                    }
+                  }
+                  
+                  console.log('Found', transactions.length, 'transactions via direct blockchain query');
+                } catch (fallbackErr) {
+                  console.error('Fallback blockchain query also failed:', fallbackErr);
+                }
+              }
+            }
+            
+            return transactions;
           } catch (err) {
             console.error('Failed to query EVM transaction history:', err);
             return [];
@@ -2737,6 +2964,9 @@ export class RpcServer {
         async function refreshBlockchainData() {
           if (!dealData || !blockchainProviders) return;
           
+          // Store blockchain transaction data for comparison
+          window.blockchainTransactions = window.blockchainTransactions || {};
+          
           // Refresh escrow balances if we have addresses
           if (dealData.escrowA?.address) {
             const chainId = dealData.alice.chainId;
@@ -2746,12 +2976,23 @@ export class RpcServer {
               // Query Unicity transaction history
               const txHistory = await queryUnicityTransactionHistory(dealData.escrowA.address);
               console.log('Unicity tx history for escrowA:', txHistory);
+              window.blockchainTransactions.escrowA = txHistory;
               
               // Merge with existing deposit data
               if (txHistory.length > 0 && dealData.collection?.sideA) {
                 dealData.collection.sideA.txHistory = txHistory;
               }
             } else if (blockchainProviders[chainId]) {
+              // Query EVM transaction history
+              const txHistory = await queryEvmTransactionHistory(chainId, dealData.escrowA.address);
+              console.log(\`\${chainId} tx history for escrowA:\`, txHistory);
+              window.blockchainTransactions.escrowA = txHistory;
+              
+              // Merge with existing deposit data
+              if (txHistory.length > 0 && dealData.collection?.sideA) {
+                dealData.collection.sideA.txHistory = txHistory;
+              }
+              
               await updateBalance('your', 
                 dealData.collection?.sideA, 
                 dealData.instructions?.sideA,
@@ -2767,22 +3008,27 @@ export class RpcServer {
               // Query Unicity transaction history
               const txHistory = await queryUnicityTransactionHistory(dealData.escrowB.address);
               console.log('Unicity tx history for escrowB:', txHistory);
+              window.blockchainTransactions.escrowB = txHistory;
               
               // Merge with existing deposit data
               if (txHistory.length > 0 && dealData.collection?.sideB) {
                 dealData.collection.sideB.txHistory = txHistory;
               }
             } else if (blockchainProviders[chainId]) {
+              // Query EVM transaction history  
+              const txHistory = await queryEvmTransactionHistory(chainId, dealData.escrowB.address);
+              console.log(\`\${chainId} tx history for escrowB:\`, txHistory);
+              window.blockchainTransactions.escrowB = txHistory;
+              
+              // Merge with existing deposit data
+              if (txHistory.length > 0 && dealData.collection?.sideB) {
+                dealData.collection.sideB.txHistory = txHistory;
+              }
+              
               await updateBalance('their',
                 dealData.collection?.sideB,
                 dealData.instructions?.sideB,
                 party === 'ALICE' ? dealData.bob : dealData.alice);
-              
-              // Also query transaction history for Polygon
-              const txHistory = await queryEvmTransactionHistory(chainId, dealData.escrowB.address);
-              if (txHistory.length > 0 && dealData.collection?.sideB) {
-                dealData.collection.sideB.txHistory = txHistory;
-              }
             }
           }
           
@@ -2835,6 +3081,20 @@ export class RpcServer {
             if (result.result) {
               dealData = result.result;
               lastSyncTime = Date.now(); // Update sync time on successful fetch
+              
+              // Debug: Log collection data
+              if (dealData.collection) {
+                console.log('Collection data from backend:', {
+                  sideA: dealData.collection.sideA,
+                  sideB: dealData.collection.sideB
+                });
+                if (dealData.collection.sideA?.deposits) {
+                  console.log('SideA deposits:', dealData.collection.sideA.deposits);
+                }
+                if (dealData.collection.sideB?.deposits) {
+                  console.log('SideB deposits:', dealData.collection.sideB.deposits);
+                }
+              }
               
               // Initialize blockchain providers with endpoints from backend
               if (dealData.rpcEndpoints && Object.keys(blockchainProviders).length === 0) {

@@ -298,6 +298,7 @@ export class UnicityPlugin implements ChainPlugin {
   ): Promise<EscrowDepositsView> {
     // Accept both ALPHA and ALPHA@UNICITY formats
     if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
+      console.error(`[UnicityPlugin] Unsupported asset: ${asset}`);
       throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
     }
 
@@ -305,15 +306,36 @@ export class UnicityPlugin implements ChainPlugin {
       asset,
       address,
       minConf,
-      since
+      since,
+      connected: this.connected,
+      wsState: this.ws?.readyState
     });
+    
+    // Ensure connection
+    if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) {
+      console.warn('[UnicityPlugin] Not connected to Electrum, attempting reconnect...');
+      await this.connect();
+    }
 
     const scriptHash = this.addressToScriptHash(address);
     console.log(`[UnicityPlugin] Script hash for ${address}: ${scriptHash}`);
     
-    // Get UTXOs
-    const utxos = await this.electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
-    console.log(`[UnicityPlugin] Found ${utxos.length} UTXOs for address ${address}`);
+    if (!scriptHash) {
+      console.error(`[UnicityPlugin] Failed to get script hash for ${address}`);
+      return {
+        address,
+        asset,
+        minConf,
+        deposits: [],
+        totalConfirmed: '0',
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    
+    try {
+      // Get UTXOs
+      const utxos = await this.electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
+      console.log(`[UnicityPlugin] Found ${utxos.length} UTXOs for address ${address}`);
     
     // Get current block height for confirmation calculation
     const headers = await this.electrumRequest('blockchain.headers.subscribe', []);
@@ -351,6 +373,18 @@ export class UnicityPlugin implements ChainPlugin {
       totalConfirmed,
       updatedAt: new Date().toISOString(),
     };
+    } catch (error) {
+      console.error(`[UnicityPlugin] Error in listConfirmedDeposits:`, error);
+      // Return empty result on error
+      return {
+        address,
+        asset,
+        minConf,
+        deposits: [],
+        totalConfirmed: '0',
+        updatedAt: new Date().toISOString(),
+      };
+    }
   }
 
   async quoteNativeForUSD(usd: string): Promise<QuoteNativeForUSDResult> {

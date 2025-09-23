@@ -1,6 +1,6 @@
 import { Deal, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
 import { DB } from '../db/database';
-import { DealRepository, DepositRepository, LeaseRepository, QueueRepository } from '../db/repositories';
+import { DealRepository, DepositRepository, QueueRepository } from '../db/repositories';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import * as crypto from 'crypto';
 
@@ -19,7 +19,6 @@ export class Engine {
   private intervalId?: NodeJS.Timeout;
   private dealRepo: DealRepository;
   private depositRepo: DepositRepository;
-  private leaseRepo: LeaseRepository;
   private queueRepo: QueueRepository;
   private engineId: string;
 
@@ -29,7 +28,6 @@ export class Engine {
   ) {
     this.dealRepo = new DealRepository(db);
     this.depositRepo = new DepositRepository(db);
-    this.leaseRepo = new LeaseRepository(db);
     this.queueRepo = new QueueRepository(db);
     this.engineId = crypto.randomBytes(8).toString('hex');
   }
@@ -56,33 +54,21 @@ export class Engine {
 
   private async processTick() {
     try {
-      // Clean up expired leases
-      this.leaseRepo.cleanupExpired();
-      
       // Monitor submitted transactions for confirmation
       await this.monitorSubmittedTransactions();
       
       // Get active deals
       const activeDeals = this.dealRepo.getActiveDeals();
+      console.log(`[Engine] Processing ${activeDeals.length} active deals`);
       
       for (const deal of activeDeals) {
-        // Try to acquire lease
-        if (!this.leaseRepo.acquire(deal.id, this.engineId, 90000)) {
-          continue; // Another engine is processing this deal
-        }
+        console.log(`[Engine] Processing deal ${deal.id} in stage ${deal.stage}`);
         
         try {
           await this.processDeal(deal);
         } catch (error) {
           console.error(`Error processing deal ${deal.id}:`, error);
           this.dealRepo.addEvent(deal.id, `Engine error: ${error}`);
-        } finally {
-          // Extend or release lease based on deal state
-          if (deal.stage === 'CLOSED' || deal.stage === 'REVERTED') {
-            this.leaseRepo.release(deal.id, this.engineId);
-          } else {
-            this.leaseRepo.extend(deal.id, this.engineId, 90000);
-          }
         }
       }
     } catch (error) {
@@ -109,6 +95,20 @@ export class Engine {
         // Check if both sides have locks
         const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
         const sideBLocked = deal.sideBState?.locks.tradeLockedAt && deal.sideBState?.locks.commissionLockedAt;
+        
+        console.log(`[Engine] Checking transition to WAITING for deal ${deal.id}:`, {
+          sideA: {
+            tradeLocked: !!deal.sideAState?.locks.tradeLockedAt,
+            commissionLocked: !!deal.sideAState?.locks.commissionLockedAt,
+            fullyLocked: sideALocked
+          },
+          sideB: {
+            tradeLocked: !!deal.sideBState?.locks.tradeLockedAt,
+            commissionLocked: !!deal.sideBState?.locks.commissionLockedAt,
+            fullyLocked: sideBLocked
+          },
+          canTransition: sideALocked && sideBLocked
+        });
         
         if (sideALocked && sideBLocked) {
           console.log(`Deal ${deal.id} both sides locked, planning distribution...`);
@@ -229,14 +229,47 @@ export class Engine {
         expiresAt
       );
       
+      console.log(`[Engine] Lock check for Alice:`, {
+        tradeAmount: deal.alice.amount,
+        commissionAmount,
+        commissionAsset,
+        tradeCollected: locks.tradeCollected,
+        commissionCollected: locks.commissionCollected,
+        tradeLocked: locks.tradeLocked,
+        commissionLocked: locks.commissionLocked,
+        minConf: lockMinConf
+      });
+      
       deal.sideAState.deposits = allDeposits;
       deal.sideAState.locks = {
         tradeLockedAt: locks.tradeLocked ? new Date().toISOString() : undefined,
         commissionLockedAt: locks.commissionLocked ? new Date().toISOString() : undefined,
       };
-      deal.sideAState.collectedByAsset[normalizedAsset] = locks.tradeCollected;
-      if (commissionAsset !== normalizedAsset) {
-        deal.sideAState.collectedByAsset[commissionAsset] = locks.commissionCollected;
+      
+      // In CREATED stage, show all deposits (even with just 1 confirmation)
+      // In COLLECTION stage, only show locked amounts (with full confirmations)
+      if (deal.stage === 'CREATED') {
+        // Sum all deposits for visibility
+        const tradeSum = sumAmounts(
+          allDeposits
+            .filter(d => d.asset === normalizedAsset)
+            .map(d => d.amount)
+        );
+        const commissionSum = sumAmounts(
+          allDeposits
+            .filter(d => d.asset === commissionAsset)
+            .map(d => d.amount)
+        );
+        deal.sideAState.collectedByAsset[normalizedAsset] = tradeSum;
+        if (commissionAsset !== normalizedAsset) {
+          deal.sideAState.collectedByAsset[commissionAsset] = commissionSum;
+        }
+      } else {
+        // In COLLECTION stage, use locked amounts only
+        deal.sideAState.collectedByAsset[normalizedAsset] = locks.tradeCollected;
+        if (commissionAsset !== normalizedAsset) {
+          deal.sideAState.collectedByAsset[commissionAsset] = locks.commissionCollected;
+        }
       }
     }
     
@@ -304,14 +337,47 @@ export class Engine {
         expiresAtB
       );
       
+      console.log(`[Engine] Lock check for Bob:`, {
+        tradeAmount: deal.bob.amount,
+        commissionAmount,
+        commissionAsset,
+        tradeCollected: locks.tradeCollected,
+        commissionCollected: locks.commissionCollected,
+        tradeLocked: locks.tradeLocked,
+        commissionLocked: locks.commissionLocked,
+        minConf: lockMinConfB
+      });
+      
       deal.sideBState.deposits = allDepositsB;
       deal.sideBState.locks = {
         tradeLockedAt: locks.tradeLocked ? new Date().toISOString() : undefined,
         commissionLockedAt: locks.commissionLocked ? new Date().toISOString() : undefined,
       };
-      deal.sideBState.collectedByAsset[normalizedAssetB] = locks.tradeCollected;
-      if (commissionAsset !== normalizedAssetB) {
-        deal.sideBState.collectedByAsset[commissionAsset] = locks.commissionCollected;
+      
+      // In CREATED stage, show all deposits (even with just 1 confirmation)
+      // In COLLECTION stage, only show locked amounts (with full confirmations)
+      if (deal.stage === 'CREATED') {
+        // Sum all deposits for visibility
+        const tradeSum = sumAmounts(
+          allDepositsB
+            .filter(d => d.asset === normalizedAssetB)
+            .map(d => d.amount)
+        );
+        const commissionSum = sumAmounts(
+          allDepositsB
+            .filter(d => d.asset === commissionAsset)
+            .map(d => d.amount)
+        );
+        deal.sideBState.collectedByAsset[normalizedAssetB] = tradeSum;
+        if (commissionAsset !== normalizedAssetB) {
+          deal.sideBState.collectedByAsset[commissionAsset] = commissionSum;
+        }
+      } else {
+        // In COLLECTION stage, use locked amounts only
+        deal.sideBState.collectedByAsset[normalizedAssetB] = locks.tradeCollected;
+        if (commissionAsset !== normalizedAssetB) {
+          deal.sideBState.collectedByAsset[commissionAsset] = locks.commissionCollected;
+        }
       }
     }
     
