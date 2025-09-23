@@ -89,6 +89,8 @@ export interface TxRef {
   requiredConfirms: number;
   status: 'PENDING' | 'CONFIRMED' | 'DROPPED' | 'REPLACED';
   nonceOrInputs?: string; // serialized
+  // For Unicity multi-UTXO transactions, store all transaction IDs
+  additionalTxids?: string[]; 
 }
 
 export interface QueueItem {

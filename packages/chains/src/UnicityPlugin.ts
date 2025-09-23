@@ -481,11 +481,12 @@ export class UnicityPlugin implements ChainPlugin {
       
       console.log(`[UNICITY] Sent ${txids.length} transactions, total ${totalSent / 100000000} ALPHA`);
       
-      // Return the first transaction ID (we can't return all of them in current interface)
+      // Return all transaction IDs for proper tracking
       return {
-        txid: txids[0],
+        txid: txids[0], // Primary transaction ID
         submittedAt: new Date().toISOString(),
-        nonceOrInputs: JSON.stringify(txids), // Store all txids in nonceOrInputs field
+        nonceOrInputs: JSON.stringify(txids), // Store all txids in nonceOrInputs field for backwards compatibility
+        additionalTxids: txids.slice(1), // Store remaining transaction IDs
       };
       
     } else {

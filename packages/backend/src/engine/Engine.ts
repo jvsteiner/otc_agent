@@ -159,12 +159,15 @@ export class Engine {
     // Update side A deposits
     if (deal.escrowA) {
       const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
-      const minConf = getConfirmationThreshold(deal.alice.chainId);
+      // For CREATED stage, use lower confirmation threshold for visibility
+      // For COLLECTION stage, use proper threshold for locking
+      const minConf = deal.stage === 'CREATED' ? 1 : getConfirmationThreshold(deal.alice.chainId);
       
       console.log(`[Engine] Checking deposits for Alice (${deal.alice.chainId}):`, {
         asset: deal.alice.asset,
         escrowAddress: deal.escrowA.address,
-        minConf
+        minConf,
+        stage: deal.stage
       });
       
       // Get deposits for trade asset (use normalized asset code)
@@ -193,7 +196,7 @@ export class Engine {
         const commissionDeposits = await plugin.listConfirmedDeposits(
           nativeAsset,
           deal.escrowA.address,
-          minConf
+          minConf  // Use same minConf as trade deposits (1 for CREATED, proper threshold for COLLECTION)
         );
         
         for (const deposit of commissionDeposits.deposits) {
@@ -213,13 +216,16 @@ export class Engine {
       // For CREATED stage, use a far future date as we're just monitoring
       const expiresAt = deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
       
+      // For lock checking, always use the proper confirmation threshold
+      const lockMinConf = getConfirmationThreshold(deal.alice.chainId);
+      
       const locks = checkLocks(
         allDeposits,
         normalizedAsset, // Use normalized asset for comparison
         deal.alice.amount,
         commissionAsset,
         commissionAmount,
-        minConf,
+        lockMinConf,  // Use proper threshold for locks
         expiresAt
       );
       
@@ -237,7 +243,16 @@ export class Engine {
     // Update side B deposits (similar logic)
     if (deal.escrowB) {
       const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
-      const minConf = getConfirmationThreshold(deal.bob.chainId);
+      // For CREATED stage, use lower confirmation threshold for visibility
+      // For COLLECTION stage, use proper threshold for locking
+      const minConf = deal.stage === 'CREATED' ? 1 : getConfirmationThreshold(deal.bob.chainId);
+      
+      console.log(`[Engine] Checking deposits for Bob (${deal.bob.chainId}):`, {
+        asset: deal.bob.asset,
+        escrowAddress: deal.escrowB.address,
+        minConf,
+        stage: deal.stage
+      });
       
       const normalizedAssetB = normalizeAssetCode(deal.bob.asset, deal.bob.chainId);
       const tradeDeposits = await plugin.listConfirmedDeposits(
@@ -257,7 +272,7 @@ export class Engine {
         const commissionDeposits = await plugin.listConfirmedDeposits(
           nativeAsset,
           deal.escrowB.address,
-          minConf
+          minConf  // Use same minConf as trade deposits (1 for CREATED, proper threshold for COLLECTION)
         );
         
         for (const deposit of commissionDeposits.deposits) {
@@ -276,13 +291,16 @@ export class Engine {
       // For CREATED stage, use a far future date as we're just monitoring
       const expiresAtB = deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
       
+      // For lock checking, always use the proper confirmation threshold
+      const lockMinConfB = getConfirmationThreshold(deal.bob.chainId);
+      
       const locks = checkLocks(
         allDepositsB,
         normalizedAssetB,
         deal.bob.amount,
         commissionAsset,
         commissionAmount,
-        minConf,
+        lockMinConfB,  // Use proper threshold for locks
         expiresAtB
       );
       
@@ -472,6 +490,7 @@ export class Engine {
           requiredConfirms: getConfirmationThreshold(nextItem.chainId),
           status: 'PENDING',
           nonceOrInputs: tx.nonceOrInputs,
+          additionalTxids: tx.additionalTxids, // Include additional transaction IDs for Unicity
         });
         
         this.dealRepo.addEvent(deal.id, `Submitted ${nextItem.purpose} tx: ${tx.txid}`);

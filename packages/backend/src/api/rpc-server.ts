@@ -3417,6 +3417,7 @@ export class RpcServer {
                   }
                 }
                 
+                // Add primary transaction
                 transactions.push({
                   type: 'out',
                   tag: item.tag || 'unknown', // Use tag from backend
@@ -3433,6 +3434,29 @@ export class RpcServer {
                   time: item.blockTime || item.createdAt,
                   blockNumber: item.blockNumber
                 });
+                
+                // For Unicity, add additional transactions if they exist
+                if (item.submittedTx?.additionalTxids && item.submittedTx.additionalTxids.length > 0) {
+                  for (const additionalTxid of item.submittedTx.additionalTxids) {
+                    transactions.push({
+                      type: 'out',
+                      tag: item.tag || 'unknown',
+                      txid: additionalTxid,
+                      amount: '(part of ' + item.amount + ')', // Indicate it's part of the total
+                      asset: item.asset,
+                      to: item.to,
+                      status: item.status,
+                      submittedStatus: item.submittedTx?.status,
+                      confirms: item.submittedTx?.confirms || 0,
+                      requiredConfirms: item.submittedTx?.requiredConfirms || 0,
+                      chainId: item.chainId,
+                      escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
+                      time: item.blockTime || item.createdAt,
+                      blockNumber: item.blockNumber,
+                      isAdditional: true // Flag to potentially style differently
+                    });
+                  }
+                }
               }
             }
           }

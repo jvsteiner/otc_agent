@@ -53,6 +53,8 @@ export interface SubmittedTx {
   txid: string;
   submittedAt: string;
   nonceOrInputs?: string;
+  // For Unicity multi-UTXO transactions, store additional transaction IDs
+  additionalTxids?: string[];
 }
 
 export interface ChainPlugin {
