@@ -2467,7 +2467,6 @@ export class RpcServer {
             });
           }
         }
-        ensureUnicityConnection();
         
         // Initialize blockchain providers when ethers is loaded
         function initializeProviders(endpoints) {
@@ -2485,9 +2484,9 @@ export class RpcServer {
             if (rpcUrl && !rpcUrl.startsWith('wss://')) { // Skip WebSocket endpoints (Unicity)
               try {
                 blockchainProviders[chain] = new ethers.JsonRpcProvider(rpcUrl);
-                console.log(\`Initialized provider for \${chain} with \${rpcUrl}\`);
+                console.log('Initialized provider for ' + chain + ' with ' + rpcUrl);
               } catch (err) {
-                console.error(\`Failed to initialize \${chain} provider:\`, err);
+                console.error('Failed to initialize ' + chain + ' provider:', err);
               }
             }
           }
@@ -2498,7 +2497,7 @@ export class RpcServer {
           const provider = blockchainProviders[chainId];
           if (!provider) return null;
           
-          const cacheKey = \`balance_\${chainId}_\${address}_\${assetCode}\`;
+          const cacheKey = 'balance_' + chainId + '_' + address + '_' + assetCode;
           const cached = blockchainQueryCache[cacheKey];
           
           // Use cache if less than 10 seconds old
@@ -2536,7 +2535,7 @@ export class RpcServer {
             
             return balance;
           } catch (err) {
-            console.error(\`Failed to query balance for \${address} on \${chainId}:\`, err);
+            console.error('Failed to query balance for ' + address + ' on ' + chainId + ':', err);
             return null;
           }
         }
@@ -2546,7 +2545,7 @@ export class RpcServer {
           const provider = blockchainProviders[chainId];
           if (!provider || !txHash) return null;
           
-          const cacheKey = \`tx_\${chainId}_\${txHash}\`;
+          const cacheKey = 'tx_' + chainId + '_' + txHash;
           const cached = blockchainQueryCache[cacheKey];
           
           // Use cache if less than 5 seconds old
@@ -2578,12 +2577,10 @@ export class RpcServer {
             
             return result;
           } catch (err) {
-            console.error(\`Failed to query transaction \${txHash} on \${chainId}:\`, err);
+            console.error('Failed to query transaction ' + txHash + ' on ' + chainId + ':', err);
             return null;
           }
         }
-        
-        // Initialize providers when page loads (will be called with endpoints from updateStatus)
         
         // Submit party details
         async function submitDetails() {
@@ -2680,6 +2677,62 @@ export class RpcServer {
           }, 5000);
         }
         
+        // Query transaction history for Polygon/EVM chains
+        async function queryEvmTransactionHistory(chainId, address) {
+          const provider = blockchainProviders[chainId];
+          if (!provider) return [];
+          
+          try {
+            // Get recent block number
+            const currentBlock = await provider.getBlockNumber();
+            const fromBlock = Math.max(0, currentBlock - 10000); // Look back 10000 blocks
+            
+            // Query for incoming transactions (simplified - full implementation would need logs)
+            const balance = await provider.getBalance(address);
+            
+            // For now, we rely on backend data, but we update confirmation counts
+            return [];
+          } catch (err) {
+            console.error('Failed to query EVM transaction history:', err);
+            return [];
+          }
+        }
+        
+        // Query transaction history for Unicity
+        async function queryUnicityTransactionHistory(address) {
+          if (!electrumConnected) return [];
+          
+          try {
+            const scriptHash = addressToScriptHash(address);
+            if (!scriptHash) return [];
+            
+            // Get transaction history from Fulcrum
+            const history = await electrumRequest('blockchain.scripthash.get_history', [scriptHash]);
+            if (!history || !Array.isArray(history)) return [];
+            
+            // Get current block height for confirmation calculation
+            const currentHeight = await electrumRequest('blockchain.headers.subscribe', []);
+            const blockHeight = currentHeight?.height || 0;
+            
+            // Process each transaction
+            const transactions = [];
+            for (const item of history) {
+              const confirmations = item.height > 0 ? (blockHeight - item.height + 1) : 0;
+              transactions.push({
+                txid: item.tx_hash,
+                blockHeight: item.height,
+                confirmations: confirmations,
+                fee: item.fee
+              });
+            }
+            
+            return transactions;
+          } catch (err) {
+            console.error('Failed to query Unicity transaction history:', err);
+            return [];
+          }
+        }
+        
         // Refresh blockchain data directly
         async function refreshBlockchainData() {
           if (!dealData || !blockchainProviders) return;
@@ -2688,7 +2741,17 @@ export class RpcServer {
           if (dealData.escrowA?.address) {
             const chainId = dealData.alice.chainId;
             const asset = dealData.alice.asset;
-            if (blockchainProviders[chainId]) {
+            
+            if (chainId === 'UNICITY') {
+              // Query Unicity transaction history
+              const txHistory = await queryUnicityTransactionHistory(dealData.escrowA.address);
+              console.log('Unicity tx history for escrowA:', txHistory);
+              
+              // Merge with existing deposit data
+              if (txHistory.length > 0 && dealData.collection?.sideA) {
+                dealData.collection.sideA.txHistory = txHistory;
+              }
+            } else if (blockchainProviders[chainId]) {
               await updateBalance('your', 
                 dealData.collection?.sideA, 
                 dealData.instructions?.sideA,
@@ -2699,11 +2762,27 @@ export class RpcServer {
           if (dealData.escrowB?.address) {
             const chainId = dealData.bob.chainId;
             const asset = dealData.bob.asset;
-            if (blockchainProviders[chainId]) {
+            
+            if (chainId === 'UNICITY') {
+              // Query Unicity transaction history
+              const txHistory = await queryUnicityTransactionHistory(dealData.escrowB.address);
+              console.log('Unicity tx history for escrowB:', txHistory);
+              
+              // Merge with existing deposit data
+              if (txHistory.length > 0 && dealData.collection?.sideB) {
+                dealData.collection.sideB.txHistory = txHistory;
+              }
+            } else if (blockchainProviders[chainId]) {
               await updateBalance('their',
                 dealData.collection?.sideB,
                 dealData.instructions?.sideB,
                 party === 'ALICE' ? dealData.bob : dealData.alice);
+              
+              // Also query transaction history for Polygon
+              const txHistory = await queryEvmTransactionHistory(chainId, dealData.escrowB.address);
+              if (txHistory.length > 0 && dealData.collection?.sideB) {
+                dealData.collection.sideB.txHistory = txHistory;
+              }
             }
           }
           
@@ -3228,7 +3307,7 @@ export class RpcServer {
         }
         
         // Update transaction log
-        function updateTransactionLog() {
+        async function updateTransactionLog() {
           const listEl = document.getElementById('transactionList');
           const transactions = [];
           
@@ -3241,44 +3320,86 @@ export class RpcServer {
           // Your deposits
           if (dealData?.collection?.[yourSide]?.deposits) {
             const yourChainId = party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId;
-            dealData.collection[yourSide].deposits.forEach(dep => {
+            for (const dep of dealData.collection[yourSide].deposits) {
+              // Try to get live confirmation count for all chains
+              let liveConfirms = dep.confirms || 0;
+              let minConfRequired = dep.minConf || 6;
+              
+              if (dep.txid) {
+                if (yourChainId === 'UNICITY') {
+                  // For Unicity, query confirmations via backend or estimate from block height
+                  if (dep.blockHeight && dealData.currentBlockHeight) {
+                    liveConfirms = Math.max(0, dealData.currentBlockHeight - dep.blockHeight + 1);
+                  }
+                } else if (blockchainProviders[yourChainId]) {
+                  // Query live status for EVM chains
+                  const liveStatus = await queryTransactionStatus(yourChainId, dep.txid);
+                  if (liveStatus) {
+                    liveConfirms = liveStatus.confirmations;
+                  }
+                }
+              }
+              
               transactions.push({
                 type: 'in',
                 tag: 'deposit',
                 txid: dep.txid,
                 amount: dep.amount,
                 asset: dep.asset,
-                confirmations: dep.confirms,
+                confirmations: liveConfirms,
+                minConfRequired: minConfRequired,
                 chainId: yourChainId,
                 escrow: 'Your escrow',
                 time: dep.blockTime || dep.createdAt || new Date().toISOString(),
-                blockNumber: dep.blockHeight
+                blockNumber: dep.blockHeight,
+                confirmStatus: liveConfirms >= minConfRequired ? 'confirmed' : 'pending'
               });
-            });
+            }
           }
           
           // Their deposits
           if (dealData?.collection?.[theirSide]?.deposits) {
             const theirChainId = party === 'ALICE' ? dealData.bob.chainId : dealData.alice.chainId;
-            dealData.collection[theirSide].deposits.forEach(dep => {
+            for (const dep of dealData.collection[theirSide].deposits) {
+              // Try to get live confirmation count for all chains
+              let liveConfirms = dep.confirms || 0;
+              let minConfRequired = dep.minConf || 6;
+              
+              if (dep.txid) {
+                if (theirChainId === 'UNICITY') {
+                  // For Unicity, query confirmations via backend or estimate from block height
+                  if (dep.blockHeight && dealData.currentBlockHeight) {
+                    liveConfirms = Math.max(0, dealData.currentBlockHeight - dep.blockHeight + 1);
+                  }
+                } else if (blockchainProviders[theirChainId]) {
+                  // Query live status for EVM chains
+                  const liveStatus = await queryTransactionStatus(theirChainId, dep.txid);
+                  if (liveStatus) {
+                    liveConfirms = liveStatus.confirmations;
+                  }
+                }
+              }
+              
               transactions.push({
                 type: 'in',
                 tag: 'deposit',
                 txid: dep.txid,
                 amount: dep.amount,
                 asset: dep.asset,
-                confirmations: dep.confirms,
+                confirmations: liveConfirms,
+                minConfRequired: minConfRequired,
                 chainId: theirChainId,
                 escrow: 'Their escrow',
                 time: dep.blockTime || dep.createdAt || new Date().toISOString(),
-                blockNumber: dep.blockHeight
+                blockNumber: dep.blockHeight,
+                confirmStatus: liveConfirms >= minConfRequired ? 'confirmed' : 'pending'
               });
-            });
+            }
           }
           
           // Add queue transactions from transactions array
           if (dealData?.transactions) {
-            dealData.transactions.forEach(async (item) => {
+            for (const item of dealData.transactions) {
               const isFromYourEscrow = yourEscrow && item.from?.address === yourEscrow.address;
               const isFromTheirEscrow = theirEscrow && item.from?.address === theirEscrow.address;
               
@@ -3313,7 +3434,7 @@ export class RpcServer {
                   blockNumber: item.blockNumber
                 });
               }
-            });
+            }
           }
           
           // Add events
@@ -3372,7 +3493,7 @@ export class RpcServer {
               
               const escrowClass = tx.escrow === 'Your escrow' ? 'escrow-a' : 'escrow-b';
               const chainClass = 'chain-' + chainId.toLowerCase();
-              const chainBadge = \`<span class="tx-chain-badge \${chainClass}">\${chainId}</span>\`;
+              const chainBadge = '<span class="tx-chain-badge ' + chainClass + '">' + chainId + '</span>';
               
               // Determine addresses
               let fromAddr = '';
@@ -3399,21 +3520,42 @@ export class RpcServer {
               let statusClass = 'pending';
               let statusText = 'PENDING';
               let confirmations = 0;
+              let minRequired = 0;
               
               if (tx.type === 'in') {
                 confirmations = tx.confirmations || 0;
-                statusText = confirmations > 0 ? \`\${confirmations} conf\` : 'PENDING';
-                statusClass = confirmations >= 6 ? 'confirmed' : 'pending';
+                minRequired = tx.minConfRequired || 6;
+                
+                if (confirmations === 0) {
+                  statusText = 'UNCONFIRMED';
+                  statusClass = 'unconfirmed';
+                } else if (confirmations >= minRequired) {
+                  statusText = '✅ ' + confirmations + ' conf';
+                  statusClass = 'confirmed';
+                } else {
+                  statusText = confirmations + '/' + minRequired + ' conf';
+                  statusClass = 'pending';
+                }
+                
+                // Add confirmation status for better clarity
+                if (tx.confirmStatus === 'confirmed') {
+                  statusClass = 'confirmed';
+                }
               } else {
                 if (tx.status === 'COMPLETED') {
                   statusClass = 'confirmed';
                   confirmations = tx.requiredConfirms || 6;
-                  statusText = \`\${confirmations} conf\`;
+                  statusText = '✅ ' + confirmations + ' conf';
                 } else if (tx.status === 'SUBMITTED') {
                   statusClass = 'pending';
                   confirmations = tx.confirms || 0;
                   const required = tx.requiredConfirms || 6;
-                  statusText = \`\${confirmations}/\${required} conf\`;
+                  
+                  if (confirmations === 0) {
+                    statusText = 'UNCONFIRMED';
+                  } else {
+                    statusText = confirmations + '/' + required + ' conf';
+                  }
                 } else {
                   statusClass = 'pending';
                   statusText = tx.status || 'PENDING';
@@ -3422,15 +3564,15 @@ export class RpcServer {
               
               // Explorer links - always use real txids
               const txLink = tx.txid ? 
-                \`<a href="\${getExplorerUrl(chainId, 'tx', tx.txid)}" target="_blank" class="tx-hash-link">\${formatAddress(tx.txid)}</a>\` :
+                '<a href="' + getExplorerUrl(chainId, 'tx', tx.txid) + '" target="_blank" class="tx-hash-link">' + formatAddress(tx.txid) + '</a>' :
                 '<span class="tx-hash">Pending...</span>';
               
               const fromLink = fromAddr && fromAddr !== 'External' ? 
-                \`<a href="\${getExplorerUrl(chainId, 'address', fromAddr)}" target="_blank" class="tx-hash-link">\${formatAddress(fromAddr)}</a>\` :
+                '<a href="' + getExplorerUrl(chainId, 'address', fromAddr) + '" target="_blank" class="tx-hash-link">' + formatAddress(fromAddr) + '</a>' :
                 formatAddress(fromAddr);
                 
               const toLink = toAddr ? 
-                \`<a href="\${getExplorerUrl(chainId, 'address', toAddr)}" target="_blank" class="tx-hash-link">\${formatAddress(toAddr)}</a>\` :
+                '<a href="' + getExplorerUrl(chainId, 'address', toAddr) + '" target="_blank" class="tx-hash-link">' + formatAddress(toAddr) + '</a>' :
                 '';
               
               // Create tag element
@@ -3443,32 +3585,30 @@ export class RpcServer {
               };
               
               const tagLabel = tagLabels[tx.tag] || tx.tag;
-              const tagHtml = \`<span class="tx-tag tag-\${tx.tag}">\${tagLabel}</span>\`;
+              const tagHtml = '<span class="tx-tag tag-' + tx.tag + '">' + tagLabel + '</span>';
               
-              return \`
-                <div class="transaction-item \${escrowClass}">
-                  <div class="tx-left">
-                    <div class="tx-header">
-                      <span class="\${typeClass}">\${typeIcon}</span>
-                      \${tagHtml}
-                      \${chainBadge}
-                      <span class="tx-amount">\${tx.amount} \${tx.asset}</span>
-                    </div>
-                    <div class="tx-addresses">
-                      <span class="tx-addr-label">From:</span> \${fromLink}
-                      <span class="tx-addr-label">To:</span> \${toLink}
-                    </div>
-                    <div class="tx-hash">
-                      <span class="tx-addr-label">TxID:</span> \${txLink}
-                    </div>
-                  </div>
-                  <div class="tx-right">
-                    <div class="tx-time">\${new Date(tx.time).toLocaleTimeString()}</div>
-                    <div class="tx-time">\${new Date(tx.time).toLocaleDateString()}</div>
-                    <span class="tx-status \${statusClass}">\${statusText}</span>
-                  </div>
-                </div>
-              \`;
+              return '<div class="transaction-item ' + escrowClass + '">' +
+                '<div class="tx-left">' +
+                  '<div class="tx-header">' +
+                    '<span class="' + typeClass + '">' + typeIcon + '</span>' +
+                    tagHtml +
+                    chainBadge +
+                    '<span class="tx-amount">' + tx.amount + ' ' + tx.asset + '</span>' +
+                  '</div>' +
+                  '<div class="tx-addresses">' +
+                    '<span class="tx-addr-label">From:</span> ' + fromLink +
+                    '<span class="tx-addr-label">To:</span> ' + toLink +
+                  '</div>' +
+                  '<div class="tx-hash">' +
+                    '<span class="tx-addr-label">TxID:</span> ' + txLink +
+                  '</div>' +
+                '</div>' +
+                '<div class="tx-right">' +
+                  '<div class="tx-time">' + new Date(tx.time).toLocaleTimeString() + '</div>' +
+                  '<div class="tx-time">' + new Date(tx.time).toLocaleDateString() + '</div>' +
+                  '<span class="tx-status ' + statusClass + '">' + statusText + '</span>' +
+                '</div>' +
+              '</div>';
             }
           }).join('');
         }
