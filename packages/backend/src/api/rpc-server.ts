@@ -2246,6 +2246,8 @@ export class RpcServer {
         let electrumConnected = false;
         let electrumRequestId = 1;
         let electrumCallbacks = {};
+        let currentBlockHeight = 0;
+        let lastBlockHeightUpdate = 0;
         
         // Bech32 decode for Unicity addresses
         const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -2490,12 +2492,34 @@ export class RpcServer {
                   console.log('Unicity server version:', result);
                 });
                 
+                // Subscribe to block headers to maintain current height
+                electrumRequest('blockchain.headers.subscribe', [], function(result) {
+                  if (result && (result.height || result.block_height)) {
+                    currentBlockHeight = result.height || result.block_height;
+                    lastBlockHeightUpdate = Date.now();
+                    console.log('Initial Unicity block height:', currentBlockHeight);
+                  }
+                });
+                
                 resolve();
               };
               
               electrumSocket.onmessage = function(event) {
                 try {
                   const response = JSON.parse(event.data);
+                  
+                  // Check for block header notifications
+                  if (response.method === 'blockchain.headers.subscribe' && response.params && response.params[0]) {
+                    const header = response.params[0];
+                    if (header.height || header.block_height) {
+                      const newHeight = header.height || header.block_height;
+                      if (newHeight > currentBlockHeight) {
+                        console.log('New Unicity block:', newHeight);
+                        currentBlockHeight = newHeight;
+                        lastBlockHeightUpdate = Date.now();
+                      }
+                    }
+                  }
                   
                   if (response.id && electrumCallbacks[response.id]) {
                     const callback = electrumCallbacks[response.id];
@@ -2552,6 +2576,36 @@ export class RpcServer {
           electrumSocket.send(JSON.stringify(request));
         }
         
+        // Promisified version of electrumRequest for async/await usage
+        function electrumRequestAsync(method, params, timeoutMs = 10000) {
+          return new Promise((resolve, reject) => {
+            let timeoutId;
+            let completed = false;
+            
+            // Set timeout
+            timeoutId = setTimeout(() => {
+              if (!completed) {
+                completed = true;
+                console.error('Electrum request timeout for ' + method + ' with params:', params);
+                reject(new Error('Request timeout: ' + method));
+              }
+            }, timeoutMs);
+            
+            electrumRequest(method, params, (result, error) => {
+              if (!completed) {
+                completed = true;
+                clearTimeout(timeoutId);
+                
+                if (error) {
+                  reject(error);
+                } else {
+                  resolve(result);
+                }
+              }
+            });
+          });
+        }
+        
         // Get balance and UTXOs for a Unicity address
         async function getUnicityBalance(address) {
           const scriptHash = await addressToScriptHash(address);
@@ -2562,58 +2616,52 @@ export class RpcServer {
           
           console.log('Getting Unicity balance for', address, 'scriptHash:', scriptHash);
           
-          return new Promise((resolve) => {
+          try {
             // Get UTXOs which gives us detailed info including mempool txs
-            electrumRequest('blockchain.scripthash.listunspent', [scriptHash], function(utxos, error) {
-              if (error) {
-                console.error('Failed to get Unicity UTXOs:', error);
-                resolve({ total: 0, confirmed: 0, unconfirmed: 0, utxos: [] });
-              } else {
-                console.log('Unicity UTXOs:', utxos);
+            const utxos = await electrumRequestAsync('blockchain.scripthash.listunspent', [scriptHash]);
+            console.log('Unicity UTXOs:', utxos);
+            
+            let confirmedBalance = 0;
+            let unconfirmedBalance = 0;
+            const utxoList = [];
+            
+            if (Array.isArray(utxos)) {
+              for (const utxo of utxos) {
+                const valueInAlpha = (utxo.value || 0) / 100000000;
                 
-                let confirmedBalance = 0;
-                let unconfirmedBalance = 0;
-                const utxoList = [];
-                
-                if (Array.isArray(utxos)) {
-                  for (const utxo of utxos) {
-                    const valueInAlpha = (utxo.value || 0) / 100000000;
-                    
-                    // height 0 means mempool (unconfirmed)
-                    if (utxo.height === 0) {
-                      unconfirmedBalance += valueInAlpha;
-                      utxoList.push({ ...utxo, confirmations: 0, amount: valueInAlpha });
-                    } else if (utxo.height > 0) {
-                      confirmedBalance += valueInAlpha;
-                      // Store height for later confirmation calculation
-                      utxoList.push({ ...utxo, confirmations: utxo.height, amount: valueInAlpha });
-                    }
-                  }
+                // height 0 means mempool (unconfirmed)
+                if (utxo.height === 0) {
+                  unconfirmedBalance += valueInAlpha;
+                  utxoList.push({ ...utxo, confirmations: 0, amount: valueInAlpha });
+                } else if (utxo.height > 0) {
+                  confirmedBalance += valueInAlpha;
+                  // Store height for later confirmation calculation
+                  utxoList.push({ ...utxo, confirmations: utxo.height, amount: valueInAlpha });
                 }
-                
-                resolve({
-                  total: confirmedBalance + unconfirmedBalance,
-                  confirmed: confirmedBalance,
-                  unconfirmed: unconfirmedBalance,
-                  utxos: utxoList
-                });
               }
-            });
-          });
+            }
+            
+            return {
+              total: confirmedBalance + unconfirmedBalance,
+              confirmed: confirmedBalance,
+              unconfirmed: unconfirmedBalance,
+              utxos: utxoList
+            };
+          } catch (error) {
+            console.error('Failed to get Unicity UTXOs:', error);
+            return { total: 0, confirmed: 0, unconfirmed: 0, utxos: [] };
+          }
         }
         
         // Get current block height for Unicity
         async function getUnicityBlockHeight() {
-          return new Promise((resolve) => {
-            electrumRequest('blockchain.headers.subscribe', [], function(result, error) {
-              if (error) {
-                console.error('Failed to get block height:', error);
-                resolve(0);
-              } else {
-                resolve(result.height || 0);
-              }
-            });
-          });
+          try {
+            const result = await electrumRequestAsync('blockchain.headers.subscribe', []);
+            return result ? (result.height || result.block_height || 0) : 0;
+          } catch (error) {
+            console.error('Failed to get block height:', error);
+            return 0;
+          }
         }
         
         // Initialize Unicity connection with retry
@@ -2701,8 +2749,7 @@ export class RpcServer {
         
         // Query transaction status directly from blockchain
         async function queryTransactionStatus(chainId, txHash) {
-          const provider = blockchainProviders[chainId];
-          if (!provider || !txHash) return null;
+          if (!txHash) return null;
           
           // Skip synthetic transaction IDs
           if (txHash.startsWith('balance-api-empty')) {
@@ -2721,6 +2768,39 @@ export class RpcServer {
           if (cached && Date.now() - cached.timestamp < 5000) {
             return cached.value;
           }
+          
+          // Special handling for Unicity
+          if (chainId === 'UNICITY') {
+            try {
+              if (electrumConnected) {
+                const txData = await queryUnicityTransaction(txHash);
+                if (txData) {
+                  const result = {
+                    status: txData.confirmations > 0 ? 'confirmed' : 'pending',
+                    confirmations: txData.confirmations || 0,
+                    blockNumber: txData.blockHeight || 0
+                  };
+                  
+                  // Cache the result
+                  blockchainQueryCache[cacheKey] = {
+                    value: result,
+                    timestamp: Date.now()
+                  };
+                  
+                  console.log('Unicity tx status for', txHash, ':', result.confirmations, 'confirmations');
+                  return result;
+                }
+              }
+              return null;
+            } catch (error) {
+              console.error('Failed to query Unicity transaction status:', error);
+              return null;
+            }
+          }
+          
+          // For EVM chains, use the provider
+          const provider = blockchainProviders[chainId];
+          if (!provider) return null;
           
           try {
             const receipt = await provider.getTransactionReceipt(txHash);
@@ -3103,12 +3183,18 @@ export class RpcServer {
             if (!scriptHash) return [];
             
             // Get transaction history from Fulcrum
-            const history = await electrumRequest('blockchain.scripthash.get_history', [scriptHash]);
+            const history = await electrumRequestAsync('blockchain.scripthash.get_history', [scriptHash]);
             if (!history || !Array.isArray(history)) return [];
             
-            // Get current block height for confirmation calculation
-            const currentHeight = await electrumRequest('blockchain.headers.subscribe', []);
-            const blockHeight = currentHeight?.height || 0;
+            // Use cached block height or refresh if stale
+            if (Date.now() - lastBlockHeightUpdate > 60000) { // Refresh every minute
+              const headers = await electrumRequestAsync('blockchain.headers.subscribe', []);
+              if (headers && (headers.height || headers.block_height)) {
+                currentBlockHeight = headers.height || headers.block_height;
+                lastBlockHeightUpdate = Date.now();
+              }
+            }
+            const blockHeight = currentBlockHeight || 0;
             
             // Process each transaction
             const transactions = [];
@@ -3136,23 +3222,30 @@ export class RpcServer {
             return null;
           }
           
+          console.log('Querying Unicity transaction:', txid, 'Current block height:', currentBlockHeight);
+          
           try {
             // Try verbose format first
-            let tx = await electrumRequest('blockchain.transaction.get', [txid, true]);
+            console.log('Requesting verbose tx for:', txid);
+            let tx = await electrumRequestAsync('blockchain.transaction.get', [txid, true]);
+            console.log('Verbose tx response for', txid, ':', tx ? 'got data' : 'null');
             
             // If verbose returns null, try raw format with merkle
             if (!tx) {
-              console.log('Verbose format returned null, trying raw format...');
-              const rawTx = await electrumRequest('blockchain.transaction.get', [txid, false]);
+              console.log('Verbose format returned null for txid:', txid, '- trying raw format...');
+              const rawTx = await electrumRequestAsync('blockchain.transaction.get', [txid, false]);
+              console.log('Raw tx response for', txid, ':', rawTx ? 'got data' : 'null');
+              
               if (rawTx) {
                 console.log('Got raw transaction, fetching merkle info...');
-                const merkleInfo = await electrumRequest('blockchain.transaction.get_merkle', [txid]);
+                const merkleInfo = await electrumRequestAsync('blockchain.transaction.get_merkle', [txid]);
+                console.log('Merkle info for', txid, ':', merkleInfo);
                 if (merkleInfo && merkleInfo.block_height) {
-                  const headers = await electrumRequest('blockchain.headers.subscribe', []);
-                  const currentHeight = headers?.height || 0;
-                  const confirmations = currentHeight > merkleInfo.block_height ? 
-                    (currentHeight - merkleInfo.block_height + 1) : 0;
-                  console.log('Calculated confirmations from merkle:', confirmations);
+                  // Use cached block height
+                  const confirmations = currentBlockHeight > merkleInfo.block_height ? 
+                    (currentBlockHeight - merkleInfo.block_height + 1) : 0;
+                  console.log('Calculated confirmations from merkle:', confirmations, 
+                    '(current:', currentBlockHeight, '- tx block:', merkleInfo.block_height, ')');
                   return {
                     txid: txid,
                     blockHeight: merkleInfo.block_height,
@@ -3160,24 +3253,35 @@ export class RpcServer {
                     status: confirmations > 0 ? 'confirmed' : 'pending'
                   };
                 }
+              } else {
+                console.log('Both verbose and raw formats returned null for txid:', txid);
               }
             } else if (tx) {
               // Process verbose format
-              const headers = await electrumRequest('blockchain.headers.subscribe', []);
-              const currentHeight = headers?.height || 0;
-              const confirmations = tx.confirmations || 
-                (tx.blockheight > 0 ? (currentHeight - tx.blockheight + 1) : 0);
+              console.log('Full verbose tx data:', JSON.stringify(tx).substring(0, 500));
+              
+              // Fulcrum returns confirmations directly, not block height
+              const confirmations = tx.confirmations || 0;
+              
+              // Calculate block height from confirmations if we have them
+              let blockHeight = 0;
+              if (confirmations > 0 && currentBlockHeight > 0) {
+                blockHeight = currentBlockHeight - confirmations + 1;
+              }
+              
+              console.log('Got verbose tx, calculated blockHeight:', blockHeight, 'confirmations:', confirmations, 'fields:', Object.keys(tx));
               return {
                 txid: txid,
-                blockHeight: tx.blockheight,
+                blockHeight: blockHeight,
                 confirmations: confirmations,
                 status: confirmations > 0 ? 'confirmed' : 'pending'
               };
             }
             
+            console.log('Returning null for txid:', txid);
             return null;
           } catch (err) {
-            console.error('Failed to query Unicity transaction:', txid, err);
+            console.error('Failed to query Unicity transaction:', txid, 'Error:', err);
             return null;
           }
         }
@@ -3185,6 +3289,23 @@ export class RpcServer {
         // Refresh blockchain data directly
         async function refreshBlockchainData() {
           if (!dealData || !blockchainProviders) return;
+          
+          // Update Unicity block height if connected
+          if (electrumConnected) {
+            try {
+              const headers = await electrumRequestAsync('blockchain.headers.subscribe', []);
+              if (headers && (headers.height || headers.block_height)) {
+                const newHeight = headers.height || headers.block_height;
+                if (newHeight > currentBlockHeight) {
+                  console.log('Updated Unicity block height from refresh:', newHeight);
+                  currentBlockHeight = newHeight;
+                  lastBlockHeightUpdate = Date.now();
+                }
+              }
+            } catch (err) {
+              console.error('Failed to update block height:', err);
+            }
+          }
           
           // Store blockchain transaction data for comparison
           window.blockchainTransactions = window.blockchainTransactions || {};
@@ -3323,8 +3444,13 @@ export class RpcServer {
                 initializeProviders(dealData.rpcEndpoints);
               }
               
-              updateDisplay();
+              // First update display (but don't call updateTransactionLog yet)
+              updateDisplay(false); // Pass flag to skip transaction log update
               updateSyncStatus();
+              
+              // Then refresh blockchain data and update transaction log after
+              await refreshBlockchainData();
+              updateTransactionLog();
             }
           } catch (error) {
             console.error('Failed to update status:', error);
@@ -3334,7 +3460,7 @@ export class RpcServer {
         }
         
         // Update display with latest data
-        function updateDisplay() {
+        function updateDisplay(updateTxLog = true) {
           if (!dealData) return;
           
           // Update stage
@@ -3397,8 +3523,10 @@ export class RpcServer {
             document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + escrowAsset;
           }
           
-          // Update transaction log
-          updateTransactionLog();
+          // Update transaction log only if flag is true (default)
+          if (updateTxLog) {
+            updateTransactionLog();
+          }
           
           // Handle closed deal notice
           if (dealData.stage === 'CLOSED' || dealData.stage === 'REVERTED') {
@@ -3809,9 +3937,19 @@ export class RpcServer {
               
               if (dep.txid) {
                 if (yourChainId === 'UNICITY') {
-                  // For Unicity, query confirmations via backend or estimate from block height
-                  if (dep.blockHeight && dealData.currentBlockHeight) {
-                    liveConfirms = Math.max(0, dealData.currentBlockHeight - dep.blockHeight + 1);
+                  // For Unicity, query real-time confirmations from blockchain
+                  if (electrumConnected) {
+                    const txData = await queryUnicityTransaction(dep.txid);
+                    if (txData && txData.confirmations !== undefined) {
+                      liveConfirms = txData.confirmations;
+                      console.log('Live confirmations for deposit', dep.txid, ':', liveConfirms);
+                    } else if (dep.blockHeight && currentBlockHeight) {
+                      // Fallback to estimation from block height
+                      liveConfirms = Math.max(0, currentBlockHeight - dep.blockHeight + 1);
+                    }
+                  } else if (dep.blockHeight && currentBlockHeight) {
+                    // Estimate from block height if not connected
+                    liveConfirms = Math.max(0, currentBlockHeight - dep.blockHeight + 1);
                   }
                 } else if (blockchainProviders[yourChainId]) {
                   // Query live status for EVM chains
@@ -3849,9 +3987,19 @@ export class RpcServer {
               
               if (dep.txid) {
                 if (theirChainId === 'UNICITY') {
-                  // For Unicity, query confirmations via backend or estimate from block height
-                  if (dep.blockHeight && dealData.currentBlockHeight) {
-                    liveConfirms = Math.max(0, dealData.currentBlockHeight - dep.blockHeight + 1);
+                  // For Unicity, query real-time confirmations from blockchain
+                  if (electrumConnected) {
+                    const txData = await queryUnicityTransaction(dep.txid);
+                    if (txData && txData.confirmations !== undefined) {
+                      liveConfirms = txData.confirmations;
+                      console.log('Live confirmations for deposit', dep.txid, ':', liveConfirms);
+                    } else if (dep.blockHeight && currentBlockHeight) {
+                      // Fallback to estimation from block height
+                      liveConfirms = Math.max(0, currentBlockHeight - dep.blockHeight + 1);
+                    }
+                  } else if (dep.blockHeight && currentBlockHeight) {
+                    // Estimate from block height if not connected
+                    liveConfirms = Math.max(0, currentBlockHeight - dep.blockHeight + 1);
                   }
                 } else if (blockchainProviders[theirChainId]) {
                   // Query live status for EVM chains
@@ -3905,17 +4053,40 @@ export class RpcServer {
                 const payoutInfo = item.payoutInfo;
                 
                 // Try to get real-time status from blockchain
-                if (item.submittedTx?.txid && item.chainId && blockchainProviders[item.chainId]) {
-                  const liveStatus = await queryTransactionStatus(item.chainId, item.submittedTx.txid);
-                  if (liveStatus) {
-                    // Update with live blockchain data
-                    item.submittedTx.confirms = liveStatus.confirmations;
-                    if (liveStatus.confirmations >= (item.submittedTx.requiredConfirms || 6)) {
-                      item.status = 'COMPLETED';
+                let liveConfirms = 0;
+                console.log('Processing outgoing tx:', {
+                  txid: item.submittedTx?.txid,
+                  chainId: item.chainId,
+                  tag: item.tag,
+                  hasSubmittedTx: !!item.submittedTx,
+                  existingConfirms: item.submittedTx?.confirms
+                });
+                
+                if (item.submittedTx?.txid && item.chainId) {
+                  // Check if we can query this chain (either via provider or Electrum for Unicity)
+                  const canQuery = item.chainId === 'UNICITY' ? electrumConnected : blockchainProviders[item.chainId];
+                  console.log('Can query', item.chainId, ':', canQuery);
+                  
+                  if (canQuery) {
+                    const liveStatus = await queryTransactionStatus(item.chainId, item.submittedTx.txid);
+                    console.log('Live status for', item.submittedTx.txid, ':', liveStatus);
+                    if (liveStatus) {
+                      // Update with live blockchain data
+                      liveConfirms = liveStatus.confirmations;
+                      if (!item.submittedTx) {
+                        item.submittedTx = {};
+                      }
+                      item.submittedTx.confirms = liveConfirms;
+                      if (liveStatus.confirmations >= (item.submittedTx.requiredConfirms || 6)) {
+                        item.status = 'COMPLETED';
+                      }
+                      item.blockNumber = liveStatus.blockNumber;
+                      console.log('Updated outgoing tx', item.submittedTx.txid, 'with', liveStatus.confirmations, 'confirmations');
                     }
-                    item.blockNumber = liveStatus.blockNumber;
                   }
                 }
+                
+                console.log('Final liveConfirms value:', liveConfirms);
                 
                 // Add primary transaction
                 transactions.push({
@@ -3927,7 +4098,7 @@ export class RpcServer {
                   to: item.to,
                   status: item.status,
                   submittedStatus: item.submittedTx?.status,
-                  confirms: item.submittedTx?.confirms || 0,
+                  confirms: liveConfirms || item.submittedTx?.confirms || 0,
                   requiredConfirms: item.submittedTx?.requiredConfirms || 0,
                   chainId: item.chainId,
                   escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
@@ -3962,13 +4133,18 @@ export class RpcServer {
                   // Query confirmations for each transaction separately
                   for (let i = 0; i < allTxids.length; i++) {
                     const txid = allTxids[i];
-                    let txConfirms = item.submittedTx?.confirms || 0;
+                    let txConfirms = 0;
                     
-                    // Try to query this specific transaction
-                    if (item.chainId === 'UNICITY' && electrumConnected) {
-                      const txData = await queryUnicityTransaction(txid);
-                      if (txData && txData.confirmations !== undefined) {
-                        txConfirms = txData.confirmations;
+                    // Use already queried confirmations for the first tx
+                    if (i === 0) {
+                      txConfirms = liveConfirms || item.submittedTx?.confirms || 0;
+                    } else {
+                      // Try to query this specific transaction
+                      if (item.chainId === 'UNICITY' && electrumConnected) {
+                        const txData = await queryUnicityTransaction(txid);
+                        if (txData && txData.confirmations !== undefined) {
+                          txConfirms = txData.confirmations;
+                        }
                       }
                     }
                     
@@ -4028,6 +4204,19 @@ export class RpcServer {
             }
             // Otherwise sort by time
             return new Date(b.time).getTime() - new Date(a.time).getTime();
+          });
+          
+          // Debug: Log transactions before rendering
+          console.log('Rendering transactions:', transactions);
+          // Log outgoing transactions specifically
+          transactions.filter(tx => tx.type === 'out').forEach(tx => {
+            console.log('Outgoing tx object:', {
+              txid: tx.txid,
+              tag: tx.tag,
+              confirms: tx.confirms,
+              requiredConfirms: tx.requiredConfirms,
+              status: tx.status
+            });
           });
           
           // Render transactions with payout grouping
@@ -4114,6 +4303,9 @@ export class RpcServer {
               let confirmations = 0;
               let minRequired = 0;
               
+              // Debug: Log confirmation values
+              console.log('Transaction display - type:', tx.type, 'confirms:', tx.confirms, 'confirmations:', tx.confirmations, 'requiredConfirms:', tx.requiredConfirms, 'minConfRequired:', tx.minConfRequired);
+              
               if (tx.type === 'in') {
                 confirmations = tx.confirmations || 0;
                 minRequired = tx.minConfRequired || 6;
@@ -4129,6 +4321,9 @@ export class RpcServer {
                   statusClass = 'pending';
                 }
                 
+                // Debug: Log the status text that will be displayed
+                console.log('Status text for tx:', tx.txid, '=', statusText);
+                
                 // Add confirmation status for better clarity
                 if (tx.confirmStatus === 'confirmed') {
                   statusClass = 'confirmed';
@@ -4136,7 +4331,7 @@ export class RpcServer {
               } else {
                 if (tx.status === 'COMPLETED') {
                   statusClass = 'confirmed';
-                  confirmations = tx.requiredConfirms || 6;
+                  confirmations = tx.confirms || tx.requiredConfirms || 6;
                   statusText = '✅ ' + confirmations + ' conf';
                 } else if (tx.status === 'SUBMITTED') {
                   statusClass = 'pending';
