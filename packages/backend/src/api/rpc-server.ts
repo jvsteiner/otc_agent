@@ -2438,13 +2438,7 @@ export class RpcServer {
             const reversed = Array.from(hash).reverse();
             const hexHash = reversed.map(b => b.toString(16).padStart(2, '0')).join('');
             
-            console.log('Address to script hash conversion:', {
-              address: address,
-              witnessProgram: Array.from(witnessProgram).map(b => b.toString(16).padStart(2, '0')).join(''),
-              scriptPubKey: Array.from(scriptPubKey).map(b => b.toString(16).padStart(2, '0')).join(''),
-              hash: Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join(''),
-              reversedHash: hexHash
-            });
+            // Address to script hash conversion completed
             
             return hexHash;
           } catch (err) {
@@ -2525,7 +2519,7 @@ export class RpcServer {
                     delete electrumCallbacks[response.id];
                     
                     if (response.error) {
-                      console.error('Electrum error:', response.error);
+                      // Electrum error received
                       callback(null, response.error);
                     } else {
                       callback(response.result);
@@ -3117,7 +3111,7 @@ export class RpcServer {
                     }
                   }
                 } else {
-                  console.log(\`No transactions found or API error for \${address}:\`, data.message);
+                  // No transactions found or API error
                 }
               } catch (err) {
                 console.error('Failed to fetch from Etherscan/Polygonscan:', err);
@@ -3209,7 +3203,7 @@ export class RpcServer {
             
             return transactions;
           } catch (err) {
-            console.error('Failed to query Unicity transaction history:', err);
+            // Error querying Unicity transaction history
             return [];
           }
         }
@@ -3341,7 +3335,7 @@ export class RpcServer {
             if (chainId === 'UNICITY') {
               // Query Unicity transaction history
               const txHistory = await queryUnicityTransactionHistory(dealData.escrowA.address);
-              console.log('Unicity tx history for escrowA:', txHistory);
+              // Unicity tx history retrieved
               window.blockchainTransactions.escrowA = txHistory;
               
               // Merge with existing deposit data
@@ -3351,7 +3345,7 @@ export class RpcServer {
             } else if (blockchainProviders[chainId]) {
               // Query EVM transaction history
               const txHistory = await queryEvmTransactionHistory(chainId, dealData.escrowA.address);
-              console.log(\`\${chainId} tx history for escrowA:\`, txHistory);
+              // EVM tx history retrieved
               window.blockchainTransactions.escrowA = txHistory;
               
               // Merge with existing deposit data
@@ -3373,7 +3367,7 @@ export class RpcServer {
             if (chainId === 'UNICITY') {
               // Query Unicity transaction history
               const txHistory = await queryUnicityTransactionHistory(dealData.escrowB.address);
-              console.log('Unicity tx history for escrowB:', txHistory);
+              // Unicity tx history retrieved
               window.blockchainTransactions.escrowB = txHistory;
               
               // Merge with existing deposit data
@@ -3383,7 +3377,7 @@ export class RpcServer {
             } else if (blockchainProviders[chainId]) {
               // Query EVM transaction history  
               const txHistory = await queryEvmTransactionHistory(chainId, dealData.escrowB.address);
-              console.log(\`\${chainId} tx history for escrowB:\`, txHistory);
+              // EVM tx history retrieved
               window.blockchainTransactions.escrowB = txHistory;
               
               // Merge with existing deposit data
@@ -3448,19 +3442,7 @@ export class RpcServer {
               dealData = result.result;
               lastSyncTime = Date.now(); // Update sync time on successful fetch
               
-              // Debug: Log collection data
-              if (dealData.collection) {
-                console.log('Collection data from backend:', {
-                  sideA: dealData.collection.sideA,
-                  sideB: dealData.collection.sideB
-                });
-                if (dealData.collection.sideA?.deposits) {
-                  console.log('SideA deposits:', dealData.collection.sideA.deposits);
-                }
-                if (dealData.collection.sideB?.deposits) {
-                  console.log('SideB deposits:', dealData.collection.sideB.deposits);
-                }
-              }
+              // Collection data processed
               
               // Initialize blockchain providers with endpoints from backend
               if (dealData.rpcEndpoints && Object.keys(blockchainProviders).length === 0) {
@@ -4662,7 +4644,7 @@ export class RpcServer {
                 
               if (partyDetails && partyDetails.paybackAddress && partyDetails.recipientAddress) {
                 // Details are filled - show them in read-only mode
-                console.log('Loading saved addresses:', partyDetails);
+                // Loading saved addresses
                 document.getElementById('payback').value = partyDetails.paybackAddress;
                 document.getElementById('recipient').value = partyDetails.recipientAddress;
                 document.getElementById('payback').disabled = true;
