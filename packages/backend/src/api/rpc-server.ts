@@ -513,6 +513,7 @@ export class RpcServer {
       bobDetails: deal.bobDetails,
       alice: deal.alice,
       bob: deal.bob,
+      commissionPlan: deal.commissionPlan,
       escrowA: deal.escrowA,
       escrowB: deal.escrowB,
       transactions: taggedTransactions,
@@ -3499,6 +3500,13 @@ export class RpcServer {
             const sideAFunded = checkSufficientFunds('A');
             const sideBFunded = checkSufficientFunds('B');
             
+            console.log('Timer pause check:', {
+              sideAFunded,
+              sideBFunded,
+              collectionData: dealData.collection,
+              commissionPlan: dealData.commissionPlan
+            });
+            
             if (sideAFunded && sideBFunded) {
               // Both sides have sufficient funds - pause the timer
               if (countdownInterval) {
@@ -3871,7 +3879,10 @@ export class RpcServer {
         function checkSufficientFunds(side) {
           if (!dealData) return false;
           
-          const sideData = side === 'A' ? dealData.sideAState : dealData.sideBState;
+          // The backend sends collection.sideA/sideB, not sideAState/sideBState
+          const sideData = side === 'A' ? 
+            (dealData.collection?.sideA || dealData.sideAState) : 
+            (dealData.collection?.sideB || dealData.sideBState);
           if (!sideData || !sideData.collectedByAsset) return false;
           
           const tradeSpec = side === 'A' ? dealData.alice : dealData.bob;

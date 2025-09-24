@@ -87,11 +87,21 @@ export class Engine {
       
       // Only check timeout and locks in COLLECTION stage
       if (deal.stage === 'COLLECTION') {
-        // Check if timeout expired
-        if (deal.expiresAt && new Date() > new Date(deal.expiresAt)) {
-          console.log(`Deal ${deal.id} expired, reverting...`);
-          await this.revertDeal(deal);
-          return;
+        // Check if sufficient funds have been collected (regardless of confirmations)
+        const sideAFunded = this.hasSufficientFunds(deal, 'A');
+        const sideBFunded = this.hasSufficientFunds(deal, 'B');
+        
+        // Only check timeout if funds haven't been collected on both sides
+        if (!sideAFunded || !sideBFunded) {
+          // Check if timeout expired
+          if (deal.expiresAt && new Date() > new Date(deal.expiresAt)) {
+            console.log(`Deal ${deal.id} expired, reverting...`);
+            await this.revertDeal(deal);
+            return;
+          }
+        } else {
+          // Both sides funded - timer should be paused, don't timeout
+          console.log(`Deal ${deal.id} has sufficient funds on both sides, timer paused`);
         }
         
         // Check if both sides have locks
@@ -385,6 +395,36 @@ export class Engine {
     
     // Update deal in DB
     this.dealRepo.update(deal);
+  }
+
+  private hasSufficientFunds(deal: Deal, side: 'A' | 'B'): boolean {
+    const sideState = side === 'A' ? deal.sideAState : deal.sideBState;
+    if (!sideState || !sideState.collectedByAsset) return false;
+    
+    const tradeSpec = side === 'A' ? deal.alice : deal.bob;
+    const commReq = side === 'A' ? deal.commissionPlan.sideA : deal.commissionPlan.sideB;
+    
+    // Normalize asset code for comparison
+    const tradeAsset = normalizeAssetCode(tradeSpec.asset, tradeSpec.chainId);
+    const tradeAmount = tradeSpec.amount;
+    const tradeCollected = sideState.collectedByAsset[tradeAsset] || '0';
+    
+    // Calculate commission amount
+    const commissionAmount = this.calculateCommissionAmount(deal, side);
+    
+    // Check based on commission currency type
+    if (commReq.currency === 'ASSET') {
+      // Commission from same asset - need trade + commission total
+      const totalNeeded = sumAmounts([tradeAmount, commissionAmount]);
+      return isAmountGte(tradeCollected, totalNeeded);
+    } else {
+      // Commission from native asset - check both separately
+      const nativeAsset = getNativeAsset(tradeSpec.chainId);
+      const nativeCollected = sideState.collectedByAsset[nativeAsset] || '0';
+      
+      return isAmountGte(tradeCollected, tradeAmount) && 
+             isAmountGte(nativeCollected, commissionAmount);
+    }
   }
 
   private calculateCommissionAmount(deal: Deal, side: 'A' | 'B'): string {
