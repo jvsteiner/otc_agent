@@ -3173,7 +3173,7 @@ export class RpcServer {
           if (!electrumConnected) return [];
           
           try {
-            const scriptHash = addressToScriptHash(address);
+            const scriptHash = await addressToScriptHash(address);
             if (!scriptHash) return [];
             
             // Get transaction history from Fulcrum
@@ -3500,12 +3500,6 @@ export class RpcServer {
             const sideAFunded = checkSufficientFunds('A');
             const sideBFunded = checkSufficientFunds('B');
             
-            console.log('Timer pause check:', {
-              sideAFunded,
-              sideBFunded,
-              collectionData: dealData.collection,
-              commissionPlan: dealData.commissionPlan
-            });
             
             if (sideAFunded && sideBFunded) {
               // Both sides have sufficient funds - pause the timer
