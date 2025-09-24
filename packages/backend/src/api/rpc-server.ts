@@ -3290,11 +3290,7 @@ export class RpcServer {
                 }
               }
               
-              // Debug log to see what we're getting
-              console.log('TX data for', txid, '- outputAmount:', outputAmount, 'tx keys:', Object.keys(tx).slice(0, 10));
-              if (tx.vout && tx.vout[0]) {
-                console.log('First vout:', JSON.stringify(tx.vout[0]).substring(0, 200));
-              }
+              // Transaction output amount extracted
               
               // Transaction data processed
               return {
