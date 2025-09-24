@@ -43,7 +43,31 @@ export function runMigrations(db: DB): void {
         const migrationPath = path.join(migrationsDir, file);
         const migration = fs.readFileSync(migrationPath, 'utf-8');
         console.log(`Running migration: ${file}`);
-        db.exec(migration);
+        
+        // Special handling for the payouts migration
+        if (file === '002_add_payouts.sql') {
+          try {
+            // First try to add the payoutId column
+            const checkColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('queue_items') WHERE name = 'payoutId'").get() as { count: number };
+            
+            if (checkColumn.count === 0) {
+              console.log('Adding payoutId column to queue_items...');
+              db.exec('ALTER TABLE queue_items ADD COLUMN payoutId TEXT REFERENCES payouts(payoutId)');
+            } else {
+              console.log('payoutId column already exists, skipping...');
+            }
+            
+            // Run the rest of the migration (tables and indexes)
+            db.exec(migration);
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name')) {
+              throw err;
+            }
+            console.log('Migration already applied, continuing...');
+          }
+        } else {
+          db.exec(migration);
+        }
       }
     }
     

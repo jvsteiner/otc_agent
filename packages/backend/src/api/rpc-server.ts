@@ -1,6 +1,6 @@
 import express from 'express';
 import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, getAssetRegistry, formatAssetCode, parseAssetCode } from '@otc-broker/core';
-import { DealRepository, QueueRepository } from '../db/repositories';
+import { DealRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { DB } from '../db/database';
 import { PluginManager } from '@otc-broker/chains';
 import * as crypto from 'crypto';
@@ -42,6 +42,7 @@ export class RpcServer {
   private app: express.Application;
   private dealRepo: DealRepository;
   private queueRepo: QueueRepository;
+  private payoutRepo: PayoutRepository;
   private pluginManager: PluginManager;
   private emailService: EmailService;
 
@@ -50,6 +51,7 @@ export class RpcServer {
     this.app.use(express.json());
     this.dealRepo = new DealRepository(db);
     this.queueRepo = new QueueRepository(db);
+    this.payoutRepo = new PayoutRepository(db);
     this.pluginManager = pluginManager;
     this.emailService = new EmailService(db);
     
@@ -82,6 +84,9 @@ export class RpcServer {
             break;
           case 'otc.cancelDeal':
             result = await this.cancelDeal(params as { dealId: string; token: string });
+            break;
+          case 'otc.getChainConfig':
+            result = await this.getChainConfig(params as { chainId?: string });
             break;
           default:
             throw new Error(`Method ${method} not found`);
@@ -393,6 +398,9 @@ export class RpcServer {
     // Get all queue items (transactions) for this deal
     const queueItems = this.queueRepo.getByDeal(params.dealId);
     
+    // Get payouts for this deal
+    const payouts = this.payoutRepo.getPayoutsByDealId(params.dealId);
+    
     // Build instructions
     const instructions = {
       sideA: [] as any[],
@@ -464,15 +472,32 @@ export class RpcServer {
       }
     }
     
-    // Tag transactions properly
-    const taggedTransactions = queueItems.map(item => ({
-      ...item,
-      tag: item.purpose === 'SWAP_PAYOUT' ? 'swap' :
-           item.purpose === 'OP_COMMISSION' ? 'commission' :
-           item.purpose === 'TIMEOUT_REFUND' ? 'refund' :
-           item.purpose === 'SURPLUS_REFUND' ? 'return' : 'unknown',
-      blockTime: item.submittedTx?.submittedAt || item.createdAt
-    }));
+    // Tag transactions properly and associate with payouts
+    const taggedTransactions = queueItems.map(item => {
+      // Find associated payout if exists
+      const associatedPayout = payouts.find(p => {
+        const payoutQueueItems = this.payoutRepo.getQueueItemsByPayoutId(p.payoutId);
+        return payoutQueueItems.some(qi => qi.id === item.id);
+      });
+      
+      return {
+        ...item,
+        tag: item.purpose === 'SWAP_PAYOUT' ? 'swap' :
+             item.purpose === 'OP_COMMISSION' ? 'commission' :
+             item.purpose === 'TIMEOUT_REFUND' ? 'refund' :
+             item.purpose === 'SURPLUS_REFUND' ? 'return' : 'unknown',
+        blockTime: item.submittedTx?.submittedAt || item.createdAt,
+        payoutId: associatedPayout?.payoutId,
+        payoutInfo: associatedPayout ? {
+          payoutId: associatedPayout.payoutId,
+          totalAmount: associatedPayout.totalAmount,
+          toAddr: associatedPayout.toAddr,
+          purpose: associatedPayout.purpose,
+          status: associatedPayout.status,
+          minConfirmations: associatedPayout.minConfirmations
+        } : undefined
+      };
+    });
     
     return {
       stage: deal.stage,
@@ -491,6 +516,10 @@ export class RpcServer {
       escrowA: deal.escrowA,
       escrowB: deal.escrowB,
       transactions: taggedTransactions,
+      payouts: payouts.map(p => ({
+        ...p,
+        transactions: this.payoutRepo.getQueueItemsByPayoutId(p.payoutId)
+      })),
       rpcEndpoints,
     };
   }
@@ -537,6 +566,73 @@ export class RpcServer {
   private async sendInvite(params: SendInviteParams) {
     // Delegate to email service
     return await this.emailService.sendInvite(params);
+  }
+
+  private async getChainConfig(params: { chainId?: string }) {
+    // Return chain configuration including RPC endpoints
+    const configs: Record<string, any> = {};
+    
+    if (params.chainId) {
+      // Get config for specific chain
+      const plugin = this.pluginManager.getPlugin(params.chainId as any);
+      const config: any = {
+        chainId: params.chainId,
+        operator: plugin.getOperatorAddress()
+      };
+      
+      // Add chain-specific endpoints
+      switch (params.chainId) {
+        case 'UNICITY':
+          config.electrumUrl = process.env.UNICITY_ELECTRUM || 'wss://fulcrum.unicity.network:50004';
+          break;
+        case 'ETH':
+          config.rpcUrl = process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com';
+          break;
+        case 'POLYGON':
+          config.rpcUrl = process.env.POLYGON_RPC || 'https://polygon-rpc.com';
+          break;
+        case 'SOLANA':
+          config.rpcUrl = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
+          break;
+      }
+      
+      configs[params.chainId] = config;
+    } else {
+      // Get config for all chains
+      const chains = ['UNICITY', 'ETH', 'POLYGON', 'SOLANA'];
+      for (const chainId of chains) {
+        try {
+          const plugin = this.pluginManager.getPlugin(chainId as any);
+          const config: any = {
+            chainId,
+            operator: plugin.getOperatorAddress()
+          };
+          
+          // Add chain-specific endpoints
+          switch (chainId) {
+            case 'UNICITY':
+              config.electrumUrl = process.env.UNICITY_ELECTRUM || 'wss://fulcrum.unicity.network:50004';
+              break;
+            case 'ETH':
+              config.rpcUrl = process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com';
+              break;
+            case 'POLYGON':
+              config.rpcUrl = process.env.POLYGON_RPC || 'https://polygon-rpc.com';
+              break;
+            case 'SOLANA':
+              config.rpcUrl = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
+              break;
+          }
+          
+          configs[chainId] = config;
+        } catch (e) {
+          // Chain plugin not available
+          console.log(`Chain ${chainId} plugin not available`);
+        }
+      }
+    }
+    
+    return configs;
   }
 
   private async sendInviteOld(params: SendInviteParams) {
@@ -1706,6 +1802,47 @@ export class RpcServer {
         .tag-swap { background: #dbeafe; color: #1e40af; }
         .tag-commission { background: #fef3c7; color: #92400e; }
         .tag-refund { background: #fce7f3; color: #9f1239; }
+        .tag-payout { background: #e0f2fe; color: #0369a1; font-size: 11px; }
+        .tag-payout-part { 
+          background: #f3f4f6; 
+          color: #4b5563; 
+          margin-left: 4px;
+          font-size: 8px;
+        }
+        
+        /* Payout grouping styles */
+        .payout-header {
+          background: linear-gradient(to right, #f0f9ff, #ffffff);
+          border-left: 4px solid #0284c7;
+          margin-bottom: 2px;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+        
+        .payout-header .tx-header {
+          font-size: 12px;
+        }
+        
+        .payout-transaction {
+          margin-left: 20px;
+          border-left: 2px dashed #e5e7eb;
+          position: relative;
+        }
+        
+        .payout-transaction::before {
+          content: "└";
+          position: absolute;
+          left: -8px;
+          top: 50%;
+          transform: translateY(-50%);
+          color: #9ca3af;
+          font-size: 14px;
+        }
+        
+        .tx-purpose {
+          font-size: 10px;
+          color: #6b7280;
+          margin-top: 2px;
+        }
         .tag-return { background: #ede9fe; color: #6b21a8; }
         
         .tx-escrow {
@@ -2315,11 +2452,33 @@ export class RpcServer {
         }
         
         // Connect to Unicity Fulcrum
-        function connectToUnicity() {
+        async function connectToUnicity() {
+          // Fetch chain config from backend
+          let wsUrl = 'wss://fulcrum.unicity.network:50004'; // fallback
+          try {
+            const response = await fetch('/rpc', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: Date.now(),
+                method: 'otc.getChainConfig',
+                params: { chainId: 'UNICITY' }
+              })
+            });
+            const data = await response.json();
+            if (data.result && data.result.UNICITY && data.result.UNICITY.electrumUrl) {
+              wsUrl = data.result.UNICITY.electrumUrl;
+              console.log('Using Fulcrum endpoint from backend:', wsUrl);
+            }
+          } catch (err) {
+            console.error('Failed to fetch chain config, using default:', err);
+          }
+          
           return new Promise((resolve, reject) => {
-            const wsUrl = 'wss://fulcrum.unicity.network:50004';
             
             try {
+              console.log('Connecting to Unicity Fulcrum at:', wsUrl);
               electrumSocket = new WebSocket(wsUrl);
               
               electrumSocket.onopen = function() {
@@ -2967,6 +3126,59 @@ export class RpcServer {
           } catch (err) {
             console.error('Failed to query Unicity transaction history:', err);
             return [];
+          }
+        }
+        
+        // Query a specific Unicity transaction by txid
+        async function queryUnicityTransaction(txid) {
+          if (!electrumConnected || !txid) {
+            console.log('Not connected or no txid provided');
+            return null;
+          }
+          
+          try {
+            // Try verbose format first
+            let tx = await electrumRequest('blockchain.transaction.get', [txid, true]);
+            
+            // If verbose returns null, try raw format with merkle
+            if (!tx) {
+              console.log('Verbose format returned null, trying raw format...');
+              const rawTx = await electrumRequest('blockchain.transaction.get', [txid, false]);
+              if (rawTx) {
+                console.log('Got raw transaction, fetching merkle info...');
+                const merkleInfo = await electrumRequest('blockchain.transaction.get_merkle', [txid]);
+                if (merkleInfo && merkleInfo.block_height) {
+                  const headers = await electrumRequest('blockchain.headers.subscribe', []);
+                  const currentHeight = headers?.height || 0;
+                  const confirmations = currentHeight > merkleInfo.block_height ? 
+                    (currentHeight - merkleInfo.block_height + 1) : 0;
+                  console.log('Calculated confirmations from merkle:', confirmations);
+                  return {
+                    txid: txid,
+                    blockHeight: merkleInfo.block_height,
+                    confirmations: confirmations,
+                    status: confirmations > 0 ? 'confirmed' : 'pending'
+                  };
+                }
+              }
+            } else if (tx) {
+              // Process verbose format
+              const headers = await electrumRequest('blockchain.headers.subscribe', []);
+              const currentHeight = headers?.height || 0;
+              const confirmations = tx.confirmations || 
+                (tx.blockheight > 0 ? (currentHeight - tx.blockheight + 1) : 0);
+              return {
+                txid: txid,
+                blockHeight: tx.blockheight,
+                confirmations: confirmations,
+                status: confirmations > 0 ? 'confirmed' : 'pending'
+              };
+            }
+            
+            return null;
+          } catch (err) {
+            console.error('Failed to query Unicity transaction:', txid, err);
+            return null;
           }
         }
         
@@ -3667,6 +3879,21 @@ export class RpcServer {
             }
           }
           
+          // Group transactions by payout for Unicity
+          const payoutGroups = new Map();
+          
+          // First, organize transactions by payout
+          if (dealData?.payouts) {
+            for (const payout of dealData.payouts) {
+              if (payout.chainId === 'UNICITY' && payout.transactions) {
+                payoutGroups.set(payout.payoutId, {
+                  payout: payout,
+                  transactions: payout.transactions
+                });
+              }
+            }
+          }
+          
           // Add queue transactions from transactions array
           if (dealData?.transactions) {
             for (const item of dealData.transactions) {
@@ -3674,6 +3901,9 @@ export class RpcServer {
               const isFromTheirEscrow = theirEscrow && item.from?.address === theirEscrow.address;
               
               if (isFromYourEscrow || isFromTheirEscrow) {
+                // Check if this transaction belongs to a payout
+                const payoutInfo = item.payoutInfo;
+                
                 // Try to get real-time status from blockchain
                 if (item.submittedTx?.txid && item.chainId && blockchainProviders[item.chainId]) {
                   const liveStatus = await queryTransactionStatus(item.chainId, item.submittedTx.txid);
@@ -3705,25 +3935,62 @@ export class RpcServer {
                   blockNumber: item.blockNumber
                 });
                 
+                // For Unicity with payout grouping
+                if (item.chainId === 'UNICITY' && payoutInfo) {
+                  // Add payout header
+                  transactions.push({
+                    type: 'payout',
+                    payoutId: payoutInfo.payoutId,
+                    tag: item.tag || 'unknown',
+                    amount: payoutInfo.totalAmount,
+                    asset: item.asset,
+                    to: payoutInfo.toAddr,
+                    purpose: payoutInfo.purpose,
+                    status: payoutInfo.status,
+                    minConfirmations: payoutInfo.minConfirmations,
+                    chainId: item.chainId,
+                    escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
+                    time: item.blockTime || item.createdAt
+                  });
+                }
+                
                 // For Unicity, add additional transactions if they exist
                 if (item.submittedTx?.additionalTxids && item.submittedTx.additionalTxids.length > 0) {
-                  for (const additionalTxid of item.submittedTx.additionalTxids) {
+                  // This is a multi-tx payout for Unicity
+                  const allTxids = [item.submittedTx.txid, ...item.submittedTx.additionalTxids];
+                  
+                  // Query confirmations for each transaction separately
+                  for (let i = 0; i < allTxids.length; i++) {
+                    const txid = allTxids[i];
+                    let txConfirms = item.submittedTx?.confirms || 0;
+                    
+                    // Try to query this specific transaction
+                    if (item.chainId === 'UNICITY' && electrumConnected) {
+                      const txData = await queryUnicityTransaction(txid);
+                      if (txData && txData.confirmations !== undefined) {
+                        txConfirms = txData.confirmations;
+                      }
+                    }
+                    
                     transactions.push({
                       type: 'out',
                       tag: item.tag || 'unknown',
-                      txid: additionalTxid,
-                      amount: '(part of ' + item.amount + ')', // Indicate it's part of the total
+                      txid: txid,
+                      amount: i === 0 ? item.amount : '(part of payout)', // First tx shows full amount
                       asset: item.asset,
                       to: item.to,
                       status: item.status,
                       submittedStatus: item.submittedTx?.status,
-                      confirms: item.submittedTx?.confirms || 0,
+                      confirms: txConfirms,
                       requiredConfirms: item.submittedTx?.requiredConfirms || 0,
                       chainId: item.chainId,
                       escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
                       time: item.blockTime || item.createdAt,
                       blockNumber: item.blockNumber,
-                      isAdditional: true // Flag to potentially style differently
+                      isPartOfPayout: true,
+                      payoutId: payoutInfo?.payoutId,
+                      txIndex: i + 1,
+                      txTotal: allTxids.length
                     });
                   }
                 }
@@ -3763,9 +4030,40 @@ export class RpcServer {
             return new Date(b.time).getTime() - new Date(a.time).getTime();
           });
           
-          // Render transactions
+          // Render transactions with payout grouping
           listEl.innerHTML = transactions.map(tx => {
-            if (tx.type === 'event') {
+            if (tx.type === 'payout') {
+              // Render payout header for Unicity
+              const statusClass = tx.minConfirmations >= 6 ? 'confirmed' : 'pending';
+              const statusText = tx.minConfirmations >= 6 ? 
+                '✅ Payout confirmed' : 
+                'Payout: ' + (tx.minConfirmations || 0) + ' confirmations (min)';
+              
+              return \`
+                <div class="transaction-item payout-header">
+                  <div class="tx-left">
+                    <div class="tx-header">
+                      <span class="tx-out">📦</span>
+                      <span class="tx-tag tag-payout">Payout</span>
+                      <span class="tx-chain-badge chain-unicity">UNICITY</span>
+                      <span class="tx-amount">\${tx.amount} \${tx.asset}</span>
+                    </div>
+                    <div class="tx-addresses">
+                      <span class="tx-addr-label">Destination:</span>
+                      <a href="\${getExplorerUrl(tx.chainId, 'address', tx.to)}" target="_blank" class="tx-hash-link">
+                        \${formatAddress(tx.to)}
+                      </a>
+                    </div>
+                    <div class="tx-purpose">
+                      <span class="tx-addr-label">Purpose:</span> \${tx.purpose}
+                    </div>
+                  </div>
+                  <div class="tx-right">
+                    <span class="tx-status \${statusClass}">\${statusText}</span>
+                  </div>
+                </div>
+              \`;
+            } else if (tx.type === 'event') {
               return \`
                 <div class="transaction-item">
                   <div class="tx-left">
@@ -3879,9 +4177,20 @@ export class RpcServer {
               };
               
               const tagLabel = tagLabels[tx.tag] || tx.tag;
-              const tagHtml = '<span class="tx-tag tag-' + tx.tag + '">' + tagLabel + '</span>';
+              let tagHtml = '<span class="tx-tag tag-' + tx.tag + '">' + tagLabel + '</span>';
               
-              return '<div class="transaction-item ' + escrowClass + '">' +
+              // Add payout indicator for Unicity transactions that are part of a payout
+              if (tx.isPartOfPayout && tx.txIndex && tx.txTotal) {
+                tagHtml += '<span class="tx-tag tag-payout-part">TX ' + tx.txIndex + '/' + tx.txTotal + '</span>';
+              }
+              
+              // Add special styling for transactions that are part of a payout
+              const itemClasses = [escrowClass];
+              if (tx.isPartOfPayout) {
+                itemClasses.push('payout-transaction');
+              }
+              
+              return '<div class="transaction-item ' + itemClasses.join(' ') + '">' +
                 '<div class="tx-left">' +
                   '<div class="tx-header">' +
                     '<span class="' + typeClass + '">' + typeIcon + '</span>' +

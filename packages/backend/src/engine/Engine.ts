@@ -1,6 +1,6 @@
 import { Deal, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
 import { DB } from '../db/database';
-import { DealRepository, DepositRepository, QueueRepository } from '../db/repositories';
+import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import * as crypto from 'crypto';
 
@@ -20,6 +20,7 @@ export class Engine {
   private dealRepo: DealRepository;
   private depositRepo: DepositRepository;
   private queueRepo: QueueRepository;
+  private payoutRepo: PayoutRepository;
   private engineId: string;
 
   constructor(
@@ -29,6 +30,7 @@ export class Engine {
     this.dealRepo = new DealRepository(db);
     this.depositRepo = new DepositRepository(db);
     this.queueRepo = new QueueRepository(db);
+    this.payoutRepo = new PayoutRepository(db);
     this.engineId = crypto.randomBytes(8).toString('hex');
   }
 
@@ -410,7 +412,23 @@ export class Engine {
     this.db.runInTransaction(() => {
       // Queue swap payouts
       if (deal.escrowA && deal.bobDetails) {
-        this.queueRepo.enqueue({
+        // Create payout for Unicity chains
+        let payoutId: string | undefined;
+        if (deal.alice.chainId === 'UNICITY') {
+          payoutId = this.payoutRepo.createPayout({
+            dealId: deal.id,
+            chainId: deal.alice.chainId,
+            fromAddr: deal.escrowA.address,
+            toAddr: deal.bobDetails.recipientAddress,
+            asset: deal.alice.asset,
+            totalAmount: deal.alice.amount,
+            purpose: 'SWAP_PAYOUT',
+            phase: 'PHASE_1_SWAP',
+            metadata: { side: 'A' }
+          });
+        }
+        
+        const queueItem = this.queueRepo.enqueue({
           dealId: deal.id,
           chainId: deal.alice.chainId,
           from: deal.escrowA,
@@ -421,10 +439,31 @@ export class Engine {
           // For Unicity, assign to phase 1
           phase: deal.alice.chainId === 'UNICITY' ? 'PHASE_1_SWAP' : undefined,
         });
+        
+        // Link queue item to payout for Unicity
+        if (payoutId) {
+          this.payoutRepo.linkQueueItemToPayout(queueItem.id, payoutId);
+        }
       }
       
       if (deal.escrowB && deal.aliceDetails) {
-        this.queueRepo.enqueue({
+        // Create payout for Unicity chains
+        let payoutId: string | undefined;
+        if (deal.bob.chainId === 'UNICITY') {
+          payoutId = this.payoutRepo.createPayout({
+            dealId: deal.id,
+            chainId: deal.bob.chainId,
+            fromAddr: deal.escrowB.address,
+            toAddr: deal.aliceDetails.recipientAddress,
+            asset: deal.bob.asset,
+            totalAmount: deal.bob.amount,
+            purpose: 'SWAP_PAYOUT',
+            phase: 'PHASE_1_SWAP',
+            metadata: { side: 'B' }
+          });
+        }
+        
+        const queueItem = this.queueRepo.enqueue({
           dealId: deal.id,
           chainId: deal.bob.chainId,
           from: deal.escrowB,
@@ -435,6 +474,11 @@ export class Engine {
           // For Unicity, assign to phase 1
           phase: deal.bob.chainId === 'UNICITY' ? 'PHASE_1_SWAP' : undefined,
         });
+        
+        // Link queue item to payout for Unicity
+        if (payoutId) {
+          this.payoutRepo.linkQueueItemToPayout(queueItem.id, payoutId);
+        }
       }
       
       // Queue operator commissions
@@ -892,6 +936,9 @@ export class Engine {
     const submittedItems = this.queueRepo.getAll()
       .filter(q => q.status === 'SUBMITTED' && q.submittedTx);
     
+    // Track payouts that need updating
+    const payoutUpdates = new Map<string, number>();
+    
     for (const item of submittedItems) {
       try {
         const txRef = item.submittedTx!;
@@ -900,25 +947,103 @@ export class Engine {
         // Check transaction confirmations
         const confirmations = await plugin.getTxConfirmations(txRef.txid);
         
-        if (confirmations >= txRef.requiredConfirms) {
-          // Transaction is confirmed, mark as COMPLETED
-          this.queueRepo.updateStatus(item.id, 'COMPLETED', {
-            ...txRef,
-            confirms: confirmations,
-            status: 'CONFIRMED'
-          });
+        // For Unicity with multiple txids, check all transactions
+        if (item.chainId === 'UNICITY' && txRef.additionalTxids && txRef.additionalTxids.length > 0) {
+          const allTxids = [txRef.txid, ...txRef.additionalTxids];
+          let minConfirms = confirmations;
           
-          console.log(`[Engine] Queue item ${item.id} completed: ${item.purpose} tx ${txRef.txid} confirmed`);
-          this.dealRepo.addEvent(item.dealId, `${item.purpose} completed: ${txRef.txid}`);
+          // Get confirmations for each transaction
+          for (const txid of txRef.additionalTxids) {
+            try {
+              const txConfirms = await plugin.getTxConfirmations(txid);
+              minConfirms = Math.min(minConfirms, txConfirms);
+            } catch (err) {
+              console.error(`Failed to check confirmations for additional tx ${txid}:`, err);
+              minConfirms = 0; // If any tx fails, consider unconfirmed
+            }
+          }
+          
+          // Use the minimum confirmations across all transactions
+          const effectiveConfirms = minConfirms;
+          
+          // Track minimum confirmations for payout if this item has a payoutId
+          const payoutId = (item as any).payoutId;
+          if (payoutId) {
+            const currentMin = payoutUpdates.get(payoutId) ?? Infinity;
+            payoutUpdates.set(payoutId, Math.min(currentMin, effectiveConfirms));
+          }
+          
+          if (effectiveConfirms >= txRef.requiredConfirms) {
+            // All transactions are confirmed
+            this.queueRepo.updateStatus(item.id, 'COMPLETED', {
+              ...txRef,
+              confirms: effectiveConfirms,
+              status: 'CONFIRMED'
+            });
+            
+            console.log(`[Engine] Queue item ${item.id} completed: ${item.purpose} (${allTxids.length} txs) confirmed`);
+            this.dealRepo.addEvent(item.dealId, `${item.purpose} completed: ${allTxids.length} transactions confirmed`);
+          } else {
+            // Update with minimum confirmation count
+            this.queueRepo.updateStatus(item.id, 'SUBMITTED', {
+              ...txRef,
+              confirms: effectiveConfirms
+            });
+          }
         } else {
-          // Update confirmation count
-          this.queueRepo.updateStatus(item.id, 'SUBMITTED', {
-            ...txRef,
-            confirms: confirmations
-          });
+          // Single transaction (non-Unicity or Unicity with single tx)
+          const payoutId = (item as any).payoutId;
+          if (payoutId) {
+            const currentMin = payoutUpdates.get(payoutId) ?? Infinity;
+            payoutUpdates.set(payoutId, Math.min(currentMin, confirmations));
+          }
+          
+          if (confirmations >= txRef.requiredConfirms) {
+            // Transaction is confirmed, mark as COMPLETED
+            this.queueRepo.updateStatus(item.id, 'COMPLETED', {
+              ...txRef,
+              confirms: confirmations,
+              status: 'CONFIRMED'
+            });
+            
+            console.log(`[Engine] Queue item ${item.id} completed: ${item.purpose} tx ${txRef.txid} confirmed`);
+            this.dealRepo.addEvent(item.dealId, `${item.purpose} completed: ${txRef.txid}`);
+          } else {
+            // Update confirmation count
+            this.queueRepo.updateStatus(item.id, 'SUBMITTED', {
+              ...txRef,
+              confirms: confirmations
+            });
+          }
         }
       } catch (error) {
         console.error(`Failed to check confirmations for queue item ${item.id}:`, error);
+      }
+    }
+    
+    // Update payout minimum confirmations
+    for (const [payoutId, minConfirms] of payoutUpdates) {
+      try {
+        this.payoutRepo.updatePayoutConfirmations(payoutId, minConfirms);
+        
+        // Check if all queue items for this payout are completed
+        const payoutQueueItems = this.payoutRepo.getQueueItemsByPayoutId(payoutId);
+        const allCompleted = payoutQueueItems.every(qi => {
+          const queueItem = this.queueRepo.getById(qi.id);
+          return queueItem?.status === 'COMPLETED';
+        });
+        
+        if (allCompleted && minConfirms >= 6) { // Assuming 6 confirmations for finality
+          this.payoutRepo.updatePayoutStatus(payoutId, 'CONFIRMED', minConfirms);
+          console.log(`[Engine] Payout ${payoutId} fully confirmed with ${minConfirms} confirmations`);
+        } else if (payoutQueueItems.some(qi => {
+          const queueItem = this.queueRepo.getById(qi.id);
+          return queueItem?.status === 'SUBMITTED';
+        })) {
+          this.payoutRepo.updatePayoutStatus(payoutId, 'SUBMITTED', minConfirms);
+        }
+      } catch (error) {
+        console.error(`Failed to update payout ${payoutId} status:`, error);
       }
     }
   }

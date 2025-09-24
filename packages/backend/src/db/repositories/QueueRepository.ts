@@ -5,7 +5,7 @@ import * as crypto from 'crypto';
 export class QueueRepository {
   constructor(private db: DB) {}
 
-  enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq' | 'status'>): QueueItem {
+  enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq' | 'status'> & { payoutId?: string }): QueueItem {
     // Get next sequence number for this deal+sender
     const seqStmt = this.db.prepare(`
       SELECT COALESCE(MAX(seq), 0) + 1 as nextSeq
@@ -19,8 +19,9 @@ export class QueueRepository {
     const id = crypto.randomBytes(16).toString('hex');
     const createdAt = new Date().toISOString();
     
+    const { payoutId, ...queueData } = item;
     const queueItem: QueueItem = {
-      ...item,
+      ...queueData,
       id,
       seq,
       status: 'PENDING',
@@ -30,8 +31,8 @@ export class QueueRepository {
     const stmt = this.db.prepare(`
       INSERT INTO queue_items (
         id, dealId, chainId, fromAddr, toAddr, 
-        asset, amount, purpose, phase, seq, status, createdAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        asset, amount, purpose, phase, seq, status, createdAt, payoutId
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
@@ -46,7 +47,8 @@ export class QueueRepository {
       queueItem.phase || null,
       queueItem.seq,
       'PENDING',
-      queueItem.createdAt
+      queueItem.createdAt,
+      payoutId || null
     );
     
     return queueItem;
@@ -140,6 +142,13 @@ export class QueueRepository {
     
     const rows = stmt.all() as any[];
     return rows.map(row => this.mapRowToQueueItem(row));
+  }
+  
+  getById(id: string): QueueItem | null {
+    const stmt = this.db.prepare('SELECT * FROM queue_items WHERE id = ?');
+    const row = stmt.get(id) as any;
+    if (!row) return null;
+    return this.mapRowToQueueItem(row);
   }
 
   private mapRowToQueueItem(row: any): QueueItem {
