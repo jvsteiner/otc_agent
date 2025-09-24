@@ -3265,12 +3265,44 @@ export class RpcServer {
                 blockHeight = currentBlockHeight - confirmations + 1;
               }
               
+              // Extract output amount if available
+              let outputAmount = 0;
+              
+              // Electrum/Fulcrum returns transaction in different formats
+              // Check for vout array (verbose format)
+              if (tx.vout && Array.isArray(tx.vout)) {
+                for (const output of tx.vout) {
+                  // Handle both formats: value as number or as BTC string
+                  if (typeof output.value === 'number') {
+                    // Value in BTC, need to convert to satoshis
+                    outputAmount += Math.round(output.value * 100000000);
+                  } else if (output.value) {
+                    // Might already be in satoshis or other format
+                    outputAmount += parseInt(output.value) || 0;
+                  }
+                }
+              } else if (tx.value) {
+                // Sometimes the total value is provided directly
+                if (typeof tx.value === 'number') {
+                  outputAmount = Math.round(tx.value * 100000000);
+                } else {
+                  outputAmount = parseInt(tx.value) || 0;
+                }
+              }
+              
+              // Debug log to see what we're getting
+              console.log('TX data for', txid, '- outputAmount:', outputAmount, 'tx keys:', Object.keys(tx).slice(0, 10));
+              if (tx.vout && tx.vout[0]) {
+                console.log('First vout:', JSON.stringify(tx.vout[0]).substring(0, 200));
+              }
+              
               // Transaction data processed
               return {
                 txid: txid,
                 blockHeight: blockHeight,
                 confirmations: confirmations,
-                status: confirmations > 0 ? 'confirmed' : 'pending'
+                status: confirmations > 0 ? 'confirmed' : 'pending',
+                outputAmount: outputAmount // In satoshis
               };
             }
             
@@ -4248,27 +4280,37 @@ export class RpcServer {
                     let txConfirms = 0;
                     let txAmount = item.amount; // Default to full amount
                     
-                    // Use already queried confirmations for the first tx
-                    if (i === 0) {
-                      txConfirms = liveConfirms || item.submittedTx?.confirms || 0;
-                    } else {
-                      // Try to query this specific transaction
-                      if (item.chainId === 'UNICITY' && electrumConnected) {
-                        const txData = await queryUnicityTransaction(txid);
-                        if (txData && txData.confirmations !== undefined) {
-                          txConfirms = txData.confirmations;
+                    // Query transaction data including amount
+                    if (item.chainId === 'UNICITY' && electrumConnected) {
+                      const txData = await queryUnicityTransaction(txid);
+                      if (txData) {
+                        txConfirms = txData.confirmations || 0;
+                        
+                        // Use actual output amount from blockchain if available
+                        if (txData.outputAmount && txData.outputAmount > 0) {
+                          // Convert from satoshis to ALPHA (1 ALPHA = 100,000,000 satoshis)
+                          txAmount = (txData.outputAmount / 100000000).toFixed(8);
+                        } else if (i === 0) {
+                          // First transaction, use the total amount if we don't have individual data
+                          txAmount = item.amount;
+                        } else {
+                          // For other transactions where we can't get the amount
+                          if (item.tag !== 'refund') {
+                            txAmount = '(part of payout)';
+                          } else {
+                            // For refunds without amount data
+                            txAmount = 'Amount pending';
+                          }
                         }
+                      } else if (i === 0) {
+                        // First tx without blockchain data
+                        txConfirms = liveConfirms || item.submittedTx?.confirms || 0;
+                        txAmount = item.amount;
                       }
-                    }
-                    
-                    // For refunds, calculate the actual amount per transaction
-                    if (item.tag === 'refund' && item.submittedTx?.additionalTxids) {
-                      // Divide total amount by number of transactions for refunds
-                      const totalTxCount = 1 + item.submittedTx.additionalTxids.length;
-                      const amountNum = parseFloat(item.amount);
-                      if (!isNaN(amountNum)) {
-                        txAmount = (amountNum / totalTxCount).toFixed(8);
-                      }
+                    } else if (i === 0) {
+                      // First tx for non-Unicity chains
+                      txConfirms = liveConfirms || item.submittedTx?.confirms || 0;
+                      txAmount = item.amount;
                     }
                     
                     transactions.push({
