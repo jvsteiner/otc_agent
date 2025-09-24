@@ -2545,6 +2545,16 @@ export class RpcServer {
           const provider = blockchainProviders[chainId];
           if (!provider || !txHash) return null;
           
+          // Skip synthetic transaction IDs
+          if (txHash.startsWith('balance-api-empty')) {
+            return { 
+              status: 'synthetic', 
+              confirmations: 999,
+              synthetic: true,
+              message: 'Synthetic deposit (balance detected, no transaction history)'
+            };
+          }
+          
           const cacheKey = 'tx_' + chainId + '_' + txHash;
           const cached = blockchainQueryCache[cacheKey];
           
