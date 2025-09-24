@@ -3473,11 +3473,40 @@ export class RpcServer {
           }
           
           // Update countdown
-          if (dealData.expiresAt) {
+          const countdownEl = document.getElementById('countdown');
+          
+          // Stop timer permanently for WAITING, CLOSED, or REVERTED stages
+          if (dealData.stage === 'WAITING' || dealData.stage === 'CLOSED' || dealData.stage === 'REVERTED') {
+            if (countdownInterval) {
+              clearInterval(countdownInterval);
+              countdownInterval = null;
+            }
+            countdownEl.className = 'countdown-timer';
+            countdownEl.textContent = dealData.stage === 'WAITING' ? 'Processing...' : 
+                                     dealData.stage === 'CLOSED' ? 'Completed' : 'Reverted';
+          } else if (dealData.expiresAt && dealData.stage === 'COLLECTION') {
+            // Check if we should pause the timer due to sufficient funds
+            const sideAFunded = checkSufficientFunds('A');
+            const sideBFunded = checkSufficientFunds('B');
+            
+            if (sideAFunded && sideBFunded) {
+              // Both sides have sufficient funds - pause the timer
+              if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+              }
+              countdownEl.className = 'countdown-timer';
+              countdownEl.textContent = '⏸️ Timer paused';
+              countdownEl.title = 'Timer paused - sufficient funds collected. Waiting for confirmations.';
+            } else {
+              // Not enough funds or funds dropped - run/resume the timer
+              startCountdown(dealData.expiresAt);
+            }
+          } else if (dealData.expiresAt) {
+            // Other stages with expiry - run timer normally
             startCountdown(dealData.expiresAt);
           } else {
             // Show static total time when timer not started
-            const countdownEl = document.getElementById('countdown');
             if (dealData.stage === 'CREATED') {
               const totalSeconds = dealData.timeoutSeconds || 3600;
               const hours = Math.floor(totalSeconds / 3600);
@@ -3599,7 +3628,7 @@ export class RpcServer {
                   '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%) on Polygon<br>' +
                   '<br><strong>⚠️ Action Required:</strong><br>' +
                   'Both parties must deposit their full amounts to escrow addresses<br>' +
-                  'Timer is running - complete deposits before expiry!<br>' +
+                  '⏱️ Timer is running - complete deposits before expiry!<br>' +
                   '<br><strong>What happens after funding:</strong><br>' +
                   'Once both parties reach 100%, automatic cross-chain swap executes';
               } else if (aliceCollected >= aliceExpected && bobCollected < bobExpected) {
@@ -3617,13 +3646,29 @@ export class RpcServer {
                   '<br><strong>Alice needs to deposit:</strong> ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ALPHA<br>' +
                   '<br>Once Alice completes funding, the swap will execute automatically';
               } else {
-                return '<strong>🎉 Both Parties Fully Funded!</strong><br>' +
-                  '<br><strong>Status:</strong> Preparing cross-chain atomic swap<br>' +
-                  '<br><strong>Next Steps:</strong><br>' +
-                  '1. Engine verifying all deposits<br>' +
-                  '2. Creating transfer transactions<br>' +
-                  '3. Executing atomic swap<br>' +
-                  '4. Assets will be sent to recipient addresses';
+                // Check if we're waiting for confirmations
+                const sideALocked = dealData.sideAState?.locks?.tradeLockedAt && dealData.sideAState?.locks?.commissionLockedAt;
+                const sideBLocked = dealData.sideBState?.locks?.tradeLockedAt && dealData.sideBState?.locks?.commissionLockedAt;
+                
+                if (!sideALocked || !sideBLocked) {
+                  return '<strong>🎉 Both Parties Fully Funded!</strong><br>' +
+                    '<br><strong>Status:</strong> ⏸️ Timer paused - waiting for confirmations<br>' +
+                    '<br><strong>Current State:</strong><br>' +
+                    '✅ Alice has deposited required ALPHA<br>' +
+                    '✅ Bob has deposited required MATIC<br>' +
+                    '⏳ Waiting for blockchain confirmations (6 for Unicity, 30 for Polygon)<br>' +
+                    '<br><strong>Note:</strong> The countdown timer is paused while funds are secured.<br>' +
+                    'If a chain reorganization occurs and funds drop below requirements,<br>' +
+                    'the timer will automatically resume.';
+                } else {
+                  return '<strong>🎉 Both Parties Fully Funded & Confirmed!</strong><br>' +
+                    '<br><strong>Status:</strong> Preparing cross-chain atomic swap<br>' +
+                    '<br><strong>Next Steps:</strong><br>' +
+                    '1. Engine verifying all deposits<br>' +
+                    '2. Creating transfer transactions<br>' +
+                    '3. Executing atomic swap<br>' +
+                    '4. Assets will be sent to recipient addresses';
+                }
               }
               
             case 'WAITING':
@@ -3810,6 +3855,52 @@ export class RpcServer {
               statusEl.textContent = '⏰ Waiting for deposits...';
             }
           }
+        }
+        
+        // Check if a side has sufficient funds collected (regardless of confirmations)
+        function checkSufficientFunds(side) {
+          if (!dealData) return false;
+          
+          const sideData = side === 'A' ? dealData.sideAState : dealData.sideBState;
+          if (!sideData || !sideData.collectedByAsset) return false;
+          
+          const tradeSpec = side === 'A' ? dealData.alice : dealData.bob;
+          const commissionReq = side === 'A' ? dealData.commissionPlan?.sideA : dealData.commissionPlan?.sideB;
+          
+          if (!tradeSpec || !commissionReq) return false;
+          
+          // Check trade amount collected
+          const tradeAsset = tradeSpec.asset;
+          const tradeAmount = parseFloat(tradeSpec.amount || '0');
+          const tradeCollected = parseFloat(sideData.collectedByAsset[tradeAsset] || '0');
+          
+          // Calculate commission amount
+          let commissionAmount = 0;
+          if (commissionReq.mode === 'PERCENT_BPS' && commissionReq.percentBps) {
+            // Commission as percentage of trade amount
+            commissionAmount = tradeAmount * (commissionReq.percentBps / 10000);
+          } else if (commissionReq.mode === 'FIXED_USD_NATIVE' && commissionReq.nativeFixed) {
+            commissionAmount = parseFloat(commissionReq.nativeFixed);
+          }
+          
+          // Check commission collected based on currency type
+          if (commissionReq.currency === 'ASSET') {
+            // Commission from same asset as trade - need trade + commission total
+            const totalNeeded = tradeAmount + commissionAmount;
+            return tradeCollected >= totalNeeded;
+          } else if (commissionReq.currency === 'NATIVE') {
+            // Commission from native asset - check separately
+            const nativeAsset = tradeSpec.chainId === 'UNICITY' ? 'ALPHA@UNICITY' :
+                               tradeSpec.chainId === 'POLYGON' ? 'POL@POLYGON' :
+                               tradeSpec.chainId === 'ETH' ? 'ETH@ETH' :
+                               tradeSpec.chainId === 'BASE' ? 'ETH@BASE' : 'NATIVE';
+            const nativeCollected = parseFloat(sideData.collectedByAsset[nativeAsset] || '0');
+            
+            // Need both trade amount in trade asset AND commission in native asset
+            return tradeCollected >= tradeAmount && nativeCollected >= commissionAmount;
+          }
+          
+          return false;
         }
         
         // Start countdown timer
