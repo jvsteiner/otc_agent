@@ -4168,27 +4168,59 @@ export class RpcServer {
                 
                 // Live confirms processed
                 
-                // Add primary transaction
-                transactions.push({
-                  type: 'out',
-                  tag: item.tag || 'unknown', // Use tag from backend
-                  txid: item.submittedTx?.txid,
-                  amount: item.amount,
-                  asset: item.asset,
-                  to: item.to,
-                  status: item.status,
-                  submittedStatus: item.submittedTx?.status,
-                  confirms: liveConfirms || item.submittedTx?.confirms || 0,
-                  requiredConfirms: item.submittedTx?.requiredConfirms || 0,
-                  chainId: item.chainId,
-                  escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
-                  time: item.blockTime || item.createdAt,
-                  blockNumber: item.blockNumber
-                });
+                // Skip adding primary transaction if it's a pending refund with no txid
+                const isPendingRefund = item.tag === 'refund' && (!item.submittedTx?.txid || item.submittedTx?.txid === 'Pending...');
                 
-                // For Unicity with payout grouping
-                if (item.chainId === 'UNICITY' && payoutInfo) {
-                  // Add payout header
+                if (!isPendingRefund) {
+                  // Add primary transaction
+                  transactions.push({
+                    type: 'out',
+                    tag: item.tag || 'unknown', // Use tag from backend
+                    txid: item.submittedTx?.txid,
+                    amount: item.amount,
+                    asset: item.asset,
+                    to: item.to,
+                    status: item.status,
+                    submittedStatus: item.submittedTx?.status,
+                    confirms: liveConfirms || item.submittedTx?.confirms || 0,
+                    requiredConfirms: item.submittedTx?.requiredConfirms || 0,
+                    chainId: item.chainId,
+                    escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
+                    time: item.blockTime || item.createdAt,
+                    blockNumber: item.blockNumber
+                  });
+                }
+                
+                // For Unicity with payout grouping (but skip for pending refunds)
+                if (item.chainId === 'UNICITY' && payoutInfo && !isPendingRefund) {
+                  // Calculate minimum confirmations from all transactions in the payout
+                  let minPayoutConfirms = liveConfirms || 0;
+                  
+                  // If there are additional transactions, check their confirmations too
+                  if (item.submittedTx?.additionalTxids && item.submittedTx.additionalTxids.length > 0) {
+                    const allTxids = [item.submittedTx.txid, ...item.submittedTx.additionalTxids];
+                    
+                    // Query confirmations for all transactions and find minimum
+                    for (const txid of allTxids) {
+                      let txConfirms = 0;
+                      if (txid === item.submittedTx.txid) {
+                        // First transaction - use already queried value
+                        txConfirms = liveConfirms || 0;
+                      } else if (electrumConnected) {
+                        // Query additional transactions
+                        const txData = await queryUnicityTransaction(txid);
+                        if (txData && txData.confirmations !== undefined) {
+                          txConfirms = txData.confirmations;
+                        }
+                      }
+                      // Update minimum if this tx has fewer confirmations
+                      if (txConfirms < minPayoutConfirms || minPayoutConfirms === 0) {
+                        minPayoutConfirms = txConfirms;
+                      }
+                    }
+                  }
+                  
+                  // Add payout header with calculated minimum confirmations
                   transactions.push({
                     type: 'payout',
                     payoutId: payoutInfo.payoutId,
@@ -4198,15 +4230,15 @@ export class RpcServer {
                     to: payoutInfo.toAddr,
                     purpose: payoutInfo.purpose,
                     status: payoutInfo.status,
-                    minConfirmations: payoutInfo.minConfirmations,
+                    minConfirmations: minPayoutConfirms,
                     chainId: item.chainId,
                     escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
                     time: item.blockTime || item.createdAt
                   });
                 }
                 
-                // For Unicity, add additional transactions if they exist
-                if (item.submittedTx?.additionalTxids && item.submittedTx.additionalTxids.length > 0) {
+                // For Unicity, add additional transactions if they exist (but skip for pending refunds)
+                if (item.submittedTx?.additionalTxids && item.submittedTx.additionalTxids.length > 0 && !isPendingRefund) {
                   // This is a multi-tx payout for Unicity
                   const allTxids = [item.submittedTx.txid, ...item.submittedTx.additionalTxids];
                   
@@ -4214,6 +4246,7 @@ export class RpcServer {
                   for (let i = 0; i < allTxids.length; i++) {
                     const txid = allTxids[i];
                     let txConfirms = 0;
+                    let txAmount = item.amount; // Default to full amount
                     
                     // Use already queried confirmations for the first tx
                     if (i === 0) {
@@ -4228,12 +4261,22 @@ export class RpcServer {
                       }
                     }
                     
+                    // For refunds, calculate the actual amount per transaction
+                    if (item.tag === 'refund' && item.submittedTx?.additionalTxids) {
+                      // Divide total amount by number of transactions for refunds
+                      const totalTxCount = 1 + item.submittedTx.additionalTxids.length;
+                      const amountNum = parseFloat(item.amount);
+                      if (!isNaN(amountNum)) {
+                        txAmount = (amountNum / totalTxCount).toFixed(8);
+                      }
+                    }
+                    
                     transactions.push({
                       type: 'out',
                       tag: item.tag || 'unknown',
                       txid: txid,
-                      amount: i === 0 ? item.amount : '(part of payout)', // First tx shows full amount
-                      asset: item.asset,
+                      amount: txAmount,
+                      asset: item.asset.replace('(part of payout) ', ''), // Remove any "(part of payout)" prefix
                       to: item.to,
                       status: item.status,
                       submittedStatus: item.submittedTx?.status,
