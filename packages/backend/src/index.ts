@@ -10,7 +10,7 @@ import { Engine } from './engine/Engine';
 import { PluginManager, ChainConfig } from '@otc-broker/chains';
 
 async function main() {
-  console.log('Starting OTC Broker Engine...');
+  console.log('Starting OTC Broker Engine... (v2)'); // Force reload
   console.log('Electrum URL:', process.env.UNICITY_ELECTRUM || 'not set, using default');
   
   // Initialize database
