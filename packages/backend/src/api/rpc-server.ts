@@ -2709,18 +2709,32 @@ export class RpcServer {
           try {
             let balance;
             
+            // Clean up asset code - remove @CHAIN suffix if present
+            let cleanAsset = assetCode;
+            if (assetCode.includes('@')) {
+              cleanAsset = assetCode.split('@')[0];
+            }
+            
             // Check if it's native asset or ERC20
-            if (assetCode === 'ETH' || assetCode === 'MATIC' || 
+            if (cleanAsset === 'ETH' || cleanAsset === 'MATIC' || 
                 assetCode === 'ETH@ETH' || assetCode === 'MATIC@POLYGON') {
               // Native currency balance
               balance = await provider.getBalance(address);
               balance = ethers.formatEther(balance);
-            } else if (assetCode.startsWith('ERC20:')) {
+            } else if (cleanAsset.startsWith('ERC20:')) {
               // ERC20 token balance
-              const tokenAddress = assetCode.split(':')[1];
+              const tokenAddress = cleanAsset.split(':')[1];
               const abi = ['function balanceOf(address) view returns (uint256)',
                           'function decimals() view returns (uint8)'];
               const contract = new ethers.Contract(tokenAddress, abi, provider);
+              const rawBalance = await contract.balanceOf(address);
+              const decimals = await contract.decimals();
+              balance = ethers.formatUnits(rawBalance, decimals);
+            } else if (cleanAsset.startsWith('0x')) {
+              // Looks like a token address directly (e.g., USDT contract address)
+              const abi = ['function balanceOf(address) view returns (uint256)',
+                          'function decimals() view returns (uint8)'];
+              const contract = new ethers.Contract(cleanAsset, abi, provider);
               const rawBalance = await contract.balanceOf(address);
               const decimals = await contract.decimals();
               balance = ethers.formatUnits(rawBalance, decimals);
