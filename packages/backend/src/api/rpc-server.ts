@@ -2746,7 +2746,7 @@ export class RpcServer {
           if (!txHash) return null;
           
           // Skip synthetic transaction IDs
-          if (txHash.startsWith('balance-api-empty')) {
+          if (txHash.startsWith('balance-api-empty') || txHash.startsWith('erc20-balance-')) {
             return { 
               status: 'synthetic', 
               confirmations: 999,
@@ -3956,6 +3956,16 @@ export class RpcServer {
           return addr.substr(0, 10) + '...' + addr.substr(-8);
         }
         
+        // Clean asset display name (remove @CHAIN suffixes for display)
+        function cleanAssetDisplay(asset) {
+          if (!asset) return '';
+          // Remove @CHAIN suffix for display purposes
+          if (asset.includes('@')) {
+            return asset.split('@')[0];
+          }
+          return asset;
+        }
+        
         // Get blockchain explorer URL
         function getExplorerUrl(chainId, type, value) {
           const explorers = {
@@ -4372,7 +4382,7 @@ export class RpcServer {
                       <span class="tx-out">📦</span>
                       <span class="tx-tag tag-payout">Payout</span>
                       <span class="tx-chain-badge chain-unicity">UNICITY</span>
-                      <span class="tx-amount">\${tx.amount} \${tx.asset}</span>
+                      <span class="tx-amount">\${tx.amount} \${cleanAssetDisplay(tx.asset)}</span>
                     </div>
                     <div class="tx-addresses">
                       <span class="tx-addr-label">Destination:</span>
@@ -4526,7 +4536,7 @@ export class RpcServer {
                     '<span class="' + typeClass + '">' + typeIcon + '</span>' +
                     tagHtml +
                     chainBadge +
-                    '<span class="tx-amount">' + tx.amount + ' ' + tx.asset + '</span>' +
+                    '<span class="tx-amount">' + tx.amount + ' ' + cleanAssetDisplay(tx.asset) + '</span>' +
                   '</div>' +
                   '<div class="tx-addresses">' +
                     '<span class="tx-addr-label">From:</span> ' + fromLink +
