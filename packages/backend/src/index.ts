@@ -69,7 +69,7 @@ async function main() {
   rpcServer.start(port);
   
   // Start engine loop
-  engine.start();
+  await engine.start();
   
   // Graceful shutdown
   process.on('SIGINT', () => {

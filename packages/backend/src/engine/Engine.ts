@@ -34,9 +34,6 @@ export class Engine {
     this.queueRepo = new QueueRepository(db);
     this.payoutRepo = new PayoutRepository(db);
     this.engineId = crypto.randomBytes(8).toString('hex');
-    
-    // Initialize tank manager if configured
-    this.initializeTankManager();
   }
   
   private async initializeTankManager() {
@@ -61,12 +58,13 @@ export class Engine {
       // Initialize tank for configured chains
       const chainConfigs = new Map<string, { rpcUrl: string }>();
       
-      if (process.env.ETH_RPC) {
-        chainConfigs.set('ETH', { rpcUrl: process.env.ETH_RPC });
-      }
-      if (process.env.POLYGON_RPC) {
-        chainConfigs.set('POLYGON', { rpcUrl: process.env.POLYGON_RPC });
-      }
+      // Always configure Ethereum and Polygon with their RPCs (default or configured)
+      chainConfigs.set('ETH', { 
+        rpcUrl: process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com' 
+      });
+      chainConfigs.set('POLYGON', { 
+        rpcUrl: process.env.POLYGON_RPC || 'https://polygon-rpc.com' 
+      });
       
       if (chainConfigs.size > 0) {
         await this.tankManager.init(chainConfigs);
@@ -88,8 +86,11 @@ export class Engine {
     }
   }
 
-  start(intervalMs: number = 30000) {
+  async start(intervalMs: number = 30000) {
     if (this.running) return;
+    
+    // Initialize tank manager before starting
+    await this.initializeTankManager();
     
     this.running = true;
     console.log(`Engine ${this.engineId} starting with ${intervalMs}ms interval`);
