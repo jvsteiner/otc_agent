@@ -2,6 +2,7 @@ import { Deal, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAs
 import { DB } from '../db/database';
 import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
+import { TankManager, TankConfig } from './TankManager';
 import * as crypto from 'crypto';
 
 // Helper function to normalize asset codes for comparison
@@ -22,6 +23,7 @@ export class Engine {
   private queueRepo: QueueRepository;
   private payoutRepo: PayoutRepository;
   private engineId: string;
+  private tankManager?: TankManager;
 
   constructor(
     private db: DB,
@@ -32,6 +34,58 @@ export class Engine {
     this.queueRepo = new QueueRepository(db);
     this.payoutRepo = new PayoutRepository(db);
     this.engineId = crypto.randomBytes(8).toString('hex');
+    
+    // Initialize tank manager if configured
+    this.initializeTankManager();
+  }
+  
+  private async initializeTankManager() {
+    const tankPrivateKey = process.env.TANK_WALLET_PRIVATE_KEY;
+    if (tankPrivateKey) {
+      console.log('[Engine] Initializing Tank Manager for gas funding');
+      
+      const tankConfig: TankConfig = {
+        privateKey: tankPrivateKey,
+        fundAmounts: {
+          ETH: process.env.ETH_GAS_FUND_AMOUNT || '0.01',
+          POLYGON: process.env.POLYGON_GAS_FUND_AMOUNT || '0.5'
+        },
+        lowThresholds: {
+          ETH: process.env.ETH_LOW_GAS_THRESHOLD || '0.1',
+          POLYGON: process.env.POLYGON_LOW_GAS_THRESHOLD || '5'
+        }
+      };
+      
+      this.tankManager = new TankManager(this.db, tankConfig);
+      
+      // Initialize tank for configured chains
+      const chainConfigs = new Map<string, { rpcUrl: string }>();
+      
+      if (process.env.ETH_RPC) {
+        chainConfigs.set('ETH', { rpcUrl: process.env.ETH_RPC });
+      }
+      if (process.env.POLYGON_RPC) {
+        chainConfigs.set('POLYGON', { rpcUrl: process.env.POLYGON_RPC });
+      }
+      
+      if (chainConfigs.size > 0) {
+        await this.tankManager.init(chainConfigs);
+        
+        // Inject tank manager into EVM plugins
+        for (const [chainId] of chainConfigs) {
+          const plugin = this.pluginManager.getPlugin(chainId as any);
+          if (plugin && 'setTankManager' in plugin) {
+            (plugin as any).setTankManager(this.tankManager);
+          }
+        }
+        
+        console.log('[Engine] Tank Manager initialized successfully');
+      } else {
+        console.log('[Engine] No EVM chains configured for tank manager');
+      }
+    } else {
+      console.log('[Engine] Tank Manager not configured (no TANK_WALLET_PRIVATE_KEY)');
+    }
   }
 
   start(intervalMs: number = 30000) {
@@ -724,11 +778,11 @@ export class Engine {
       
       try {
         // Get the full escrow account ref with keyRef from the deal
-        let fromAccountWithKey = nextItem.from;
+        let fromAccountWithKey: any = nextItem.from;
         if (deal.escrowA && deal.escrowA.address === address) {
-          fromAccountWithKey = deal.escrowA;
+          fromAccountWithKey = { ...deal.escrowA, dealId: deal.id };
         } else if (deal.escrowB && deal.escrowB.address === address) {
-          fromAccountWithKey = deal.escrowB;
+          fromAccountWithKey = { ...deal.escrowB, dealId: deal.id };
         }
         
         // Submit transaction
@@ -774,11 +828,11 @@ export class Engine {
       
       try {
         // Get the full escrow account ref with keyRef from the deal
-        let fromAccountWithKey = nextItem.from;
+        let fromAccountWithKey: any = nextItem.from;
         if (deal.escrowA && deal.escrowA.address === address) {
-          fromAccountWithKey = deal.escrowA;
+          fromAccountWithKey = { ...deal.escrowA, dealId: deal.id };
         } else if (deal.escrowB && deal.escrowB.address === address) {
-          fromAccountWithKey = deal.escrowB;
+          fromAccountWithKey = { ...deal.escrowB, dealId: deal.id };
         }
         
         // Submit transaction

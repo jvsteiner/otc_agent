@@ -21,9 +21,15 @@ export class EthereumPlugin implements ChainPlugin {
   private walletIndex?: number; // Fallback counter when no database
   private database?: any;
   private etherscanAPI?: EtherscanAPI;
+  private tankManager?: any; // Will be injected if gas funding is enabled
 
   constructor(config?: Partial<ChainConfig>) {
     this.chainId = config?.chainId || 'ETH';
+  }
+
+  setTankManager(tankManager: any): void {
+    this.tankManager = tankManager;
+    console.log(`[${this.chainId}] Tank manager integrated`);
   }
 
   async init(cfg: ChainConfig): Promise<void> {
@@ -551,6 +557,84 @@ export class EthereumPlugin implements ChainPlugin {
         if (tokenAddress.includes('@')) {
           tokenAddress = tokenAddress.split('@')[0];
         }
+        
+        // Check gas balance for ERC20 transfer
+        if (this.tankManager) {
+          const escrowAddress = from.address || wallet.address;
+          const gasEstimate = await this.tankManager.estimateGasForERC20Transfer(
+            this.chainId,
+            tokenAddress,
+            escrowAddress,
+            to,
+            amount
+          );
+          
+          const currentGasBalance = await this.provider.getBalance(escrowAddress);
+          
+          if (currentGasBalance < gasEstimate.totalCostWei) {
+            console.log(`[${this.chainId}] Escrow ${escrowAddress} needs gas funding for ERC20 transfer`);
+            console.log(`  Current balance: ${ethers.formatEther(currentGasBalance)} ETH`);
+            console.log(`  Required gas: ${gasEstimate.totalCostEth} ETH`);
+            
+            // Request gas funding from tank
+            const dealId = (from as any).dealId || 'unknown';
+            await this.tankManager.fundEscrowForGas(
+              dealId,
+              this.chainId,
+              escrowAddress,
+              gasEstimate.totalCostWei
+            );
+            
+            // Wait a bit for the funding to be confirmed
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+        
+        const contract = new ethers.Contract(tokenAddress, ERC20_ABI, wallet);
+        const decimals = await contract.decimals();
+        const amountParsed = ethers.parseUnits(amount, decimals);
+        
+        tx = await contract.transfer(to, amountParsed);
+      } else if (asset.startsWith('0x')) {
+        // Direct token address (e.g., USDT as 0xc2132D05D31c914a87C6611C10748AEb04B58e8F)
+        let tokenAddress = asset;
+        // Remove chain suffix if present
+        if (tokenAddress.includes('@')) {
+          tokenAddress = tokenAddress.split('@')[0] as any;
+        }
+        
+        // Check gas balance for ERC20 transfer
+        if (this.tankManager) {
+          const escrowAddress = from.address || wallet.address;
+          const gasEstimate = await this.tankManager.estimateGasForERC20Transfer(
+            this.chainId,
+            tokenAddress,
+            escrowAddress,
+            to,
+            amount
+          );
+          
+          const currentGasBalance = await this.provider.getBalance(escrowAddress);
+          
+          if (currentGasBalance < gasEstimate.totalCostWei) {
+            console.log(`[${this.chainId}] Escrow ${escrowAddress} needs gas funding for token transfer`);
+            console.log(`  Current balance: ${ethers.formatEther(currentGasBalance)} ${this.chainId === 'POLYGON' ? 'MATIC' : 'ETH'}`);
+            console.log(`  Required gas: ${gasEstimate.totalCostEth} ${this.chainId === 'POLYGON' ? 'MATIC' : 'ETH'}`);
+            
+            // Request gas funding from tank
+            const dealId = (from as any).dealId || 'unknown';
+            await this.tankManager.fundEscrowForGas(
+              dealId,
+              this.chainId,
+              escrowAddress,
+              gasEstimate.totalCostWei
+            );
+            
+            // Wait a bit for the funding to be confirmed
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+        
         const contract = new ethers.Contract(tokenAddress, ERC20_ABI, wallet);
         const decimals = await contract.decimals();
         const amountParsed = ethers.parseUnits(amount, decimals);
