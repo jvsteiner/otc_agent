@@ -452,6 +452,39 @@ export class Engine {
     this.dealRepo.update(deal);
   }
 
+  private async wasEscrowGasFunded(dealId: string, chainId: string, escrow?: any): Promise<boolean> {
+    if (!escrow) return false;
+    
+    try {
+      const escrowAddress = typeof escrow === 'string' ? escrow : escrow.address;
+      if (!escrowAddress) return false;
+      
+      // Check if this escrow received gas funding from tank
+      const stmt = this.db.prepare(`
+        SELECT COUNT(*) as count
+        FROM gas_funding 
+        WHERE dealId = ? 
+        AND chainId = ? 
+        AND escrowAddress = ?
+        AND status = 'CONFIRMED'
+      `);
+      
+      const result = stmt.get(dealId, chainId, escrowAddress) as { count: number };
+      return result.count > 0;
+    } catch (error) {
+      console.error('Error checking gas funding status:', error);
+      return false;
+    }
+  }
+  
+  private getTankAddress(): string {
+    // Return tank wallet address if configured
+    if (this.tankManager) {
+      return this.tankManager.getTankAddress();
+    }
+    return '';
+  }
+  
   private hasSufficientFunds(deal: Deal, side: 'A' | 'B'): boolean {
     const sideState = side === 'A' ? deal.sideAState : deal.sideBState;
     if (!sideState || !sideState.collectedByAsset) return false;
@@ -869,6 +902,10 @@ export class Engine {
     // Continuously monitor and return any funds found in escrows
     // This runs even after deal is CLOSED to handle mistaken payments
     
+    // Check if escrows were gas-funded by tank
+    const aliceEscrowGasFunded = await this.wasEscrowGasFunded(deal.id, deal.alice.chainId, deal.escrowA);
+    const bobEscrowGasFunded = await this.wasEscrowGasFunded(deal.id, deal.bob.chainId, deal.escrowB);
+    
     // Check Alice's escrow for any balances
     if (deal.escrowA && deal.aliceDetails) {
       const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
@@ -932,17 +969,26 @@ export class Engine {
           );
           
           if (!alreadyQueued) {
+            // If escrow was gas-funded by tank, return native currency to tank, otherwise to payback address
+            const returnAddress = aliceEscrowGasFunded && this.getTankAddress() 
+              ? this.getTankAddress() 
+              : deal.aliceDetails.paybackAddress;
+            
+            const purpose = aliceEscrowGasFunded ? 'GAS_REFUND_TO_TANK' : 'TIMEOUT_REFUND';
+            
             console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Alice's escrow ${escrowAddress}`);
+            console.log(`[ESCROW MONITOR] Returning to: ${aliceEscrowGasFunded ? 'tank wallet' : 'payback address'} (${returnAddress})`);
+            
             this.queueRepo.enqueue({
               dealId: deal.id,
               chainId: deal.alice.chainId,
               from: deal.escrowA,
-              to: deal.aliceDetails.paybackAddress,
+              to: returnAddress,
               asset: nativeAsset,
               amount: nativeDeposits.totalConfirmed,
-              purpose: 'TIMEOUT_REFUND',
+              purpose: purpose,
             });
-            this.dealRepo.addEvent(deal.id, `Auto-returning ${nativeDeposits.totalConfirmed} ${nativeAsset} from Alice's escrow`);
+            this.dealRepo.addEvent(deal.id, `Auto-returning ${nativeDeposits.totalConfirmed} ${nativeAsset} from Alice's escrow to ${aliceEscrowGasFunded ? 'tank wallet' : 'payback address'}`);
           }
         }
       }
@@ -1006,17 +1052,26 @@ export class Engine {
           );
           
           if (!alreadyQueued) {
+            // If escrow was gas-funded by tank, return native currency to tank, otherwise to payback address
+            const returnAddress = bobEscrowGasFunded && this.getTankAddress() 
+              ? this.getTankAddress() 
+              : deal.bobDetails.paybackAddress;
+            
+            const purpose = bobEscrowGasFunded ? 'GAS_REFUND_TO_TANK' : 'TIMEOUT_REFUND';
+            
             console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Bob's escrow ${escrowAddress}`);
+            console.log(`[ESCROW MONITOR] Returning to: ${bobEscrowGasFunded ? 'tank wallet' : 'payback address'} (${returnAddress})`);
+            
             this.queueRepo.enqueue({
               dealId: deal.id,
               chainId: deal.bob.chainId,
               from: deal.escrowB,
-              to: deal.bobDetails.paybackAddress,
+              to: returnAddress,
               asset: nativeAsset,
               amount: nativeDeposits.totalConfirmed,
-              purpose: 'TIMEOUT_REFUND',
+              purpose: purpose,
             });
-            this.dealRepo.addEvent(deal.id, `Auto-returning ${nativeDeposits.totalConfirmed} ${nativeAsset} from Bob's escrow`);
+            this.dealRepo.addEvent(deal.id, `Auto-returning ${nativeDeposits.totalConfirmed} ${nativeAsset} from Bob's escrow to ${bobEscrowGasFunded ? 'tank wallet' : 'payback address'}`);
           }
         }
       }

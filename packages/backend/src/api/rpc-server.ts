@@ -421,8 +421,13 @@ export class RpcServer {
       // Add commission instruction if different currency
       if (deal.commissionPlan.sideA.currency === 'NATIVE' && 
           deal.commissionPlan.sideA.mode === 'FIXED_USD_NATIVE') {
+        // Determine the native asset for this chain
+        const nativeAsset = deal.alice.chainId === 'UNICITY' ? 'ALPHA@UNICITY' :
+                           deal.alice.chainId === 'POLYGON' ? 'MATIC@POLYGON' :
+                           deal.alice.chainId === 'ETH' ? 'ETH@ETH' :
+                           deal.alice.chainId === 'BASE' ? 'ETH@BASE' : 'ETH';
         instructions.sideA.push({
-          assetCode: 'ETH', // or appropriate native
+          assetCode: nativeAsset,
           amount: deal.commissionPlan.sideA.nativeFixed,
           to: deal.escrowA.address,
         });
@@ -443,8 +448,13 @@ export class RpcServer {
       // Add commission instruction if different currency
       if (deal.commissionPlan.sideB.currency === 'NATIVE' && 
           deal.commissionPlan.sideB.mode === 'FIXED_USD_NATIVE') {
+        // Determine the native asset for this chain
+        const nativeAsset = deal.bob.chainId === 'UNICITY' ? 'ALPHA@UNICITY' :
+                           deal.bob.chainId === 'POLYGON' ? 'MATIC@POLYGON' :
+                           deal.bob.chainId === 'ETH' ? 'ETH@ETH' :
+                           deal.bob.chainId === 'BASE' ? 'ETH@BASE' : 'ETH';
         instructions.sideB.push({
-          assetCode: 'ETH', // or appropriate native
+          assetCode: nativeAsset,
           amount: deal.commissionPlan.sideB.nativeFixed,
           to: deal.escrowB.address,
         });
@@ -2605,14 +2615,14 @@ export class RpcServer {
           const scriptHash = await addressToScriptHash(address);
           if (!scriptHash) {
             console.error('Failed to convert address to script hash:', address);
-            return { total: 0, confirmed: 0, unconfirmed: 0, utxos: [] };
+            return null; // Return null to indicate error
           }
           
           // Getting balance for address
           
           try {
             // Get UTXOs which gives us detailed info including mempool txs
-            const utxos = await electrumRequestAsync('blockchain.scripthash.listunspent', [scriptHash]);
+            const utxos = await electrumRequestAsync('blockchain.scripthash.listunspent', [scriptHash], 5000);
             // Retrieved UTXOs
             
             let confirmedBalance = 0;
@@ -2643,7 +2653,7 @@ export class RpcServer {
             };
           } catch (error) {
             console.error('Failed to get Unicity UTXOs:', error);
-            return { total: 0, confirmed: 0, unconfirmed: 0, utxos: [] };
+            return null; // Return null to indicate error instead of fake 0 balance
           }
         }
         
@@ -3368,10 +3378,8 @@ export class RpcServer {
                 dealData.collection.sideA.txHistory = txHistory;
               }
               
-              await updateBalance('your', 
-                dealData.collection?.sideA, 
-                dealData.instructions?.sideA,
-                party === 'ALICE' ? dealData.alice : dealData.bob);
+              // Don't call updateBalance here - let updateDisplay handle it
+              // The balance will be updated in the next updateDisplay call
             }
           }
           
@@ -3400,10 +3408,8 @@ export class RpcServer {
                 dealData.collection.sideB.txHistory = txHistory;
               }
               
-              await updateBalance('their',
-                dealData.collection?.sideB,
-                dealData.instructions?.sideB,
-                party === 'ALICE' ? dealData.bob : dealData.alice);
+              // Don't call updateBalance here - let updateDisplay handle it
+              // The balance will be updated in the next updateDisplay call
             }
           }
           
@@ -3421,6 +3427,10 @@ export class RpcServer {
             lastSyncTime = Date.now();
             updateSyncStatus();
           }
+          
+          // Update display with the refreshed blockchain data
+          // Pass false to avoid updating transaction log again
+          updateDisplay(false);
         }
         
         // Update sync status indicator
@@ -3567,10 +3577,11 @@ export class RpcServer {
             const escrowAddr = dealData.instructions[yourSide][0].to;
             const escrowAmount = dealData.instructions[yourSide][0].amount;
             const escrowAsset = dealData.instructions[yourSide][0].assetCode;
+            const assetName = getCleanAssetName(escrowAsset);
             
             document.getElementById('escrowSection').style.display = 'block';
             document.getElementById('escrowAddress').textContent = escrowAddr;
-            document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + escrowAsset;
+            document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + assetName;
           }
           
           // Update transaction log only if flag is true (default)
@@ -3719,12 +3730,43 @@ export class RpcServer {
           }
         }
         
+        // Get clean asset name from asset code
+        function getCleanAssetName(assetCode) {
+          if (!assetCode) return '';
+          
+          // Remove chain suffix if present
+          let asset = assetCode.includes('@') ? assetCode.split('@')[0] : assetCode;
+          
+          // Check for ERC20/SPL token addresses
+          if (assetCode.startsWith('ERC20:') || assetCode.startsWith('SPL:')) {
+            const address = assetCode.split(':')[1];
+            // Common stablecoin addresses
+            if (address) {
+              const lowerAddr = address.toLowerCase();
+              if (lowerAddr === '0xc2132d05d31c914a87c6611c10748aeb04b58e8f' || // USDT on Polygon
+                  lowerAddr === '0xdac17f958d2ee523a2206206994597c13d831ec7') { // USDT on Ethereum
+                return 'USDT';
+              }
+              if (lowerAddr === '0x2791bca1f2de4661ed88a30c99a7a9449aa84174' || // USDC on Polygon (old)
+                  lowerAddr === '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359') { // USDC on Polygon (new)
+                return 'USDC';
+              }
+              // For unknown tokens, show shortened address
+              return address.substring(0, 6) + '...' + address.substring(address.length - 4);
+            }
+            return 'TOKEN';
+          }
+          
+          return asset;
+        }
+        
         // Update balance display (modified for closed deals and live data)
         async function updateBalance(type, collection, instructions, expectedDeal) {
           const balanceEl = document.getElementById(type + 'Balance');
           const progressEl = document.getElementById(type + 'Progress');
           const percentageEl = document.getElementById(type + 'Percentage');
           const statusEl = document.getElementById(type + 'Status');
+          const assetEl = document.getElementById(type + 'Asset');
           
           const isClosedDeal = dealData && (dealData.stage === 'CLOSED' || dealData.stage === 'REVERTED');
           
@@ -3744,16 +3786,49 @@ export class RpcServer {
               expectedDeal.asset : 
               expectedDeal.asset + '@' + expectedDeal.chainId;
             chainId = expectedDeal.chainId;
+            
+            // Update the asset display name when using expected deal
+            if (assetEl) {
+              const cleanAsset = expectedDeal.asset.includes('@') ? 
+                expectedDeal.asset.split('@')[0] : expectedDeal.asset;
+              assetEl.textContent = cleanAsset;
+            }
           } else {
-            required = parseFloat(instructions[0].amount);
-            assetCode = instructions[0].assetCode;
-            escrowAddress = instructions[0].to;
+            // Find the main trade instruction (not commission)
+            // The trade instruction should match the expected asset from the deal
+            let tradeInstruction = instructions[0];
+            if (expectedDeal) {
+              // Look for instruction that matches the expected trade asset
+              const expectedAssetCode = expectedDeal.asset.includes('@') ? 
+                expectedDeal.asset : 
+                expectedDeal.asset + '@' + expectedDeal.chainId;
+              
+              const matchingInstruction = instructions.find(inst => 
+                inst.assetCode === expectedAssetCode || 
+                inst.assetCode === expectedDeal.asset
+              );
+              
+              if (matchingInstruction) {
+                tradeInstruction = matchingInstruction;
+              }
+            }
+            
+            required = parseFloat(tradeInstruction.amount);
+            assetCode = tradeInstruction.assetCode;
+            escrowAddress = tradeInstruction.to;
             
             // Determine chainId from asset code
             if (type === 'your') {
               chainId = party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId;
             } else {
               chainId = party === 'ALICE' ? dealData.bob.chainId : dealData.alice.chainId;
+            }
+            
+            // Update the asset display name when we have instructions
+            if (assetEl) {
+              const cleanAsset = assetCode.includes('@') ? 
+                assetCode.split('@')[0] : assetCode;
+              assetEl.textContent = cleanAsset;
             }
           }
           
@@ -3768,10 +3843,13 @@ export class RpcServer {
                 // Use Fulcrum for Unicity
                 if (electrumConnected) {
                   const balanceInfo = await getUnicityBalance(escrowAddress);
-                  liveBalance = balanceInfo.total;
+                  // Only use live balance if we actually got a valid response
+                  if (balanceInfo && typeof balanceInfo.total === 'number') {
+                    liveBalance = balanceInfo.total;
+                  }
                   
                   // Show confirmation status if there are unconfirmed funds
-                  if (balanceInfo.unconfirmed > 0) {
+                  if (balanceInfo && balanceInfo.unconfirmed > 0) {
                     const unconfirmedIndicator = document.createElement('span');
                     unconfirmedIndicator.style.cssText = 'color: #f59e0b; font-size: 10px; margin-left: 8px;';
                     unconfirmedIndicator.innerHTML = '(' + balanceInfo.unconfirmed.toFixed(4) + ' unconfirmed)';
@@ -3784,7 +3862,7 @@ export class RpcServer {
                   }
                   
                   // Update confirmation count if we have UTXOs
-                  if (balanceInfo.utxos && balanceInfo.utxos.length > 0) {
+                  if (balanceInfo && balanceInfo.utxos && balanceInfo.utxos.length > 0) {
                     const blockHeight = await getUnicityBlockHeight();
                     let minConfirmations = Infinity;
                     
@@ -3818,8 +3896,9 @@ export class RpcServer {
                 }
               }
               
-              // Use live balance if available (always use live data, not just if higher)
-              if (liveBalance !== null) {
+              // Use live balance if available and valid
+              // Don't override with 0 if we already have collected data from backend
+              if (liveBalance !== null && (liveBalance > 0 || collected === 0)) {
                 collected = liveBalance;
                 
                 // Add live indicator
@@ -3842,7 +3921,8 @@ export class RpcServer {
           // Display logic for closed deals
           if (isClosedDeal) {
             // Show only current balance for closed deals
-            const balanceText = collected.toFixed(4) + ' ' + (assetCode || '');
+            const assetName = getCleanAssetName(assetCode);
+            const balanceText = collected.toFixed(4) + ' ' + assetName;
             if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
               balanceEl.firstChild.textContent = balanceText;
             } else {
@@ -3862,8 +3942,9 @@ export class RpcServer {
           } else {
             // Normal display for active deals
             const percentage = Math.min(100, (collected / required) * 100);
+            const assetName = getCleanAssetName(assetCode);
             
-            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4);
+            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + assetName;
             if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
               balanceEl.firstChild.textContent = balanceText;
             } else {

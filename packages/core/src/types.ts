@@ -79,7 +79,7 @@ export interface DealSideState {
   locks: SideLocks;
 }
 
-export type QueuePurpose = 'SWAP_PAYOUT' | 'OP_COMMISSION' | 'SURPLUS_REFUND' | 'TIMEOUT_REFUND';
+export type QueuePurpose = 'SWAP_PAYOUT' | 'OP_COMMISSION' | 'SURPLUS_REFUND' | 'TIMEOUT_REFUND' | 'GAS_REFUND_TO_TANK';
 
 export type QueuePhase = 'PHASE_1_SWAP' | 'PHASE_2_COMMISSION' | 'PHASE_3_REFUND';
 
