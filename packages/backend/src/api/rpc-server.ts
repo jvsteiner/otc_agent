@@ -286,7 +286,16 @@ export class RpcServer {
     // CRUCIAL: Check if party details already exist and are locked
     const existingDetails = params.party === 'ALICE' ? deal.aliceDetails : deal.bobDetails;
     if (existingDetails && existingDetails.locked) {
+      // Log the attempt for security auditing
+      console.warn(`[SECURITY] Attempt to modify locked party details for ${params.party} in deal ${params.dealId}`);
+      this.dealRepo.addEvent(params.dealId, `Blocked attempt to modify locked ${params.party} details`);
       throw new Error('Party details are already locked and cannot be changed. This is a security feature to prevent address tampering.');
+    }
+    
+    // Additional check: if deal is beyond CREATED stage, don't allow any changes
+    if (deal.stage !== 'CREATED') {
+      console.warn(`[SECURITY] Attempt to modify party details in ${deal.stage} stage for ${params.party} in deal ${params.dealId}`);
+      throw new Error(`Cannot modify party details - deal is already in ${deal.stage} stage`);
     }
     
     // Validate addresses
@@ -335,9 +344,9 @@ export class RpcServer {
       if (!tableExists) {
         console.log('Warning: party_details table does not exist, party details will not persist across restarts');
       } else {
-        // Use REPLACE to handle updates if the party re-submits
+        // Use INSERT to prevent updates - if it fails, details already exist
         const stmt = this.db.prepare(`
-          REPLACE INTO party_details (
+          INSERT INTO party_details (
             dealId, party, paybackAddress, recipientAddress, email, 
             filledAt, locked, escrowAddress, escrowKeyRef
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -362,9 +371,9 @@ export class RpcServer {
       // Continue execution even if database save fails
     }
     
-    // Check if both parties have filled
-    if (deal.aliceDetails && deal.bobDetails) {
-      // Start COUNTDOWN
+    // Check if both parties have filled and we need to transition to COLLECTION
+    if (deal.aliceDetails && deal.bobDetails && deal.stage === 'CREATED') {
+      // Start COUNTDOWN only if we're transitioning from CREATED to COLLECTION
       deal.expiresAt = new Date(Date.now() + deal.timeoutSeconds * 1000).toISOString();
       deal.stage = 'COLLECTION';
       
@@ -382,6 +391,12 @@ export class RpcServer {
         deal.commissionPlan.sideB.nativeFixed = quote.nativeAmount;
         deal.commissionPlan.sideB.oracle = quote.quote;
       }
+      
+      console.log(`Deal ${deal.id} transitioning from CREATED to COLLECTION stage`);
+      this.dealRepo.addEvent(deal.id, 'Both parties ready, starting collection phase');
+    } else if (deal.aliceDetails && deal.bobDetails && deal.stage !== 'CREATED') {
+      // If both parties have details but we're not in CREATED stage, don't reset
+      console.log(`Deal ${deal.id} already in stage ${deal.stage}, not resetting to COLLECTION`);
     }
     
     this.dealRepo.update(deal);
@@ -2851,6 +2866,19 @@ export class RpcServer {
         
         // Submit party details
         async function submitDetails() {
+          // Check if details were already submitted
+          if (dealData && dealData.stage !== 'CREATED') {
+            alert('Details have already been submitted for this deal');
+            return;
+          }
+          
+          // Check if this party already submitted
+          const partyDetails = party === 'ALICE' ? dealData?.aliceDetails : dealData?.bobDetails;
+          if (partyDetails && partyDetails.paybackAddress) {
+            alert('You have already submitted your details for this deal');
+            return;
+          }
+          
           const payback = document.getElementById('payback').value;
           const recipient = document.getElementById('recipient').value;
           const email = document.getElementById('email').value;

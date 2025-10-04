@@ -140,30 +140,30 @@ export class Engine {
     if (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') {
       await this.updateDeposits(deal);
       
-      // Only check timeout and locks in COLLECTION stage
-      if (deal.stage === 'COLLECTION') {
-        // Check if sufficient funds have been collected (regardless of confirmations)
-        const sideAFunded = this.hasSufficientFunds(deal, 'A');
-        const sideBFunded = this.hasSufficientFunds(deal, 'B');
-        
-        // Only check timeout if funds haven't been collected on both sides
-        if (!sideAFunded || !sideBFunded) {
-          // Check if timeout expired
-          if (deal.expiresAt && new Date() > new Date(deal.expiresAt)) {
-            console.log(`Deal ${deal.id} expired, reverting...`);
-            await this.revertDeal(deal);
-            return;
+      // Check if we can transition from CREATED to COLLECTION
+      if (deal.stage === 'CREATED') {
+        // Check if both parties have filled their details
+        if (deal.aliceDetails && deal.bobDetails) {
+          console.log(`Deal ${deal.id}: Both parties have filled details, transitioning to COLLECTION`);
+          deal.stage = 'COLLECTION';
+          // Set expiry if not already set
+          if (!deal.expiresAt) {
+            deal.expiresAt = new Date(Date.now() + deal.timeoutSeconds * 1000).toISOString();
           }
-        } else {
-          // Both sides funded - timer should be paused, don't timeout
-          console.log(`Deal ${deal.id} has sufficient funds on both sides, timer paused`);
+          this.dealRepo.update(deal);
+          this.dealRepo.addEvent(deal.id, 'Both parties ready, entering collection phase');
         }
-        
+      }
+      
+      // Check locks and transition to WAITING only from COLLECTION stage
+      // Clean flow: CREATED → COLLECTION → WAITING
+      if (deal.stage === 'COLLECTION') {
         // Check if both sides have locks
         const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
         const sideBLocked = deal.sideBState?.locks.tradeLockedAt && deal.sideBState?.locks.commissionLockedAt;
         
         console.log(`[Engine] Checking transition to WAITING for deal ${deal.id}:`, {
+          currentStage: deal.stage,
           sideA: {
             tradeLocked: !!deal.sideAState?.locks.tradeLockedAt,
             commissionLocked: !!deal.sideAState?.locks.commissionLockedAt,
@@ -187,6 +187,24 @@ export class Engine {
             
             // Move to WAITING stage
             this.dealRepo.updateStage(deal.id, 'WAITING');
+            this.dealRepo.addEvent(deal.id, 'All funds locked, executing swap');
+          }
+        } else {
+          // Not locked yet, check timeout
+          const sideAFunded = this.hasSufficientFunds(deal, 'A');
+          const sideBFunded = this.hasSufficientFunds(deal, 'B');
+          
+          // Only check timeout if funds haven't been collected on both sides
+          if (!sideAFunded || !sideBFunded) {
+            // Check if timeout expired
+            if (deal.expiresAt && new Date() > new Date(deal.expiresAt)) {
+              console.log(`Deal ${deal.id} expired, reverting...`);
+              await this.revertDeal(deal);
+              return;
+            }
+          } else {
+            // Both sides funded - timer should be paused, don't timeout
+            console.log(`Deal ${deal.id} has sufficient funds on both sides, timer paused`);
           }
         }
       }
