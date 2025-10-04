@@ -3577,11 +3577,25 @@ export class RpcServer {
             const escrowAddr = dealData.instructions[yourSide][0].to;
             const escrowAmount = dealData.instructions[yourSide][0].amount;
             const escrowAsset = dealData.instructions[yourSide][0].assetCode;
-            const assetName = getCleanAssetName(escrowAsset);
+            const escrowChainId = party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId;
+            let assetName = getCleanAssetName(escrowAsset, escrowChainId);
             
             document.getElementById('escrowSection').style.display = 'block';
             document.getElementById('escrowAddress').textContent = escrowAddr;
             document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + assetName;
+            
+            // Fetch actual token symbol for ERC20 tokens
+            let cleanedEscrowAsset = escrowAsset;
+            if (escrowAsset && escrowAsset.includes('@')) {
+              cleanedEscrowAsset = escrowAsset.split('@')[0];
+            }
+            if (cleanedEscrowAsset && cleanedEscrowAsset.startsWith('ERC20:')) {
+              getAssetNameAsync(cleanedEscrowAsset, escrowChainId).then(symbol => {
+                if (symbol && symbol !== assetName) {
+                  document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + symbol;
+                }
+              });
+            }
           }
           
           // Update transaction log only if flag is true (default)
@@ -3730,8 +3744,71 @@ export class RpcServer {
           }
         }
         
+        // Cache for ERC20 token symbols
+        const tokenSymbolCache = {};
+        
+        // Fetch ERC20 token symbol from smart contract
+        async function fetchERC20Symbol(tokenAddress, chainId) {
+          const cacheKey = chainId + ':' + tokenAddress;
+          
+          // Check cache first
+          if (tokenSymbolCache[cacheKey]) {
+            console.log('Using cached symbol for', tokenAddress, ':', tokenSymbolCache[cacheKey]);
+            return tokenSymbolCache[cacheKey];
+          }
+          
+          // Wait for provider to be initialized if not ready
+          let provider = blockchainProviders[chainId];
+          if (!provider && window.ethers) {
+            // Try to get RPC endpoint and initialize provider if missing
+            if (dealData && dealData.rpcEndpoints && dealData.rpcEndpoints[chainId]) {
+              try {
+                provider = new window.ethers.JsonRpcProvider(dealData.rpcEndpoints[chainId]);
+                blockchainProviders[chainId] = provider;
+                console.log('Initialized provider for', chainId, 'to fetch token symbol');
+              } catch (err) {
+                console.error('Failed to initialize provider for', chainId, ':', err);
+              }
+            }
+          }
+          
+          if (!provider) {
+            console.log('No provider available for', chainId);
+            return null;
+          }
+          
+          try {
+            console.log('Fetching symbol for token', tokenAddress, 'on', chainId);
+            // ERC20 symbol() function ABI
+            const abi = ['function symbol() view returns (string)'];
+            const contract = new window.ethers.Contract(tokenAddress, abi, provider);
+            
+            // Fetch symbol with timeout
+            const symbolPromise = contract.symbol();
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Timeout')), 5000)
+            );
+            
+            let symbol = await Promise.race([symbolPromise, timeoutPromise]);
+            console.log('Fetched symbol:', symbol);
+            
+            // Clean up common token symbol issues
+            // Some USDT contracts return "USDT0" instead of "USDT"
+            if (symbol === 'USDT0') {
+              symbol = 'USDT';
+            }
+            
+            // Cache the result
+            tokenSymbolCache[cacheKey] = symbol;
+            return symbol;
+          } catch (error) {
+            console.error('Failed to fetch ERC20 symbol for', tokenAddress, ':', error);
+            return null;
+          }
+        }
+        
         // Get clean asset name from asset code
-        function getCleanAssetName(assetCode) {
+        function getCleanAssetName(assetCode, chainId) {
           if (!assetCode) return '';
           
           // Remove chain suffix if present
@@ -3740,24 +3817,37 @@ export class RpcServer {
           // Check for ERC20/SPL token addresses
           if (assetCode.startsWith('ERC20:') || assetCode.startsWith('SPL:')) {
             const address = assetCode.split(':')[1];
-            // Common stablecoin addresses
             if (address) {
-              const lowerAddr = address.toLowerCase();
-              if (lowerAddr === '0xc2132d05d31c914a87c6611c10748aeb04b58e8f' || // USDT on Polygon
-                  lowerAddr === '0xdac17f958d2ee523a2206206994597c13d831ec7') { // USDT on Ethereum
-                return 'USDT';
-              }
-              if (lowerAddr === '0x2791bca1f2de4661ed88a30c99a7a9449aa84174' || // USDC on Polygon (old)
-                  lowerAddr === '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359') { // USDC on Polygon (new)
-                return 'USDC';
-              }
-              // For unknown tokens, show shortened address
+              // Return address snippet as fallback (will be replaced async)
               return address.substring(0, 6) + '...' + address.substring(address.length - 4);
             }
             return 'TOKEN';
           }
           
           return asset;
+        }
+        
+        // Get asset name with async ERC20 symbol fetch
+        async function getAssetNameAsync(assetCode, chainId) {
+          if (!assetCode) return '';
+          
+          // Check for ERC20 token addresses
+          if (assetCode.startsWith('ERC20:')) {
+            let address = assetCode.split(':')[1];
+            // Remove any @CHAIN suffix from the address
+            if (address && address.includes('@')) {
+              address = address.split('@')[0];
+            }
+            if (address && chainId) {
+              const symbol = await fetchERC20Symbol(address, chainId);
+              if (symbol) {
+                return symbol;
+              }
+            }
+          }
+          
+          // Fall back to sync version
+          return getCleanAssetName(assetCode, chainId);
         }
         
         // Update balance display (modified for closed deals and live data)
@@ -3918,11 +4008,51 @@ export class RpcServer {
             }
           }
           
+          // Get asset name (fetch from blockchain for ERC20)
+          // Clean the assetCode first - remove any @CHAIN suffix
+          let cleanedAssetCode = assetCode;
+          if (assetCode && assetCode.includes('@')) {
+            cleanedAssetCode = assetCode.split('@')[0];
+          }
+          
+          let displayAssetName = getCleanAssetName(cleanedAssetCode, chainId);
+          
+          // For ERC20 tokens, fetch the actual symbol from the blockchain
+          if (cleanedAssetCode && cleanedAssetCode.startsWith('ERC20:') && chainId) {
+            getAssetNameAsync(cleanedAssetCode, chainId).then(symbol => {
+              if (symbol && symbol !== displayAssetName) {
+                // Update the display with the actual token symbol
+                displayAssetName = symbol;
+                
+                // Update balance text
+                if (isClosedDeal) {
+                  const newBalanceText = collected.toFixed(4) + ' ' + symbol;
+                  if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
+                    balanceEl.firstChild.textContent = newBalanceText;
+                  } else {
+                    balanceEl.textContent = newBalanceText;
+                  }
+                } else {
+                  const newBalanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + symbol;
+                  if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
+                    balanceEl.firstChild.textContent = newBalanceText;
+                  } else {
+                    balanceEl.textContent = newBalanceText;
+                  }
+                }
+                
+                // Update asset element if exists
+                if (assetEl) {
+                  assetEl.textContent = symbol;
+                }
+              }
+            });
+          }
+          
           // Display logic for closed deals
           if (isClosedDeal) {
             // Show only current balance for closed deals
-            const assetName = getCleanAssetName(assetCode);
-            const balanceText = collected.toFixed(4) + ' ' + assetName;
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
             if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
               balanceEl.firstChild.textContent = balanceText;
             } else {
@@ -3942,9 +4072,8 @@ export class RpcServer {
           } else {
             // Normal display for active deals
             const percentage = Math.min(100, (collected / required) * 100);
-            const assetName = getCleanAssetName(assetCode);
             
-            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + assetName;
+            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + displayAssetName;
             if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
               balanceEl.firstChild.textContent = balanceText;
             } else {
@@ -4788,6 +4917,33 @@ export class RpcServer {
           checkInitialStatus();
           // Always start status updates to show current deal state
           startStatusUpdates();
+          
+          // Eagerly fetch token symbols for any ERC20 tokens
+          setTimeout(() => {
+            if (dealData) {
+              // Check if Alice's asset is ERC20
+              if (dealData.alice && dealData.alice.asset && dealData.alice.asset.startsWith('ERC20:')) {
+                const tokenAddr = dealData.alice.asset.split(':')[1];
+                console.log('Eagerly fetching symbol for Alice asset:', tokenAddr);
+                fetchERC20Symbol(tokenAddr, dealData.alice.chainId).then(symbol => {
+                  if (symbol) {
+                    console.log('Alice asset symbol:', symbol);
+                  }
+                });
+              }
+              
+              // Check if Bob's asset is ERC20
+              if (dealData.bob && dealData.bob.asset && dealData.bob.asset.startsWith('ERC20:')) {
+                const tokenAddr = dealData.bob.asset.split(':')[1];
+                console.log('Eagerly fetching symbol for Bob asset:', tokenAddr);
+                fetchERC20Symbol(tokenAddr, dealData.bob.chainId).then(symbol => {
+                  if (symbol) {
+                    console.log('Bob asset symbol:', symbol);
+                  }
+                });
+              }
+            }
+          }, 2000); // Wait a bit for providers to initialize
         });
         
         // Cleanup on unload
