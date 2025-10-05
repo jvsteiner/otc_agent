@@ -34,11 +34,16 @@ export class EmailService {
   async sendInvite(params: EmailInviteParams) {
     // Check if email is enabled
     if (!this.transporter) {
+      // Get deal name for logging
+      const dealRepo = new DealRepository(this.db);
+      const deal = dealRepo.get(params.dealId);
+      
       console.log(`
         ========================================
         EMAIL INVITATION (Email service not configured)
         ========================================
         To: ${params.email}
+        Deal: ${deal?.name || 'Unnamed Deal'}
         Party: ${params.party === 'ALICE' ? 'Asset A Seller' : 'Asset B Seller'}
         Deal ID: ${params.dealId}
         Link: ${params.link}
@@ -77,6 +82,7 @@ export class EmailService {
         dealDetails = `
           <p><strong>Deal Details:</strong></p>
           <ul>
+            <li>Deal Name: ${deal.name}</li>
             <li>You sell: ${assetADisplay}</li>
             <li>You receive: ${assetBDisplay}</li>
             <li>Deal ID: ${params.dealId}</li>
@@ -89,7 +95,7 @@ export class EmailService {
       const mailOptions = {
         from: `"OTC Broker" <${process.env.EMAIL_SMTP_USER}>`,
         to: params.email,
-        subject: `OTC Deal Invitation - ${partyLabel} Seller`,
+        subject: `OTC Deal: ${deal?.name || params.dealId} - ${partyLabel} Seller`,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #333;">OTC Asset Swap Deal Invitation</h2>

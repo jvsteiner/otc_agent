@@ -135,6 +135,7 @@ export class RpcServer {
     };
     
     const deal = this.dealRepo.create({
+      name: `Deal ${new Date().toISOString()}`, // Default name for backup
       stage: 'CREATED',
       timeoutSeconds: params.timeoutSeconds,
       alice: params.alice,

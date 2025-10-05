@@ -50,8 +50,10 @@ export class PluginManager {
   getPlugin(chainId: ChainId): ChainPlugin {
     const plugin = this.plugins.get(chainId);
     if (!plugin) {
+      console.error(`[PluginManager] Available plugins:`, Array.from(this.plugins.keys()));
       throw new Error(`Plugin not registered for chain: ${chainId}`);
     }
+    console.log(`[PluginManager] Returning ${plugin.constructor.name} for chain ${chainId}`);
     return plugin;
   }
 

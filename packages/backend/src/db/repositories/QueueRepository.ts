@@ -6,6 +6,35 @@ export class QueueRepository {
   constructor(private db: DB) {}
 
   enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq' | 'status'> & { payoutId?: string }): QueueItem {
+    // CRITICAL SAFEGUARD #6: Prevent double-spending by blocking conflicting queue items
+    if (item.purpose === 'TIMEOUT_REFUND') {
+      const existingSwaps = this.getByDeal(item.dealId)
+        .filter(q => q.purpose === 'SWAP_PAYOUT' && 
+                     q.from.address === item.from.address &&
+                     q.asset === item.asset);
+      
+      if (existingSwaps.length > 0) {
+        console.error(`[CRITICAL] Blocked TIMEOUT_REFUND for deal ${item.dealId} - SWAP_PAYOUT exists!`);
+        console.error(`  Asset: ${item.asset}, From: ${item.from.address}`);
+        console.error(`  Existing swaps: ${existingSwaps.map(s => `${s.id}:${s.status}`).join(', ')}`);
+        throw new Error(`Cannot create refund - swap payout already exists for ${item.asset}`);
+      }
+    }
+    
+    if (item.purpose === 'SWAP_PAYOUT') {
+      const existingRefunds = this.getByDeal(item.dealId)
+        .filter(q => q.purpose === 'TIMEOUT_REFUND' && 
+                     q.from.address === item.from.address &&
+                     q.asset === item.asset);
+      
+      if (existingRefunds.length > 0) {
+        console.error(`[CRITICAL] Blocked SWAP_PAYOUT for deal ${item.dealId} - TIMEOUT_REFUND exists!`);
+        console.error(`  Asset: ${item.asset}, From: ${item.from.address}`);
+        console.error(`  Existing refunds: ${existingRefunds.map(r => `${r.id}:${r.status}`).join(', ')}`);
+        throw new Error(`Cannot create swap - refund already exists for ${item.asset}`);
+      }
+    }
+    
     // Get next sequence number for this deal+sender
     const seqStmt = this.db.prepare(`
       SELECT COALESCE(MAX(seq), 0) + 1 as nextSeq

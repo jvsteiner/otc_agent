@@ -167,6 +167,13 @@ export class TankManager {
     escrowAddress: string,
     requiredGasWei: bigint
   ): Promise<string> {
+    console.log(`[TankManager] fundEscrowForGas called:`, {
+      dealId,
+      chainId,
+      escrowAddress,
+      requiredGasWei: ethers.formatEther(requiredGasWei)
+    });
+    
     const wallet = this.wallets.get(chainId);
     const provider = this.providers.get(chainId);
     
@@ -196,7 +203,9 @@ export class TankManager {
 
     // Check tank balance
     const tankBalance = await provider.getBalance(wallet.address);
+    console.log(`[TankManager] Tank wallet ${wallet.address} balance on ${chainId}: ${ethers.formatEther(tankBalance)}`);
     if (tankBalance < amountToSend) {
+      console.error(`[TankManager] INSUFFICIENT TANK BALANCE!`);
       throw new Error(`Insufficient tank balance: have ${ethers.formatEther(tankBalance)}, need ${ethers.formatEther(amountToSend)}`);
     }
 

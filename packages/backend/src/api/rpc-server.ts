@@ -1,5 +1,5 @@
 import express from 'express';
-import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, getAssetRegistry, formatAssetCode, parseAssetCode } from '@otc-broker/core';
+import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, getAssetRegistry, formatAssetCode, parseAssetCode, generateDealName, validateDealName } from '@otc-broker/core';
 import { DealRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { DB } from '../db/database';
 import { PluginManager } from '@otc-broker/chains';
@@ -10,6 +10,7 @@ interface CreateDealParams {
   alice: DealAssetSpec;
   bob: DealAssetSpec;
   timeoutSeconds: number;
+  name?: string;  // Optional custom name for the deal
 }
 
 interface FillPartyDetailsParams {
@@ -131,6 +132,19 @@ export class RpcServer {
       throw new Error(`Invalid or unsupported asset: ${params.bob.asset} on chain ${params.bob.chainId}`);
     }
     
+    // Handle deal name - use provided name or generate one
+    let dealName: string;
+    if (params.name) {
+      // Validate custom name
+      if (!validateDealName(params.name)) {
+        throw new Error('Invalid deal name. Must be 3-100 characters and not contain special characters.');
+      }
+      dealName = params.name;
+    } else {
+      // Generate memorable name with date/time
+      dealName = generateDealName();
+    }
+    
     // Generate tokens for personal links
     const tokenA = crypto.randomBytes(16).toString('hex');
     const tokenB = crypto.randomBytes(16).toString('hex');
@@ -145,6 +159,7 @@ export class RpcServer {
     };
     
     const deal = this.dealRepo.create({
+      name: dealName,
       stage: 'CREATED',
       timeoutSeconds: params.timeoutSeconds,
       alice: params.alice,
@@ -184,6 +199,7 @@ export class RpcServer {
     
     return {
       dealId: deal.id,
+      dealName: deal.name,
       linkA: `${baseUrl}/d/${deal.id}/a/${tokenA}`,
       linkB: `${baseUrl}/d/${deal.id}/b/${tokenB}`,
     };
@@ -936,6 +952,7 @@ export class RpcServer {
           <div id="dealModal" class="modal">
             <div class="modal-content">
               <h2>✅ Deal Created Successfully!</h2>
+              <p style="color: #333; font-size: 14px; font-weight: bold;">Deal: <span id="dealNameDisplay"></span></p>
               <p style="color: #666; font-size: 12px;">Deal ID: <span id="dealIdDisplay"></span></p>
               
               <div class="link-section">
@@ -975,6 +992,12 @@ export class RpcServer {
           </div>
           
           <form id="dealForm">
+            <div class="form-group">
+              <label for="dealName">Deal Name</label>
+              <input name="dealName" id="dealName" type="text" placeholder="Leave empty for auto-generated name" maxlength="100">
+              <small style="color: #888;">Optional: Give your deal a memorable name</small>
+            </div>
+            
             <div class="two-column">
               <div class="asset-section">
                 <h3>🅰️ Asset A</h3>
@@ -1167,8 +1190,9 @@ export class RpcServer {
           
           // Modal functions
           function showDealCreatedModal(dealResult) {
-            // Store deal ID
+            // Store deal ID and name
             document.getElementById('dealIdDisplay').textContent = dealResult.dealId;
+            document.getElementById('dealNameDisplay').textContent = dealResult.dealName || 'Unnamed Deal';
             
             // Set hidden inputs
             document.getElementById('linkA').value = dealResult.linkA;
@@ -1291,7 +1315,8 @@ export class RpcServer {
                     asset: formData.get('assetB'),
                     amount: formData.get('amountB')
                   },
-                  timeoutSeconds: parseInt(formData.get('timeout'))
+                  timeoutSeconds: parseInt(formData.get('timeout')),
+                  name: formData.get('dealName') || undefined
                 },
                 id: 1
               })
@@ -2004,6 +2029,7 @@ export class RpcServer {
     <body>
       <div class="container">
         <h1>${partyIcon} ${partyLabel}</h1>
+        <p style="color: #333; font-size: 16px; font-weight: 600; margin-top: -10px;">Deal: ${deal?.name || 'Unnamed Deal'}</p>
         
         <!-- Sync Status -->
         <div class="sync-status synced" id="syncStatus">

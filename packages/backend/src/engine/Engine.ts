@@ -158,70 +158,213 @@ export class Engine {
       // Check locks and transition to WAITING only from COLLECTION stage
       // Clean flow: CREATED → COLLECTION → WAITING
       if (deal.stage === 'COLLECTION') {
-        // Check if both sides have locks
+        // Check if we have sufficient funds from both sides (regardless of confirmations)
+        const sideAFunded = this.hasSufficientFunds(deal, 'A');
+        const sideBFunded = this.hasSufficientFunds(deal, 'B');
+        
+        console.log(`[Engine] Checking funds for deal ${deal.id}:`, {
+          sideAFunded,
+          sideBFunded,
+          sideACollected: deal.sideAState?.collectedByAsset,
+          sideBCollected: deal.sideBState?.collectedByAsset
+        });
+          
+          // If both sides have sufficient funds, transition to WAITING immediately
+          if (sideAFunded && sideBFunded) {
+            console.log(`Deal ${deal.id} has sufficient funds on both sides, transitioning to WAITING`);
+            console.log(`  Will wait for confirmations before executing swap`);
+            
+            // Move to WAITING stage - timer is SUSPENDED (not cleared yet)
+            this.dealRepo.updateStage(deal.id, 'WAITING');
+            this.dealRepo.addEvent(deal.id, 'Both sides funded, waiting for confirmations (timer suspended)');
+            
+            // Keep the timer in case we need to revert due to reorg
+            console.log(`[Engine] Deal ${deal.id} entered WAITING stage - timer suspended at ${deal.expiresAt}`);
+            return; // Process in next tick as WAITING stage
+          } else {
+            // One or both sides don't have sufficient funds yet
+            // Check if timeout expired
+            if (deal.expiresAt && new Date() > new Date(deal.expiresAt)) {
+              console.log(`Deal ${deal.id} expired without sufficient funds, reverting...`);
+              console.log(`  Expiry: ${deal.expiresAt}, Current: ${new Date().toISOString()}`);
+              console.log(`  Side A funded: ${sideAFunded}, Side B funded: ${sideBFunded}`);
+              await this.revertDeal(deal);
+              return;
+            } else if (deal.expiresAt) {
+              const remainingSeconds = Math.floor((new Date(deal.expiresAt).getTime() - Date.now()) / 1000);
+              console.log(`Deal ${deal.id} waiting for deposits, ${remainingSeconds}s remaining`);
+            }
+          }
+        }
+      } else if (deal.stage === 'WAITING') {
+        // WAITING stage: We have funds but waiting for confirmations
+        // Update deposits to get latest confirmation counts
+        await this.updateDeposits(deal);
+        
+        // First check if we still have sufficient funds (reorg detection)
+        const sideAFunded = this.hasSufficientFunds(deal, 'A');
+        const sideBFunded = this.hasSufficientFunds(deal, 'B');
+        
+        if (!sideAFunded || !sideBFunded) {
+          // REORG DETECTED: Funds dropped below required
+          console.error(`[REORG DETECTED] Deal ${deal.id} in WAITING but funds lost!`);
+          console.error(`  Side A funded: ${sideAFunded}, Side B funded: ${sideBFunded}`);
+          
+          // Revert back to COLLECTION stage and resume timer
+          this.dealRepo.updateStage(deal.id, 'COLLECTION');
+          
+          // Resume timer from where it was suspended
+          if (!deal.expiresAt) {
+            // Timer was cleared, restart with original timeout
+            deal.expiresAt = new Date(Date.now() + deal.timeoutSeconds * 1000).toISOString();
+            console.log(`[REORG] Restarting timer for deal ${deal.id}, expires at ${deal.expiresAt}`);
+          } else {
+            console.log(`[REORG] Resuming suspended timer for deal ${deal.id}, expires at ${deal.expiresAt}`);
+          }
+          
+          this.dealRepo.update(deal);
+          this.dealRepo.addEvent(deal.id, 'REORG: Funds lost, reverting to COLLECTION (timer resumed)');
+          
+          // Clear any pending queue items
+          const pendingSwaps = this.queueRepo.getByDeal(deal.id)
+            .filter(q => q.purpose === 'SWAP_PAYOUT' && q.status === 'PENDING');
+          
+          if (pendingSwaps.length > 0) {
+            console.log(`[REORG] Would clear ${pendingSwaps.length} pending swap queue items`);
+            // TODO: Add method to remove pending queue items
+          }
+          
+          return; // Process in next tick as COLLECTION stage
+        }
+        
+        // Funds are still sufficient - check if we have enough confirmations (locks)
         const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
         const sideBLocked = deal.sideBState?.locks.tradeLockedAt && deal.sideBState?.locks.commissionLockedAt;
         
-        console.log(`[Engine] Checking transition to WAITING for deal ${deal.id}:`, {
-          currentStage: deal.stage,
-          sideA: {
-            tradeLocked: !!deal.sideAState?.locks.tradeLockedAt,
-            commissionLocked: !!deal.sideAState?.locks.commissionLockedAt,
-            fullyLocked: sideALocked
-          },
-          sideB: {
-            tradeLocked: !!deal.sideBState?.locks.tradeLockedAt,
-            commissionLocked: !!deal.sideBState?.locks.commissionLockedAt,
-            fullyLocked: sideBLocked
-          },
-          canTransition: sideALocked && sideBLocked
+        console.log(`[Engine] Deal ${deal.id} in WAITING - checking confirmations:`, {
+          sideALocked,
+          sideBLocked,
+          sideALocks: deal.sideAState?.locks,
+          sideBLocks: deal.sideBState?.locks
         });
         
         if (sideALocked && sideBLocked) {
-          console.log(`Deal ${deal.id} both sides locked, planning distribution...`);
+          // Both sides have sufficient confirmations - move to SWAP stage
+          console.log(`[Engine] Deal ${deal.id} has confirmed locks, transitioning to SWAP stage`);
           
-          // Preflight checks
-          if (await this.preflightChecks(deal)) {
-            // Build and persist transfer plan
-            await this.buildTransferPlan(deal);
-            
-            // Move to WAITING stage
-            this.dealRepo.updateStage(deal.id, 'WAITING');
-            this.dealRepo.addEvent(deal.id, 'All funds locked, executing swap');
+          // NOW we permanently clear the timer as we enter SWAP stage
+          if (deal.expiresAt) {
+            console.log(`[Engine] Clearing timer PERMANENTLY for deal ${deal.id} - entering SWAP stage`);
+            deal.expiresAt = undefined;
+            this.dealRepo.update(deal);
           }
-        } else {
-          // Not locked yet, check timeout
-          const sideAFunded = this.hasSufficientFunds(deal, 'A');
-          const sideBFunded = this.hasSufficientFunds(deal, 'B');
           
-          // Only check timeout if funds haven't been collected on both sides
-          if (!sideAFunded || !sideBFunded) {
-            // Check if timeout expired
-            if (deal.expiresAt && new Date() > new Date(deal.expiresAt)) {
-              console.log(`Deal ${deal.id} expired, reverting...`);
-              await this.revertDeal(deal);
-              return;
+          // Build transfer plan and move to SWAP stage
+          await this.buildTransferPlan(deal);
+          this.dealRepo.updateStage(deal.id, 'SWAP');
+          this.dealRepo.addEvent(deal.id, 'Confirmations complete, executing swap (timer removed)');
+        } else {
+          // Still waiting for confirmations
+          console.log(`[Engine] Deal ${deal.id} still waiting for confirmations`);
+          console.log(`  Timer suspended at: ${deal.expiresAt || 'not set'}`);
+          // Stay in WAITING stage
+        }
+        
+      } else if (deal.stage === 'SWAP') {
+        // SWAP stage: Actively executing the swap
+        // Timer is PERMANENTLY REMOVED - swap MUST complete
+        // IMPORTANT: Funds WILL decrease as we distribute them - this is expected!
+        // We do NOT check for "sufficient funds" here as they're being sent out
+        
+        // Update deposits to track what's left
+        await this.updateDeposits(deal);
+        
+        console.log(`[Engine] Deal ${deal.id} in SWAP stage - executing transfers`);
+        
+        // Process swap queues
+        await this.processQueues(deal);
+        
+        // Monitor and check transaction confirmations
+        const allQueues = this.queueRepo.getByDeal(deal.id);
+        let allConfirmed = true;
+        
+        for (const queueItem of allQueues) {
+          if (queueItem.status === 'SUBMITTED' && queueItem.submittedTx) {
+            // Check confirmation status
+            const plugin = this.pluginManager.getPlugin(queueItem.chainId);
+            
+            // Get current confirmation count
+            const currentConfirms = await plugin.getTxConfirmations(queueItem.submittedTx.txid);
+            const requiredConfirms = queueItem.submittedTx.requiredConfirms;
+            
+            if (currentConfirms === -1) {
+              // Transaction disappeared due to reorg!
+              console.error(`[REORG] Transaction ${queueItem.submittedTx.txid} disappeared from chain!`);
+              this.dealRepo.addEvent(deal.id, `REORG: ${queueItem.purpose} tx disappeared, resubmitting`);
+              
+              // Reset to PENDING for resubmission
+              this.queueRepo.updateStatus(queueItem.id, 'PENDING');
+              allConfirmed = false;
+            } else if (currentConfirms >= requiredConfirms) {
+              this.queueRepo.updateStatus(queueItem.id, 'COMPLETED', queueItem.submittedTx);
+              this.dealRepo.addEvent(deal.id, `${queueItem.purpose} confirmed: ${queueItem.submittedTx.txid}`);
+            } else {
+              allConfirmed = false;
+              console.log(`[Engine] Waiting for confirmations on ${queueItem.submittedTx.txid} (${currentConfirms}/${requiredConfirms})`);
             }
-          } else {
-            // Both sides funded - timer should be paused, don't timeout
-            console.log(`Deal ${deal.id} has sufficient funds on both sides, timer paused`);
+          } else if (queueItem.status === 'PENDING') {
+            allConfirmed = false;
           }
         }
+        
+        // Check if all transactions are completed
+        if (allConfirmed && allQueues.length > 0 && allQueues.every(q => q.status === 'COMPLETED')) {
+          console.log(`[Engine] Deal ${deal.id} all transactions confirmed, marking as CLOSED`);
+          this.dealRepo.updateStage(deal.id, 'CLOSED');
+          this.dealRepo.addEvent(deal.id, 'All transactions confirmed - deal completed successfully');
+        }
+      } else if (deal.stage === 'REVERTED') {
+        // Process refund queues
+        await this.processQueues(deal);
+        
+        // Monitor refund transaction confirmations
+        const allQueues = this.queueRepo.getByDeal(deal.id);
+        let allConfirmed = true;
+        
+        for (const queueItem of allQueues) {
+          if (queueItem.status === 'SUBMITTED' && queueItem.submittedTx) {
+            const plugin = this.pluginManager.getPlugin(queueItem.chainId);
+            const currentConfirms = await plugin.getTxConfirmations(queueItem.submittedTx.txid);
+            const requiredConfirms = queueItem.submittedTx.requiredConfirms;
+            
+            if (currentConfirms === -1) {
+              // Refund transaction disappeared - critical!
+              console.error(`[CRITICAL REORG] Refund tx ${queueItem.submittedTx.txid} disappeared!`);
+              this.dealRepo.addEvent(deal.id, `CRITICAL: Refund tx disappeared, resubmitting`);
+              this.queueRepo.updateStatus(queueItem.id, 'PENDING');
+              allConfirmed = false;
+            } else if (currentConfirms >= requiredConfirms) {
+              this.queueRepo.updateStatus(queueItem.id, 'COMPLETED', queueItem.submittedTx);
+              this.dealRepo.addEvent(deal.id, `Refund confirmed: ${queueItem.submittedTx.txid}`);
+            } else {
+              allConfirmed = false;
+              console.log(`[Engine] Refund waiting for confirmations (${currentConfirms}/${requiredConfirms})`);
+            }
+          } else if (queueItem.status === 'PENDING') {
+            allConfirmed = false;
+          }
+        }
+        
+        // Check if all refunds are complete
+        if (allConfirmed && allQueues.length > 0 && allQueues.every(q => q.status === 'COMPLETED')) {
+          console.log(`[Engine] Deal ${deal.id} all refunds confirmed, marking as CLOSED`);
+          this.dealRepo.updateStage(deal.id, 'CLOSED');
+          this.dealRepo.addEvent(deal.id, 'All refunds confirmed - deal closed');
+        }
+      } else if (deal.stage === 'CLOSED') {
+        // Continuously monitor escrows for any funds and return them immediately
+        await this.monitorAndReturnEscrowFunds(deal);
       }
-    } else if (deal.stage === 'WAITING' || deal.stage === 'REVERTED') {
-      // Process queues
-      await this.processQueues(deal);
-      
-      // Check if all queues are complete
-      const pendingCount = this.queueRepo.getPendingCount(deal.id);
-      if (pendingCount === 0) {
-        console.log(`Deal ${deal.id} all transfers complete, closing...`);
-        this.dealRepo.updateStage(deal.id, 'CLOSED');
-      }
-    } else if (deal.stage === 'CLOSED') {
-      // Continuously monitor escrows for any funds and return them immediately
-      await this.monitorAndReturnEscrowFunds(deal);
-    }
   }
 
   private async updateDeposits(deal: Deal) {
@@ -240,6 +383,10 @@ export class Engine {
         locks: {},
       };
     }
+    
+    // Store lock readiness for both sides
+    let aliceLockReady = false;
+    let bobLockReady = false;
     
     // Update side A deposits
     if (deal.escrowA) {
@@ -326,10 +473,11 @@ export class Engine {
       });
       
       deal.sideAState.deposits = allDeposits;
-      deal.sideAState.locks = {
-        tradeLockedAt: locks.tradeLocked ? new Date().toISOString() : undefined,
-        commissionLockedAt: locks.commissionLocked ? new Date().toISOString() : undefined,
-      };
+      
+      // Store lock readiness for Alice (will decide on locks after checking both sides)
+      if (deal.stage === 'COLLECTION') {
+        aliceLockReady = locks.tradeLocked && locks.commissionLocked;
+      }
       
       // In CREATED stage, show all deposits (even with just 1 confirmation)
       // In COLLECTION stage, only show locked amounts (with full confirmations)
@@ -434,10 +582,11 @@ export class Engine {
       });
       
       deal.sideBState.deposits = allDepositsB;
-      deal.sideBState.locks = {
-        tradeLockedAt: locks.tradeLocked ? new Date().toISOString() : undefined,
-        commissionLockedAt: locks.commissionLocked ? new Date().toISOString() : undefined,
-      };
+      
+      // Store lock readiness for Bob (will decide on locks after checking both sides)
+      if (deal.stage === 'COLLECTION') {
+        bobLockReady = locks.tradeLocked && locks.commissionLocked;
+      }
       
       // In CREATED stage, show all deposits (even with just 1 confirmation)
       // In COLLECTION stage, only show locked amounts (with full confirmations)
@@ -464,6 +613,55 @@ export class Engine {
           deal.sideBState.collectedByAsset[commissionAsset] = locks.commissionCollected;
         }
       }
+    }
+    
+    // NOW decide on locks based on BOTH sides' readiness
+    // Only lock if BOTH sides have sufficient funds
+    if (deal.stage === 'COLLECTION') {
+      if (aliceLockReady && bobLockReady) {
+        // BOTH sides have sufficient funds - set locks for both
+        console.log(`[Engine] BOTH sides funded - setting locks for Alice AND Bob`);
+        
+        deal.sideAState.locks = {
+          tradeLockedAt: new Date().toISOString(),
+          commissionLockedAt: new Date().toISOString(),
+        };
+        
+        deal.sideBState.locks = {
+          tradeLockedAt: new Date().toISOString(),
+          commissionLockedAt: new Date().toISOString(),
+        };
+      } else {
+        // One or both sides not ready - clear ALL locks
+        console.log(`[Engine] Not both sides funded - clearing all locks (Alice ready: ${aliceLockReady}, Bob ready: ${bobLockReady})`);
+        
+        deal.sideAState.locks = {};
+        deal.sideBState.locks = {};
+      }
+    } else if (deal.stage === 'WAITING') {
+      // In WAITING stage, check and update locks based on confirmation status
+      if (aliceLockReady && bobLockReady) {
+        // Both sides have sufficient confirmations - ensure locks are set
+        if (!deal.sideAState.locks.tradeLockedAt) {
+          console.log(`[Engine] Setting locks for Alice in WAITING stage`);
+          deal.sideAState.locks = {
+            tradeLockedAt: new Date().toISOString(),
+            commissionLockedAt: new Date().toISOString(),
+          };
+        }
+        if (!deal.sideBState.locks.tradeLockedAt) {
+          console.log(`[Engine] Setting locks for Bob in WAITING stage`);
+          deal.sideBState.locks = {
+            tradeLockedAt: new Date().toISOString(),
+            commissionLockedAt: new Date().toISOString(),
+          };
+        }
+      }
+      // In WAITING, we don't clear locks even if funds drop (will be handled by reorg detection)
+    } else {
+      // Not in COLLECTION or WAITING stage - clear all locks
+      deal.sideAState.locks = {};
+      deal.sideBState.locks = {};
     }
     
     // Update deal in DB
@@ -555,9 +753,20 @@ export class Engine {
   }
 
   private async buildTransferPlan(deal: Deal) {
+    console.log(`[Engine] Building transfer plan for deal ${deal.id}`);
+    console.log(`[Engine] Deal structure:`, {
+      alice: deal.alice,
+      bob: deal.bob,
+      escrowA: deal.escrowA,
+      escrowB: deal.escrowB,
+      aliceDetails: !!deal.aliceDetails,
+      bobDetails: !!deal.bobDetails
+    });
+    
     this.db.runInTransaction(() => {
       // Queue swap payouts
       if (deal.escrowA && deal.bobDetails) {
+        console.log(`[Engine] Creating Alice->Bob payout queue item`);
         // Create payout for Unicity chains
         let payoutId: string | undefined;
         if (deal.alice.chainId === 'UNICITY') {
@@ -593,6 +802,14 @@ export class Engine {
       }
       
       if (deal.escrowB && deal.aliceDetails) {
+        console.log(`[Engine] Creating Bob->Alice payout queue item:`, {
+          bobChainId: deal.bob.chainId,
+          bobAsset: deal.bob.asset,
+          bobAmount: deal.bob.amount,
+          escrowB: deal.escrowB,
+          aliceRecipient: deal.aliceDetails.recipientAddress
+        });
+        
         // Create payout for Unicity chains
         let payoutId: string | undefined;
         if (deal.bob.chainId === 'UNICITY') {
@@ -732,6 +949,51 @@ export class Engine {
   }
 
   private async revertDeal(deal: Deal) {
+    // CRITICAL SAFEGUARD #1: Never revert if BOTH sides are locked
+    const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
+    const sideBLocked = deal.sideBState?.locks.tradeLockedAt && deal.sideBState?.locks.commissionLockedAt;
+    
+    if (sideALocked && sideBLocked) {
+      console.error(`[CRITICAL] Attempted to revert deal ${deal.id} with BOTH sides locked!`);
+      console.error(`  This would cause double-spending - swap MUST execute!`);
+      this.dealRepo.addEvent(deal.id, 'CRITICAL: Blocked revert - both sides locked');
+      return;
+    }
+    
+    // If only ONE side is locked, we can still revert (the other side didn't fulfill)
+    if (sideALocked && !sideBLocked) {
+      console.log(`Deal ${deal.id}: Only Alice locked, Bob didn't deposit enough - OK to revert`);
+      this.dealRepo.addEvent(deal.id, 'Reverting: Bob failed to lock funds');
+    } else if (!sideALocked && sideBLocked) {
+      console.log(`Deal ${deal.id}: Only Bob locked, Alice didn't deposit enough - OK to revert`);
+      this.dealRepo.addEvent(deal.id, 'Reverting: Alice failed to lock funds');
+    }
+    
+    // CRITICAL SAFEGUARD #2: Never revert if already in WAITING or later stage
+    if (deal.stage === 'WAITING' || deal.stage === 'CLOSED') {
+      console.error(`[CRITICAL] Attempted to revert deal ${deal.id} in stage ${deal.stage}!`);
+      this.dealRepo.addEvent(deal.id, `CRITICAL: Blocked revert in ${deal.stage} stage`);
+      return;
+    }
+    
+    // CRITICAL SAFEGUARD #2b: Double-check we're only in CREATED or COLLECTION
+    if (deal.stage !== 'CREATED' && deal.stage !== 'COLLECTION') {
+      console.error(`[CRITICAL] Unexpected stage for revert: ${deal.stage}`);
+      return;
+    }
+    
+    // CRITICAL SAFEGUARD #3: Check if any SWAP_PAYOUT transactions have been executed
+    const executedSwapPayouts = this.queueRepo.getByDeal(deal.id)
+      .filter(q => q.purpose === 'SWAP_PAYOUT' && (q.status === 'SUBMITTED' || q.status === 'COMPLETED'));
+    
+    if (executedSwapPayouts.length > 0) {
+      console.error(`[CRITICAL] Attempted to revert deal ${deal.id} with ${executedSwapPayouts.length} swap payouts already executed!`);
+      this.dealRepo.addEvent(deal.id, 'CRITICAL: Blocked revert - swap payouts already executed');
+      return;
+    }
+    
+    console.log(`[Engine] Reverting deal ${deal.id} - no locks detected, safe to refund`);
+    
     this.db.runInTransaction(() => {
       // Queue refunds for all confirmed deposits
       if (deal.escrowA && deal.aliceDetails && deal.sideAState) {
@@ -829,6 +1091,19 @@ export class Engine {
       if (!nextItem) continue;
       
       try {
+        // CRITICAL SAFEGUARD #5: Block refunds if swap payouts exist
+        if (nextItem.purpose === 'TIMEOUT_REFUND') {
+          const swapPayouts = this.queueRepo.getByDeal(deal.id)
+            .filter(q => q.purpose === 'SWAP_PAYOUT');
+          
+          if (swapPayouts.length > 0) {
+            console.error(`[CRITICAL] Blocking TIMEOUT_REFUND for deal ${deal.id} - swap payouts exist!`);
+            this.dealRepo.addEvent(deal.id, `CRITICAL: Blocked refund - ${swapPayouts.length} swap payouts exist`);
+            // Skip this refund to prevent double-spending
+            continue;
+          }
+        }
+        
         // Get the full escrow account ref with keyRef from the deal
         let fromAccountWithKey: any = nextItem.from;
         if (deal.escrowA && deal.escrowA.address === address) {
@@ -838,7 +1113,20 @@ export class Engine {
         }
         
         // Submit transaction
+        console.log(`[Engine] Processing queue item:`, {
+          itemId: nextItem.id,
+          chainId: nextItem.chainId,
+          asset: nextItem.asset,
+          from: fromAccountWithKey.address,
+          to: nextItem.to,
+          amount: nextItem.amount,
+          purpose: nextItem.purpose,
+          CRITICAL: nextItem.purpose === 'TIMEOUT_REFUND' ? 'This is a refund - verify swap not executed!' : undefined
+        });
+        
         const plugin = this.pluginManager.getPlugin(nextItem.chainId);
+        console.log(`[Engine] Using plugin for chain ${nextItem.chainId}: ${plugin.constructor.name}`);
+        
         const tx = await plugin.send(
           nextItem.asset,
           fromAccountWithKey,
@@ -879,6 +1167,19 @@ export class Engine {
       if (!nextItem) continue;
       
       try {
+        // CRITICAL SAFEGUARD #5: Block refunds if swap payouts exist
+        if (nextItem.purpose === 'TIMEOUT_REFUND') {
+          const swapPayouts = this.queueRepo.getByDeal(deal.id)
+            .filter(q => q.purpose === 'SWAP_PAYOUT');
+          
+          if (swapPayouts.length > 0) {
+            console.error(`[CRITICAL] Blocking TIMEOUT_REFUND for deal ${deal.id} - swap payouts exist!`);
+            this.dealRepo.addEvent(deal.id, `CRITICAL: Blocked refund - ${swapPayouts.length} swap payouts exist`);
+            // Skip this refund to prevent double-spending
+            continue;
+          }
+        }
+        
         // Get the full escrow account ref with keyRef from the deal
         let fromAccountWithKey: any = nextItem.from;
         if (deal.escrowA && deal.escrowA.address === address) {
@@ -888,7 +1189,20 @@ export class Engine {
         }
         
         // Submit transaction
+        console.log(`[Engine] Processing queue item:`, {
+          itemId: nextItem.id,
+          chainId: nextItem.chainId,
+          asset: nextItem.asset,
+          from: fromAccountWithKey.address,
+          to: nextItem.to,
+          amount: nextItem.amount,
+          purpose: nextItem.purpose,
+          CRITICAL: nextItem.purpose === 'TIMEOUT_REFUND' ? 'This is a refund - verify swap not executed!' : undefined
+        });
+        
         const plugin = this.pluginManager.getPlugin(nextItem.chainId);
+        console.log(`[Engine] Using plugin for chain ${nextItem.chainId}: ${plugin.constructor.name}`);
+        
         const tx = await plugin.send(
           nextItem.asset,
           fromAccountWithKey,
@@ -919,6 +1233,23 @@ export class Engine {
   private async monitorAndReturnEscrowFunds(deal: Deal) {
     // Continuously monitor and return any funds found in escrows
     // This runs even after deal is CLOSED to handle mistaken payments
+    
+    // CRITICAL SAFEGUARD #4: Check if swap was executed before returning funds
+    const swapPayouts = this.queueRepo.getByDeal(deal.id)
+      .filter(q => q.purpose === 'SWAP_PAYOUT');
+    
+    const hasExecutedSwap = swapPayouts.some(q => q.status === 'COMPLETED');
+    const hasPartialSwap = swapPayouts.some(q => q.status === 'SUBMITTED');
+    
+    if (hasExecutedSwap) {
+      // Swap was fully executed - only return EXTRA funds sent after the deal
+      console.log(`[Engine] Deal ${deal.id} swap was executed, only monitoring for extra deposits`);
+    } else if (hasPartialSwap) {
+      console.warn(`[Engine] Deal ${deal.id} has partial swap execution - manual intervention may be needed`);
+      this.dealRepo.addEvent(deal.id, 'WARNING: Partial swap execution detected - manual review required');
+      // Don't auto-return funds when swap is partially executed
+      return;
+    }
     
     // Check if escrows were gas-funded by tank
     const aliceEscrowGasFunded = await this.wasEscrowGasFunded(deal.id, deal.alice.chainId, deal.escrowA);
@@ -1036,16 +1367,25 @@ export class Engine {
         
         if (existingQueues.length === 0) {
           console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${bobAsset} in Bob's escrow ${escrowAddress}`);
+          console.log(`[ESCROW MONITOR] Bob's payback address: ${deal.bobDetails.paybackAddress}`);
+          console.log(`[ESCROW MONITOR] Bob's recipient address: ${deal.bobDetails.recipientAddress}`);
+          
+          // CRITICAL: Use payback address for refunds, NOT the source address
+          if (!deal.bobDetails.paybackAddress) {
+            console.error(`[CRITICAL] No payback address for Bob in deal ${deal.id}!`);
+            return;
+          }
+          
           this.queueRepo.enqueue({
             dealId: deal.id,
             chainId: deal.bob.chainId,
             from: deal.escrowB,
-            to: deal.bobDetails.paybackAddress,
+            to: deal.bobDetails.paybackAddress, // MUST use payback address
             asset: bobAsset,
             amount: deposits.totalConfirmed,
             purpose: 'TIMEOUT_REFUND', // Use TIMEOUT_REFUND for post-deal returns
           });
-          this.dealRepo.addEvent(deal.id, `Auto-returning ${deposits.totalConfirmed} ${bobAsset} from Bob's escrow`);
+          this.dealRepo.addEvent(deal.id, `Auto-returning ${deposits.totalConfirmed} ${bobAsset} to Bob's payback address: ${deal.bobDetails.paybackAddress}`);
         }
       }
       

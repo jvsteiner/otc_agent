@@ -50,7 +50,7 @@ export interface PartyDetails {
   locked?: boolean;
 }
 
-export type DealStage = 'CREATED' | 'COLLECTION' | 'WAITING' | 'REVERTED' | 'CLOSED';
+export type DealStage = 'CREATED' | 'COLLECTION' | 'WAITING' | 'SWAP' | 'REVERTED' | 'CLOSED';
 
 export interface EscrowAccountRef {
   chainId: ChainId;
@@ -113,6 +113,7 @@ export interface QueueItem {
 
 export interface Deal {
   id: string;
+  name: string;  // Human-readable name for the deal
   createdAt: string;
   timeoutSeconds: number;
   expiresAt?: string;

@@ -2,57 +2,82 @@
 
 import { ethers } from 'ethers';
 import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Load environment variables
-dotenv.config({ path: path.join(__dirname, '.env') });
+dotenv.config();
 
 async function checkTankBalance() {
-  const tankPrivateKey = process.env.TANK_WALLET_PRIVATE_KEY;
+  console.log('🔍 Checking Tank Wallet Balance\n');
   
-  if (!tankPrivateKey) {
-    console.error('❌ TANK_WALLET_PRIVATE_KEY not found in .env');
-    return;
+  const privateKey = process.env.TANK_WALLET_PRIVATE_KEY;
+  
+  if (!privateKey) {
+    console.error('❌ TANK_WALLET_PRIVATE_KEY not found in .env file');
+    console.log('Please run: node setup_tank_wallet.mjs');
+    process.exit(1);
   }
   
-  const wallet = new ethers.Wallet(tankPrivateKey);
-  console.log('🏦 Tank Wallet Address:', wallet.address);
-  console.log('=====================================\n');
-  
-  // Check Polygon balance (for USDT operations)
-  const polygonProvider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC || 'https://polygon-rpc.com');
-  const polygonBalance = await polygonProvider.getBalance(wallet.address);
-  console.log('Polygon Balance:', ethers.formatEther(polygonBalance), 'MATIC');
-  
-  if (polygonBalance === 0n) {
-    console.log('  ⚠️  Tank has NO MATIC - gas funding will not work!');
-    console.log('  💰 Please send at least 1 MATIC to:', wallet.address);
-  } else if (parseFloat(ethers.formatEther(polygonBalance)) < 0.5) {
-    console.log('  ⚠️  Low balance - recommended at least 0.5 MATIC');
-  } else {
-    console.log('  ✅ Sufficient MATIC for gas funding');
+  // Create wallet from private key
+  let wallet;
+  try {
+    const key = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+    wallet = new ethers.Wallet(key);
+    console.log('Tank Wallet Address:', wallet.address);
+    console.log('');
+  } catch (error) {
+    console.error('❌ Invalid private key:', error.message);
+    process.exit(1);
   }
   
-  // Check Ethereum balance
-  console.log('\n');
-  const ethProvider = new ethers.JsonRpcProvider(process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com');
-  const ethBalance = await ethProvider.getBalance(wallet.address);
-  console.log('Ethereum Balance:', ethers.formatEther(ethBalance), 'ETH');
+  // Check balances on different chains
+  const providers = {
+    'Ethereum': {
+      rpc: process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com',
+      symbol: 'ETH',
+      requiredAmount: '0.1'
+    },
+    'Polygon': {
+      rpc: process.env.POLYGON_RPC || 'https://polygon-rpc.com',
+      symbol: 'MATIC',
+      requiredAmount: '5'
+    }
+  };
   
-  if (ethBalance === 0n) {
-    console.log('  ℹ️  No ETH (only needed for Ethereum operations)');
-  } else {
-    console.log('  ✅ Has ETH for Ethereum operations');
+  console.log('Chain Balances:');
+  console.log('===============');
+  
+  for (const [network, config] of Object.entries(providers)) {
+    try {
+      const provider = new ethers.JsonRpcProvider(config.rpc);
+      const balance = await provider.getBalance(wallet.address);
+      const formatted = ethers.formatEther(balance);
+      const required = parseFloat(config.requiredAmount);
+      const hasEnough = parseFloat(formatted) >= required;
+      
+      console.log(`\n${network}:`);
+      console.log(`  Balance: ${formatted} ${config.symbol}`);
+      console.log(`  Status: ${hasEnough ? '✅ Sufficient' : '⚠️  Low balance'}`);
+      console.log(`  Recommended minimum: ${config.requiredAmount} ${config.symbol}`);
+      
+      if (!hasEnough) {
+        console.log(`  💡 Please fund the wallet with at least ${config.requiredAmount} ${config.symbol}`);
+      }
+    } catch (error) {
+      console.log(`\n${network}: ❌ Error checking balance`);
+      console.log(`  ${error.message}`);
+    }
   }
   
-  console.log('\n=====================================');
-  console.log('Configuration:');
-  console.log('  POLYGON_GAS_FUND_AMOUNT:', process.env.POLYGON_GAS_FUND_AMOUNT || '0.5', 'MATIC');
-  console.log('  ETH_GAS_FUND_AMOUNT:', process.env.ETH_GAS_FUND_AMOUNT || '0.01', 'ETH');
+  console.log('\n===============================');
+  console.log('\nConfiguration from .env:');
+  console.log(`  ETH_GAS_FUND_AMOUNT: ${process.env.ETH_GAS_FUND_AMOUNT || 'not set'} ETH`);
+  console.log(`  POLYGON_GAS_FUND_AMOUNT: ${process.env.POLYGON_GAS_FUND_AMOUNT || 'not set'} MATIC`);
+  console.log(`  ETH_LOW_GAS_THRESHOLD: ${process.env.ETH_LOW_GAS_THRESHOLD || 'not set'} ETH`);
+  console.log(`  POLYGON_LOW_GAS_THRESHOLD: ${process.env.POLYGON_LOW_GAS_THRESHOLD || 'not set'} MATIC`);
+  
+  console.log('\n💡 To fund the tank wallet:');
+  console.log(`  1. Send ETH to ${wallet.address} on Ethereum`);
+  console.log(`  2. Send MATIC to ${wallet.address} on Polygon`);
 }
 
 checkTankBalance().catch(console.error);

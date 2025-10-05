@@ -475,6 +475,13 @@ export class EthereumPlugin implements ChainPlugin {
     to: string,
     amount: string
   ): Promise<SubmittedTx> {
+    console.log(`[${this.chainId}] EthereumPlugin.send() called:`, {
+      asset,
+      from: from.address,
+      to,
+      amount,
+      dealId: (from as any).dealId || 'NO_DEALID'
+    });
     if (!from.keyRef) {
       throw new Error(`No keyRef in EscrowAccountRef: ${JSON.stringify(from)}`);
     }
@@ -551,6 +558,7 @@ export class EthereumPlugin implements ChainPlugin {
           gasLimit: gasLimit, // Standard ETH transfer gas limit
         });
       } else if (asset.startsWith('ERC20:')) {
+        console.log(`[${this.chainId}] Detected ERC20 token transfer`);
         // ERC20 token transfer
         let tokenAddress = asset.split(':')[1];
         // Remove chain suffix if present
@@ -559,8 +567,10 @@ export class EthereumPlugin implements ChainPlugin {
         }
         
         // Check gas balance for ERC20 transfer
+        console.log(`[${this.chainId}] Tank manager available: ${!!this.tankManager}`);
         if (this.tankManager) {
           const escrowAddress = from.address || wallet.address;
+          console.log(`[${this.chainId}] Checking gas for ERC20 transfer from ${escrowAddress}`);
           const gasEstimate = await this.tankManager.estimateGasForERC20Transfer(
             this.chainId,
             tokenAddress,
@@ -570,6 +580,7 @@ export class EthereumPlugin implements ChainPlugin {
           );
           
           const currentGasBalance = await this.provider.getBalance(escrowAddress);
+          console.log(`[${this.chainId}] Current gas balance: ${ethers.formatEther(currentGasBalance)}, Required: ${gasEstimate.totalCostEth}`);
           
           if (currentGasBalance < gasEstimate.totalCostWei) {
             console.log(`[${this.chainId}] Escrow ${escrowAddress} needs gas funding for ERC20 transfer`);
@@ -578,6 +589,7 @@ export class EthereumPlugin implements ChainPlugin {
             
             // Request gas funding from tank
             const dealId = (from as any).dealId || 'unknown';
+            console.log(`[${this.chainId}] Requesting gas funding for deal ${dealId}`);
             await this.tankManager.fundEscrowForGas(
               dealId,
               this.chainId,
@@ -623,6 +635,7 @@ export class EthereumPlugin implements ChainPlugin {
             
             // Request gas funding from tank
             const dealId = (from as any).dealId || 'unknown';
+            console.log(`[${this.chainId}] Requesting gas funding for deal ${dealId}`);
             await this.tankManager.fundEscrowForGas(
               dealId,
               this.chainId,
@@ -674,14 +687,29 @@ export class EthereumPlugin implements ChainPlugin {
     try {
       const receipt = await this.provider.getTransactionReceipt(txid);
       if (!receipt) {
+        // Check if transaction exists in mempool
+        const tx = await this.provider.getTransaction(txid);
+        if (!tx) {
+          // Transaction doesn't exist at all - likely reorg
+          return -1;
+        }
+        // Transaction exists but not mined yet
         return 0;
       }
       
       const currentBlock = await this.provider.getBlockNumber();
-      return currentBlock - receipt.blockNumber + 1;
+      const confirmations = currentBlock - receipt.blockNumber + 1;
+      
+      // Additional check: if receipt exists but confirmations are negative, it's a reorg
+      if (confirmations < 0) {
+        return -1;
+      }
+      
+      return confirmations;
     } catch (error) {
-      console.error(`Failed to get confirmations:`, error);
-      return 0;
+      console.error(`Failed to get confirmations for ${txid}:`, error);
+      // On error, assume transaction doesn't exist
+      return -1;
     }
   }
 

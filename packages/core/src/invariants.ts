@@ -16,8 +16,9 @@ export function validateDealTransition(
   const validTransitions: Record<DealStage, DealStage[]> = {
     'CREATED': ['COLLECTION'],
     'COLLECTION': ['WAITING', 'REVERTED'],
-    'WAITING': ['CLOSED', 'REVERTED'],
-    'REVERTED': [],
+    'WAITING': ['SWAP', 'COLLECTION'],  // Can go to SWAP or back to COLLECTION (reorg)
+    'SWAP': ['CLOSED', 'COLLECTION'],    // Can complete or revert to COLLECTION (reorg)
+    'REVERTED': ['CLOSED'],              // After refunds complete
     'CLOSED': [],
   };
   

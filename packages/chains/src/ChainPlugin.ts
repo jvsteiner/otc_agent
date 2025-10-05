@@ -81,6 +81,8 @@ export interface ChainPlugin {
 
   // Fee & validation
   ensureFeeBudget(from: EscrowAccountRef, asset: AssetCode, intent: 'NATIVE'|'TOKEN', minNative: string): Promise<void>;
+  
+  // Transaction monitoring - returns -1 if tx not found (reorg)
   getTxConfirmations(txid: string): Promise<number>;
   validateAddress(address: string): boolean;
   getOperatorAddress(): string;
