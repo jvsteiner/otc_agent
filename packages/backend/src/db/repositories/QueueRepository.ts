@@ -7,17 +7,27 @@ export class QueueRepository {
 
   enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq' | 'status'> & { payoutId?: string }): QueueItem {
     // CRITICAL SAFEGUARD #6: Prevent double-spending by blocking conflicting queue items
+    // But allow refunds for CLOSED deals (post-close surplus returns)
     if (item.purpose === 'TIMEOUT_REFUND') {
+      // Check if this is a post-close refund (all swaps already completed)
       const existingSwaps = this.getByDeal(item.dealId)
         .filter(q => q.purpose === 'SWAP_PAYOUT' && 
                      q.from.address === item.from.address &&
                      q.asset === item.asset);
       
-      if (existingSwaps.length > 0) {
-        console.error(`[CRITICAL] Blocked TIMEOUT_REFUND for deal ${item.dealId} - SWAP_PAYOUT exists!`);
+      // Only block if there are PENDING or SUBMITTED swaps (not COMPLETED ones)
+      const pendingSwaps = existingSwaps.filter(s => s.status !== 'COMPLETED');
+      
+      if (pendingSwaps.length > 0) {
+        console.error(`[CRITICAL] Blocked TIMEOUT_REFUND for deal ${item.dealId} - Pending SWAP_PAYOUT exists!`);
         console.error(`  Asset: ${item.asset}, From: ${item.from.address}`);
-        console.error(`  Existing swaps: ${existingSwaps.map(s => `${s.id}:${s.status}`).join(', ')}`);
-        throw new Error(`Cannot create refund - swap payout already exists for ${item.asset}`);
+        console.error(`  Pending swaps: ${pendingSwaps.map(s => `${s.id}:${s.status}`).join(', ')}`);
+        throw new Error(`Cannot create refund - pending swap payout exists for ${item.asset}`);
+      }
+      
+      // If all swaps are completed, this is likely a post-close refund which is allowed
+      if (existingSwaps.length > 0 && pendingSwaps.length === 0) {
+        console.log(`[QueueRepo] Allowing post-close refund for deal ${item.dealId} (all swaps completed)`);
       }
     }
     
@@ -27,6 +37,7 @@ export class QueueRepository {
                      q.from.address === item.from.address &&
                      q.asset === item.asset);
       
+      // Only block if there are any refunds (swaps shouldn't happen after refunds)
       if (existingRefunds.length > 0) {
         console.error(`[CRITICAL] Blocked SWAP_PAYOUT for deal ${item.dealId} - TIMEOUT_REFUND exists!`);
         console.error(`  Asset: ${item.asset}, From: ${item.from.address}`);

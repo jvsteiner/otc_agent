@@ -24,6 +24,8 @@ export class Engine {
   private payoutRepo: PayoutRepository;
   private engineId: string;
   private tankManager?: TankManager;
+  private isProcessingQueues = false;  // Prevent concurrent queue processing
+  private queueProcessingInterval?: NodeJS.Timeout;
 
   constructor(
     private db: DB,
@@ -98,6 +100,9 @@ export class Engine {
     // Run immediately, then on interval
     this.processTick();
     this.intervalId = setInterval(() => this.processTick(), intervalMs);
+    
+    // Start independent queue processor (runs every 5 seconds)
+    this.startQueueProcessor(5000);
   }
 
   stop() {
@@ -105,6 +110,10 @@ export class Engine {
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = undefined;
+    }
+    if (this.queueProcessingInterval) {
+      clearInterval(this.queueProcessingInterval);
+      this.queueProcessingInterval = undefined;
     }
     console.log(`Engine ${this.engineId} stopped`);
   }
@@ -364,6 +373,9 @@ export class Engine {
       } else if (deal.stage === 'CLOSED') {
         // Continuously monitor escrows for any funds and return them immediately
         await this.monitorAndReturnEscrowFunds(deal);
+        
+        // Process any pending refund queues for late deposits
+        await this.processQueues(deal);
       }
   }
 
@@ -937,7 +949,7 @@ export class Engine {
             dealId: deal.id,
             chainId: deal.alice.chainId,
             from: deal.escrowA,
-            to: deal.aliceDetails.recipientAddress,
+            to: deal.aliceDetails.paybackAddress,  // Use payback address for refunds!
             asset: deal.alice.asset,
             amount: surplus.toString(),
             purpose: 'SURPLUS_REFUND',
@@ -965,7 +977,7 @@ export class Engine {
             dealId: deal.id,
             chainId: deal.bob.chainId,
             from: deal.escrowB,
-            to: deal.bobDetails.recipientAddress,
+            to: deal.bobDetails.paybackAddress,  // Use payback address for refunds!
             asset: deal.bob.asset,
             amount: surplus.toString(),
             purpose: 'SURPLUS_REFUND',
@@ -1126,14 +1138,15 @@ export class Engine {
       if (!nextItem) continue;
       
       try {
-        // CRITICAL SAFEGUARD #5: Block refunds if swap payouts exist
-        if (nextItem.purpose === 'TIMEOUT_REFUND') {
+        // CRITICAL SAFEGUARD #5: Block refunds if UNCOMPLETED swap payouts exist
+        // But allow refunds for CLOSED deals (post-close surplus)
+        if (nextItem.purpose === 'TIMEOUT_REFUND' && deal.stage !== 'CLOSED') {
           const swapPayouts = this.queueRepo.getByDeal(deal.id)
-            .filter(q => q.purpose === 'SWAP_PAYOUT');
+            .filter(q => q.purpose === 'SWAP_PAYOUT' && q.status !== 'COMPLETED');
           
           if (swapPayouts.length > 0) {
-            console.error(`[CRITICAL] Blocking TIMEOUT_REFUND for deal ${deal.id} - swap payouts exist!`);
-            this.dealRepo.addEvent(deal.id, `CRITICAL: Blocked refund - ${swapPayouts.length} swap payouts exist`);
+            console.error(`[CRITICAL] Blocking TIMEOUT_REFUND for deal ${deal.id} - uncompleted swap payouts exist!`);
+            this.dealRepo.addEvent(deal.id, `CRITICAL: Blocked refund - ${swapPayouts.length} uncompleted swap payouts exist`);
             // Skip this refund to prevent double-spending
             continue;
           }
@@ -1203,14 +1216,15 @@ export class Engine {
       if (!nextItem) continue;
       
       try {
-        // CRITICAL SAFEGUARD #5: Block refunds if swap payouts exist
-        if (nextItem.purpose === 'TIMEOUT_REFUND') {
+        // CRITICAL SAFEGUARD #5: Block refunds if UNCOMPLETED swap payouts exist
+        // But allow refunds for CLOSED deals (post-close surplus)
+        if (nextItem.purpose === 'TIMEOUT_REFUND' && deal.stage !== 'CLOSED') {
           const swapPayouts = this.queueRepo.getByDeal(deal.id)
-            .filter(q => q.purpose === 'SWAP_PAYOUT');
+            .filter(q => q.purpose === 'SWAP_PAYOUT' && q.status !== 'COMPLETED');
           
           if (swapPayouts.length > 0) {
-            console.error(`[CRITICAL] Blocking TIMEOUT_REFUND for deal ${deal.id} - swap payouts exist!`);
-            this.dealRepo.addEvent(deal.id, `CRITICAL: Blocked refund - ${swapPayouts.length} swap payouts exist`);
+            console.error(`[CRITICAL] Blocking TIMEOUT_REFUND for deal ${deal.id} - uncompleted swap payouts exist!`);
+            this.dealRepo.addEvent(deal.id, `CRITICAL: Blocked refund - ${swapPayouts.length} uncompleted swap payouts exist`);
             // Skip this refund to prevent double-spending
             continue;
           }
@@ -1266,46 +1280,120 @@ export class Engine {
     }
   }
 
+  /**
+   * Get actual current balance for an escrow address
+   * For UTXO chains: sum of available UTXOs
+   * For account chains: current balance
+   */
+  private async getActualBalance(
+    plugin: any,
+    chainId: string,
+    escrowAddress: string,
+    asset: string
+  ): Promise<string> {
+    try {
+      if (chainId === 'UNICITY') {
+        // For Unicity, get actual UTXOs and calculate balance
+        const scriptHash = (plugin as any).addressToScriptHash(escrowAddress);
+        const utxos = await (plugin as any).electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
+        
+        if (!utxos || utxos.length === 0) {
+          return '0';
+        }
+        
+        // Sum up UTXO values (in satoshis)
+        const totalSatoshis = utxos.reduce((sum: number, utxo: any) => sum + utxo.value, 0);
+        const totalAlpha = (totalSatoshis / 100000000).toString();
+        
+        console.log(`[Engine] Unicity escrow ${escrowAddress} has ${utxos.length} UTXOs, total: ${totalAlpha} ALPHA`);
+        return totalAlpha;
+      } else if (chainId === 'POLYGON' || chainId === 'ETH') {
+        // For EVM chains, check balance via web3
+        try {
+          // Check if it's a native asset or token
+          const nativeAsset = chainId === 'POLYGON' ? 'MATIC' : 'ETH';
+          
+          if (asset === nativeAsset || asset === `${nativeAsset}@${chainId}`) {
+            // Get native balance
+            const provider = (plugin as any).provider;
+            if (provider) {
+              const balance = await provider.getBalance(escrowAddress);
+              const ethBalance = (Number(balance) / 1e18).toString();
+              console.log(`[Engine] ${chainId} escrow ${escrowAddress} has ${ethBalance} ${nativeAsset}`);
+              return ethBalance;
+            }
+          } else if (asset.startsWith('ERC20:')) {
+            // Get ERC20 token balance
+            const tokenAddress = asset.split(':')[1].split('@')[0];
+            const provider = (plugin as any).provider;
+            if (provider) {
+              // Create contract instance to check balance
+              const abi = ['function balanceOf(address) view returns (uint256)'];
+              const { Contract } = await import('ethers');
+              const contract = new Contract(tokenAddress, abi, provider);
+              const balance = await contract.balanceOf(escrowAddress);
+              
+              // Assume 6 decimals for USDT/USDC (common stablecoins)
+              // This should ideally check the token's decimals
+              const decimals = 6; // TODO: Get actual decimals from contract
+              const tokenBalance = (Number(balance) / Math.pow(10, decimals)).toString();
+              console.log(`[Engine] ${chainId} escrow ${escrowAddress} has ${tokenBalance} of token ${tokenAddress}`);
+              return tokenBalance;
+            }
+          }
+        } catch (error) {
+          console.error(`[Engine] Error getting EVM balance:`, error);
+        }
+        return '0';
+      } else {
+        console.log(`[Engine] Balance check not implemented for ${chainId}, skipping`);
+        return '0';
+      }
+    } catch (error) {
+      console.error(`[Engine] Error getting balance for ${escrowAddress}:`, error);
+      return '0';
+    }
+  }
+
   private async monitorAndReturnEscrowFunds(deal: Deal) {
-    // Continuously monitor and return any funds found in escrows
-    // This runs even after deal is CLOSED to handle mistaken payments
+    // Monitor and return any remaining funds in escrows
+    // This handles both REVERTED deals and post-close deposits
     
-    // CRITICAL SAFEGUARD #4: Check if swap was executed before returning funds
-    const swapPayouts = this.queueRepo.getByDeal(deal.id)
-      .filter(q => q.purpose === 'SWAP_PAYOUT');
-    
-    const hasExecutedSwap = swapPayouts.some(q => q.status === 'COMPLETED');
-    const hasPartialSwap = swapPayouts.some(q => q.status === 'SUBMITTED');
-    
-    if (hasExecutedSwap) {
-      // Swap was fully executed - only return EXTRA funds sent after the deal
-      console.log(`[Engine] Deal ${deal.id} swap was executed, only monitoring for extra deposits`);
-    } else if (hasPartialSwap) {
-      console.warn(`[Engine] Deal ${deal.id} has partial swap execution - manual intervention may be needed`);
-      this.dealRepo.addEvent(deal.id, 'WARNING: Partial swap execution detected - manual review required');
-      // Don't auto-return funds when swap is partially executed
+    // Skip if deal isn't in a terminal state
+    if (!['CLOSED', 'REVERTED'].includes(deal.stage)) {
       return;
     }
     
-    // Check if escrows were gas-funded by tank
-    const aliceEscrowGasFunded = await this.wasEscrowGasFunded(deal.id, deal.alice.chainId, deal.escrowA);
-    const bobEscrowGasFunded = await this.wasEscrowGasFunded(deal.id, deal.bob.chainId, deal.escrowB);
+    console.log(`[Engine] Monitoring escrows for ${deal.stage} deal ${deal.id}`);
     
-    // Check Alice's escrow for any balances
-    if (deal.escrowA && deal.aliceDetails) {
-      const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
-      const escrowAddress = await plugin.getManagedAddress(deal.escrowA);
+    try {
+      // Check if escrows were gas-funded by tank
+      const aliceEscrowGasFunded = await this.wasEscrowGasFunded(deal.id, deal.alice.chainId, deal.escrowA);
+      const bobEscrowGasFunded = await this.wasEscrowGasFunded(deal.id, deal.bob.chainId, deal.escrowB);
       
-      // Check for ANY asset balance (not just the deal asset)
-      // First check the primary asset
-      const aliceAsset = deal.alice.asset;
-      const deposits = await plugin.listConfirmedDeposits(
-        aliceAsset,
-        escrowAddress,
-        1 // Min 1 confirmation
-      );
+      // Check Alice's escrow for any balances
+      if (deal.escrowA && deal.aliceDetails) {
+        console.log(`[Engine] Checking Alice's escrow ${deal.escrowA.address} on ${deal.alice.chainId}`);
+        const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
+        const escrowAddress = await plugin.getManagedAddress(deal.escrowA);
       
-      const remainingBalance = parseFloat(deposits.totalConfirmed);
+        // Check for ANY asset balance (not just the deal asset)
+        // First check the primary asset
+        const aliceAsset = deal.alice.asset;
+        
+        console.log(`[Engine] Getting balance for ${aliceAsset} at ${escrowAddress}`);
+        
+        // Get the ACTUAL current balance (what's really there now)
+        const currentBalance = await this.getActualBalance(
+          plugin,
+          deal.alice.chainId,
+          escrowAddress,
+          aliceAsset
+        );
+        
+        console.log(`[Engine] Balance check result: ${currentBalance} ${aliceAsset}`);
+      
+      const remainingBalance = parseFloat(currentBalance);
       if (remainingBalance > 0.000001) { // Small threshold to avoid dust
         // Check if we already have a pending or submitted return for this escrow
         const existingQueues = this.queueRepo.getByDeal(deal.id)
@@ -1320,29 +1408,48 @@ export class Engine {
         
         if (!alreadyQueued) {
           console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${aliceAsset} in Alice's escrow ${escrowAddress}`);
+          
+          // Ensure gas for refund if needed
+          try {
+            const isNativeAsset = aliceAsset === getNativeAsset(deal.alice.chainId);
+            if (!isNativeAsset) {
+              // For token transfers, ensure we have gas
+              await plugin.ensureFeeBudget(
+                deal.escrowA,
+                aliceAsset,
+                'TOKEN',
+                '0.01' // Minimum gas amount
+              );
+            }
+          } catch (error) {
+            console.log(`[ESCROW MONITOR] Gas funding may be needed for refund:`, error);
+          }
+          
           this.queueRepo.enqueue({
             dealId: deal.id,
             chainId: deal.alice.chainId,
             from: deal.escrowA,
             to: deal.aliceDetails.paybackAddress,
             asset: aliceAsset,
-            amount: deposits.totalConfirmed,
+            amount: currentBalance, // Use the actual current balance
             purpose: 'TIMEOUT_REFUND', // Use TIMEOUT_REFUND for post-deal returns
           });
-          this.dealRepo.addEvent(deal.id, `Auto-returning ${deposits.totalConfirmed} ${aliceAsset} from Alice's escrow`);
+          this.dealRepo.addEvent(deal.id, `Auto-returning ${currentBalance} ${aliceAsset} from Alice's escrow`);
         }
       }
       
       // Also check for native currency if the deal asset wasn't native
       const nativeAsset = getNativeAsset(deal.alice.chainId);
       if (aliceAsset !== nativeAsset) {
-        const nativeDeposits = await plugin.listConfirmedDeposits(
-          nativeAsset,
+        // Get the ACTUAL current native balance
+        const currentNativeBalance = await this.getActualBalance(
+          plugin,
+          deal.alice.chainId,
           escrowAddress,
-          1
+          nativeAsset
         );
         
-        const nativeBalance = parseFloat(nativeDeposits.totalConfirmed);
+        const nativeBalance = parseFloat(currentNativeBalance);
         if (nativeBalance > 0.000001) {
           const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
             .filter(q => q.from.address === escrowAddress && 
@@ -1370,10 +1477,10 @@ export class Engine {
               from: deal.escrowA,
               to: returnAddress,
               asset: nativeAsset,
-              amount: nativeDeposits.totalConfirmed,
+              amount: currentNativeBalance, // Use actual current balance
               purpose: purpose,
             });
-            this.dealRepo.addEvent(deal.id, `Auto-returning ${nativeDeposits.totalConfirmed} ${nativeAsset} from Alice's escrow to ${aliceEscrowGasFunded ? 'tank wallet' : 'payback address'}`);
+            this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} from Alice's escrow to ${aliceEscrowGasFunded ? 'tank wallet' : 'payback address'}`);
           }
         }
       }
@@ -1386,13 +1493,16 @@ export class Engine {
       
       // Check for the primary asset
       const bobAsset = deal.bob.asset;
-      const deposits = await plugin.listConfirmedDeposits(
-        bobAsset,
+      
+      // Get the ACTUAL current balance (what's really there now)
+      const currentBalance = await this.getActualBalance(
+        plugin,
+        deal.bob.chainId,
         escrowAddress,
-        1 // Min 1 confirmation
+        bobAsset
       );
       
-      const remainingBalance = parseFloat(deposits.totalConfirmed);
+      const remainingBalance = parseFloat(currentBalance);
       if (remainingBalance > 0.000001) { // Small threshold to avoid dust
         // Check if we already have a pending or submitted return for this escrow
         const existingQueues = this.queueRepo.getByDeal(deal.id)
@@ -1412,29 +1522,47 @@ export class Engine {
             return;
           }
           
+          // Ensure gas for refund if needed
+          try {
+            const isNativeAsset = bobAsset === getNativeAsset(deal.bob.chainId);
+            if (!isNativeAsset) {
+              // For token transfers, ensure we have gas
+              await plugin.ensureFeeBudget(
+                deal.escrowB,
+                bobAsset,
+                'TOKEN',
+                '0.01' // Minimum gas amount
+              );
+            }
+          } catch (error) {
+            console.log(`[ESCROW MONITOR] Gas funding may be needed for refund:`, error);
+          }
+          
           this.queueRepo.enqueue({
             dealId: deal.id,
             chainId: deal.bob.chainId,
             from: deal.escrowB,
             to: deal.bobDetails.paybackAddress, // MUST use payback address
             asset: bobAsset,
-            amount: deposits.totalConfirmed,
+            amount: currentBalance,
             purpose: 'TIMEOUT_REFUND', // Use TIMEOUT_REFUND for post-deal returns
           });
-          this.dealRepo.addEvent(deal.id, `Auto-returning ${deposits.totalConfirmed} ${bobAsset} to Bob's payback address: ${deal.bobDetails.paybackAddress}`);
+          this.dealRepo.addEvent(deal.id, `Auto-returning ${currentBalance} ${bobAsset} to Bob's payback address: ${deal.bobDetails.paybackAddress}`);
         }
       }
       
       // Also check for native currency if the deal asset wasn't native
       const nativeAsset = getNativeAsset(deal.bob.chainId);
       if (bobAsset !== nativeAsset) {
-        const nativeDeposits = await plugin.listConfirmedDeposits(
-          nativeAsset,
+        // Get the ACTUAL current native balance
+        const currentNativeBalance = await this.getActualBalance(
+          plugin,
+          deal.bob.chainId,
           escrowAddress,
-          1
+          nativeAsset
         );
         
-        const nativeBalance = parseFloat(nativeDeposits.totalConfirmed);
+        const nativeBalance = parseFloat(currentNativeBalance);
         if (nativeBalance > 0.000001) {
           const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
             .filter(q => q.from.address === escrowAddress && 
@@ -1462,10 +1590,10 @@ export class Engine {
               from: deal.escrowB,
               to: returnAddress,
               asset: nativeAsset,
-              amount: nativeDeposits.totalConfirmed,
+              amount: currentNativeBalance,
               purpose: purpose,
             });
-            this.dealRepo.addEvent(deal.id, `Auto-returning ${nativeDeposits.totalConfirmed} ${nativeAsset} from Bob's escrow to ${bobEscrowGasFunded ? 'tank wallet' : 'payback address'}`);
+            this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} from Bob's escrow to ${bobEscrowGasFunded ? 'tank wallet' : 'payback address'}`);
           }
         }
       }
@@ -1473,6 +1601,9 @@ export class Engine {
     
     // Process any pending queue items for this closed deal
     await this.processQueues(deal);
+    } catch (error) {
+      console.error(`[Engine] Error in monitorAndReturnEscrowFunds for deal ${deal.id}:`, error);
+    }
   }
   
   private async monitorSubmittedTransactions() {
@@ -1589,6 +1720,101 @@ export class Engine {
       } catch (error) {
         console.error(`Failed to update payout ${payoutId} status:`, error);
       }
+    }
+  }
+
+  /**
+   * Start independent queue processor that runs every intervalMs
+   * This ensures queues are processed even when main engine loop is busy
+   */
+  private startQueueProcessor(intervalMs: number = 5000) {
+    console.log(`[Engine] Starting independent queue processor with ${intervalMs}ms interval`);
+    
+    // Process queues immediately on start
+    this.processAllQueues();
+    
+    // Set up interval for regular queue processing
+    this.queueProcessingInterval = setInterval(async () => {
+      // Skip if already processing to prevent concurrent execution
+      if (this.isProcessingQueues) {
+        console.log('[QueueProcessor] Skipping - queue processing already in progress');
+        return;
+      }
+      
+      await this.processAllQueues();
+    }, intervalMs);
+  }
+
+  /**
+   * Process all pending queues across all deals
+   * This is called independently from the main engine loop
+   */
+  private async processAllQueues() {
+    // Prevent concurrent processing
+    if (this.isProcessingQueues) {
+      console.log('[QueueProcessor] Already processing queues, skipping');
+      return;
+    }
+    
+    this.isProcessingQueues = true;
+    
+    try {
+      // Get all deals that might have pending queue items
+      const deals = this.dealRepo.getActiveDeals();
+      
+      let totalPending = 0;
+      let processedCount = 0;
+      
+      // Count total pending items first
+      for (const deal of deals) {
+        const pendingCount = this.queueRepo.getPendingCount(deal.id);
+        if (pendingCount > 0) {
+          totalPending += pendingCount;
+          console.log(`[QueueProcessor] Deal ${deal.id}: ${pendingCount} pending items`);
+        }
+      }
+      
+      if (totalPending === 0) {
+        // No pending items, nothing to do
+        return;
+      }
+      
+      console.log(`[QueueProcessor] Processing ${totalPending} total pending queue items`);
+      
+      // Process each deal's queues
+      for (const deal of deals) {
+        const pendingCount = this.queueRepo.getPendingCount(deal.id);
+        if (pendingCount === 0) continue;
+        
+        console.log(`[QueueProcessor] Processing deal ${deal.id} (${deal.stage})`);
+        
+        try {
+          // Check if deal uses phased processing (Unicity)
+          const usesPhases = deal.alice.chainId === 'UNICITY' || deal.bob.chainId === 'UNICITY';
+          
+          if (usesPhases && (deal.stage === 'SWAP' || deal.stage === 'CLOSED')) {
+            // Process phased queues for Unicity
+            await this.processQueuesPhased(deal);
+            processedCount++;
+          } else {
+            // Process normal (non-phased) queues
+            await this.processQueuesNormal(deal);
+            processedCount++;
+          }
+        } catch (error) {
+          console.error(`[QueueProcessor] Error processing deal ${deal.id}:`, error);
+        }
+      }
+      
+      if (processedCount > 0) {
+        console.log(`[QueueProcessor] Completed processing ${processedCount} deals`);
+      }
+      
+    } catch (error) {
+      console.error('[QueueProcessor] Unexpected error:', error);
+    } finally {
+      // Always release the lock
+      this.isProcessingQueues = false;
     }
   }
 }

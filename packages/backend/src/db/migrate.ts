@@ -44,8 +44,27 @@ export function runMigrations(db: DB): void {
         const migration = fs.readFileSync(migrationPath, 'utf-8');
         console.log(`Running migration: ${file}`);
         
+        // Special handling for the deal name migration
+        if (file === '005_add_deal_name.sql') {
+          try {
+            // Check if the name column already exists
+            const checkColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('deals') WHERE name = 'name'").get() as { count: number };
+            
+            if (checkColumn.count === 0) {
+              console.log('Adding name column to deals...');
+              db.exec(migration);
+            } else {
+              console.log('name column already exists, skipping...');
+            }
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name')) {
+              throw err;
+            }
+            console.log('name column already exists, continuing...');
+          }
+        }
         // Special handling for the payouts migration
-        if (file === '002_add_payouts.sql') {
+        else if (file === '002_add_payouts.sql') {
           try {
             // First try to add the payoutId column
             const checkColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('queue_items') WHERE name = 'payoutId'").get() as { count: number };
