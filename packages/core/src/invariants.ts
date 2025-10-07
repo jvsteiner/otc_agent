@@ -32,16 +32,29 @@ export function computeEligibleDeposits(
 ): EscrowDeposit[] {
   const expiryTime = new Date(expiresAt).getTime();
   
+  console.log(`[computeEligibleDeposits] Checking eligibility:`, {
+    expiresAt,
+    expiryTime: new Date(expiryTime).toISOString(),
+    minConfirms
+  });
+  
   return deposits.filter(deposit => {
     // Must have enough confirmations
-    if (deposit.confirms < minConfirms) return false;
+    if (deposit.confirms < minConfirms) {
+      console.log(`  Deposit ${deposit.txid} rejected: confirms ${deposit.confirms} < ${minConfirms}`);
+      return false;
+    }
     
     // Must have blockTime <= expiresAt
     if (deposit.blockTime) {
       const blockTime = new Date(deposit.blockTime).getTime();
-      if (blockTime > expiryTime) return false;
+      if (blockTime > expiryTime) {
+        console.log(`  Deposit ${deposit.txid} rejected: blockTime ${deposit.blockTime} > expiresAt ${expiresAt}`);
+        return false;
+      }
     }
     
+    console.log(`  Deposit ${deposit.txid} accepted: confirms=${deposit.confirms}, blockTime=${deposit.blockTime}`);
     return true;
   });
 }
@@ -56,6 +69,16 @@ export function checkLocks(
   expiresAt: string,
 ): LockEligibility {
   const eligible = computeEligibleDeposits(deposits, minConfirms, expiresAt);
+  
+  console.log(`[checkLocks] Input:`, {
+    depositsCount: deposits.length,
+    deposits: deposits.map(d => ({ txid: d.txid, amount: d.amount, asset: d.asset, confirms: d.confirms })),
+    eligibleCount: eligible.length,
+    eligible: eligible.map(d => ({ txid: d.txid, amount: d.amount, asset: d.asset })),
+    tradeAsset,
+    commissionAsset,
+    minConfirms
+  });
   
   // Sum by asset
   const tradeDeposits = eligible.filter(d => d.asset === tradeAsset);

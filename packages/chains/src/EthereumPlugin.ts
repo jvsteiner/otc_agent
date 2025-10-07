@@ -339,13 +339,14 @@ export class EthereumPlugin implements ChainPlugin {
             console.log(`[EthereumPlugin] ERC20 balance formatted: ${totalConfirmed}`);
             
             // Create a synthetic deposit entry for the balance
+            // Use a blockTime from 1 hour ago to ensure it's before any reasonable deal expiry
             deposits.push({
               txid: `erc20-balance-${tokenAddress.slice(0, 10)}`,
               amount: totalConfirmed,
               asset: asset,
               confirms: 100, // Assume sufficient confirmations
-              blockHeight: currentBlock - 100,
-              blockTime: new Date(Date.now() - 100 * 2 * 1000).toISOString()
+              blockHeight: currentBlock - 1000,
+              blockTime: new Date(Date.now() - 60 * 60 * 1000).toISOString() // 1 hour ago
             });
           }
         } catch (error) {
@@ -441,6 +442,13 @@ export class EthereumPlugin implements ChainPlugin {
     } catch (error) {
       console.error(`Failed to list deposits:`, error);
     }
+    
+    console.log(`[EthereumPlugin] Returning deposits for ${asset}:`, {
+      address,
+      depositCount: deposits.length,
+      deposits: deposits.map(d => ({ txid: d.txid, amount: d.amount, asset: d.asset })),
+      totalConfirmed
+    });
     
     return {
       address,

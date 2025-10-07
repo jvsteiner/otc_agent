@@ -391,9 +391,9 @@ export class Engine {
     // Update side A deposits
     if (deal.escrowA) {
       const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
-      // For CREATED stage, use lower confirmation threshold for visibility
-      // For COLLECTION stage, use proper threshold for locking
-      const minConf = deal.stage === 'CREATED' ? 1 : getConfirmationThreshold(deal.alice.chainId);
+      // For CREATED and COLLECTION stages, accept unconfirmed deposits (0 confirmations)
+      // In WAITING stage, use proper threshold for checking locks
+      const minConf = (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') ? 0 : getConfirmationThreshold(deal.alice.chainId);
       
       console.log(`[Engine] Checking deposits for Alice (${deal.alice.chainId}):`, {
         asset: deal.alice.asset,
@@ -445,8 +445,11 @@ export class Engine {
         ? normalizedAsset  // Use normalized asset to match deposits
         : getNativeAsset(deal.alice.chainId);
       
-      // For CREATED stage, use a far future date as we're just monitoring
-      const expiresAt = deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+      // For CREATED and WAITING stages, use a far future date as timer is suspended/not enforced
+      // In COLLECTION stage, use the actual expiry time
+      const expiresAt = (deal.stage === 'CREATED' || deal.stage === 'WAITING')
+        ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
+        : (deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString());
       
       // For lock checking, always use the proper confirmation threshold
       const lockMinConf = getConfirmationThreshold(deal.alice.chainId);
@@ -475,14 +478,14 @@ export class Engine {
       deal.sideAState.deposits = allDeposits;
       
       // Store lock readiness for Alice (will decide on locks after checking both sides)
-      if (deal.stage === 'COLLECTION') {
+      if (deal.stage === 'COLLECTION' || deal.stage === 'WAITING') {
         aliceLockReady = locks.tradeLocked && locks.commissionLocked;
       }
       
-      // In CREATED stage, show all deposits (even with just 1 confirmation)
-      // In COLLECTION stage, only show locked amounts (with full confirmations)
-      if (deal.stage === 'CREATED') {
-        // Sum all deposits for visibility
+      // In CREATED and COLLECTION stages, show all deposits (even unconfirmed)
+      // In WAITING stage and beyond, use locked amounts only
+      if (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') {
+        // Sum all deposits for visibility and transition checking
         const tradeSum = sumAmounts(
           allDeposits
             .filter(d => d.asset === normalizedAsset)
@@ -498,7 +501,7 @@ export class Engine {
           deal.sideAState.collectedByAsset[commissionAsset] = commissionSum;
         }
       } else {
-        // In COLLECTION stage, use locked amounts only
+        // In WAITING stage and beyond, use locked amounts only
         deal.sideAState.collectedByAsset[normalizedAsset] = locks.tradeCollected;
         if (commissionAsset !== normalizedAsset) {
           deal.sideAState.collectedByAsset[commissionAsset] = locks.commissionCollected;
@@ -509,9 +512,9 @@ export class Engine {
     // Update side B deposits (similar logic)
     if (deal.escrowB) {
       const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
-      // For CREATED stage, use lower confirmation threshold for visibility
-      // For COLLECTION stage, use proper threshold for locking
-      const minConf = deal.stage === 'CREATED' ? 1 : getConfirmationThreshold(deal.bob.chainId);
+      // For CREATED and COLLECTION stages, accept unconfirmed deposits (0 confirmations)
+      // In WAITING stage, use proper threshold for checking locks
+      const minConf = (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') ? 0 : getConfirmationThreshold(deal.bob.chainId);
       
       console.log(`[Engine] Checking deposits for Bob (${deal.bob.chainId}):`, {
         asset: deal.bob.asset,
@@ -532,6 +535,12 @@ export class Engine {
       }
       
       let allDepositsB = tradeDeposits.deposits;
+      console.log(`[Engine] Trade deposits for Bob:`, {
+        count: tradeDeposits.deposits.length,
+        deposits: tradeDeposits.deposits.map(d => ({ txid: d.txid, amount: d.amount, asset: d.asset })),
+        totalConfirmed: tradeDeposits.totalConfirmed
+      });
+      
       if (deal.commissionPlan.sideB.currency === 'NATIVE' && 
           deal.commissionPlan.sideB.mode === 'FIXED_USD_NATIVE') {
         const nativeAsset = getNativeAsset(deal.bob.chainId);
@@ -554,11 +563,24 @@ export class Engine {
         ? normalizedAssetB  // Use normalized asset to match deposits
         : getNativeAsset(deal.bob.chainId);
       
-      // For CREATED stage, use a far future date as we're just monitoring
-      const expiresAtB = deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+      // For CREATED and WAITING stages, use a far future date as timer is suspended/not enforced
+      // In COLLECTION stage, use the actual expiry time
+      const expiresAtB = (deal.stage === 'CREATED' || deal.stage === 'WAITING') 
+        ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
+        : (deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString());
       
       // For lock checking, always use the proper confirmation threshold
       const lockMinConfB = getConfirmationThreshold(deal.bob.chainId);
+      
+      console.log(`[Engine] Calling checkLocks for Bob with:`, {
+        depositCount: allDepositsB.length,
+        deposits: allDepositsB.map(d => ({ txid: d.txid, amount: d.amount, asset: d.asset })),
+        tradeAsset: normalizedAssetB,
+        tradeAmount: deal.bob.amount,
+        commissionAsset,
+        commissionAmount,
+        minConf: lockMinConfB
+      });
       
       const locks = checkLocks(
         allDepositsB,
@@ -584,14 +606,14 @@ export class Engine {
       deal.sideBState.deposits = allDepositsB;
       
       // Store lock readiness for Bob (will decide on locks after checking both sides)
-      if (deal.stage === 'COLLECTION') {
+      if (deal.stage === 'COLLECTION' || deal.stage === 'WAITING') {
         bobLockReady = locks.tradeLocked && locks.commissionLocked;
       }
       
-      // In CREATED stage, show all deposits (even with just 1 confirmation)
-      // In COLLECTION stage, only show locked amounts (with full confirmations)
-      if (deal.stage === 'CREATED') {
-        // Sum all deposits for visibility
+      // In CREATED and COLLECTION stages, show all deposits (even unconfirmed)
+      // In WAITING stage and beyond, use locked amounts only
+      if (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') {
+        // Sum all deposits for visibility and transition checking
         const tradeSum = sumAmounts(
           allDepositsB
             .filter(d => d.asset === normalizedAssetB)
@@ -607,7 +629,7 @@ export class Engine {
           deal.sideBState.collectedByAsset[commissionAsset] = commissionSum;
         }
       } else {
-        // In COLLECTION stage, use locked amounts only
+        // In WAITING stage and beyond, use locked amounts only
         deal.sideBState.collectedByAsset[normalizedAssetB] = locks.tradeCollected;
         if (commissionAsset !== normalizedAssetB) {
           deal.sideBState.collectedByAsset[commissionAsset] = locks.commissionCollected;
@@ -739,8 +761,17 @@ export class Engine {
       const metadata = getAssetMetadata(tradeSpec.asset, tradeSpec.chainId);
       const decimals = metadata?.decimals || 18;
       return calculateCommission(tradeSpec.amount, commReq.percentBps!, decimals);
+    } else if (commReq.mode === 'FIXED_USD_NATIVE') {
+      // For ASSET currency, use USD value directly for stablecoins
+      if (commReq.currency === 'ASSET') {
+        // For stablecoins like USDT, 1 token = $1, so USD value = token amount
+        return commReq.usdFixed || '0';
+      } else {
+        // For NATIVE currency, use the calculated native amount
+        return commReq.nativeFixed || '0';
+      }
     } else {
-      return commReq.nativeFixed || '0';
+      return '0';
     }
   }
 
@@ -1054,6 +1085,9 @@ export class Engine {
     
     // Check phase 1 (SWAP)
     const phase1Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_1_SWAP');
+    console.log(`[Engine] Phase 1 items for deal ${deal.id}:`, phase1Items.length);
+    console.log(`[Engine] Phase 1 completed:`, this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP'));
+    
     if (phase1Items.length > 0 && !this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP')) {
       currentPhase = 'PHASE_1_SWAP';
     } else if (phase1Items.length > 0 && this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP')) {
@@ -1070,10 +1104,11 @@ export class Engine {
       }
     }
     
+    // Process non-phased items (for account-based chains like Polygon)
+    await this.processQueuesNormal(deal);
+    
     if (!currentPhase) {
-      // All phases complete or no phased items
-      // Process any non-phased items (e.g., from account-based chains)
-      await this.processQueuesNormal(deal);
+      // No phased items to process
       return;
     }
     
@@ -1155,15 +1190,16 @@ export class Engine {
   }
   
   private async processQueuesNormal(deal: Deal) {
-    // Original implementation for non-UTXO chains
-    const queues = this.queueRepo.getByDeal(deal.id);
+    // Process non-phased items only (for account-based chains)
+    const queues = this.queueRepo.getByDeal(deal.id)
+      .filter(q => !q.phase); // Only get items without a phase
     const senders = new Set(queues.map(q => `${q.chainId}|${q.from.address}`));
     
     for (const senderKey of senders) {
       const [chainId, address] = senderKey.split('|');
       
-      // Get next pending item for this sender (no phase filter)
-      const nextItem = this.queueRepo.getNextPending(deal.id, address);
+      // Get next pending item for this sender (explicitly NULL phase for non-phased items)
+      const nextItem = this.queueRepo.getNextPending(deal.id, address, null);
       if (!nextItem) continue;
       
       try {

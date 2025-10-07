@@ -206,34 +206,12 @@ export class RpcServer {
   }
 
   private getCommissionRequirement(spec: DealAssetSpec): CommissionRequirement {
-    // Parse asset to determine commission structure
-    const asset = parseAssetCode(spec.asset, spec.chainId);
-    
-    if (!asset) {
-      // Unknown asset - use fixed USD in native
-      return {
-        mode: 'FIXED_USD_NATIVE',
-        currency: 'NATIVE',
-        usdFixed: '10',
-        coveredBySurplus: true,
-      };
-    }
-    
-    // For stablecoins (USDT, USDC, EURC), use fixed USD
-    if (['USDT', 'USDC', 'EURC'].includes(asset.assetSymbol)) {
-      return {
-        mode: 'FIXED_USD_NATIVE',
-        currency: 'NATIVE',
-        usdFixed: '5',
-        coveredBySurplus: true,
-      };
-    }
-    
-    // For native assets and other tokens, use percentage
+    // ALL assets use the same 0.3% commission from surplus
+    // This ensures fairness across all asset types
     return {
       mode: 'PERCENT_BPS',
       currency: 'ASSET',
-      percentBps: 30, // 0.3%
+      percentBps: 30, // 0.3% for all assets
       coveredBySurplus: true,
     };
   }

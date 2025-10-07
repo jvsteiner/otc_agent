@@ -94,21 +94,35 @@ export class QueueRepository {
     return rows.map(row => this.mapRowToQueueItem(row));
   }
 
-  getNextPending(dealId: string, fromAddr: string, phase?: string): QueueItem | null {
-    // If phase specified, only get items from that phase
-    const stmt = phase ? this.db.prepare(`
-      SELECT * FROM queue_items
-      WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING' AND phase = ?
-      ORDER BY seq
-      LIMIT 1
-    `) : this.db.prepare(`
-      SELECT * FROM queue_items
-      WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING'
-      ORDER BY seq
-      LIMIT 1
-    `);
+  getNextPending(dealId: string, fromAddr: string, phase?: string | null): QueueItem | null {
+    // If phase === null, explicitly get non-phased items
+    // If phase is a string, get items from that phase
+    // If phase is undefined, get all items
+    let stmt;
+    if (phase === null) {
+      stmt = this.db.prepare(`
+        SELECT * FROM queue_items
+        WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING' AND phase IS NULL
+        ORDER BY seq
+        LIMIT 1
+      `);
+    } else if (phase) {
+      stmt = this.db.prepare(`
+        SELECT * FROM queue_items
+        WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING' AND phase = ?
+        ORDER BY seq
+        LIMIT 1
+      `);
+    } else {
+      stmt = this.db.prepare(`
+        SELECT * FROM queue_items
+        WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING'
+        ORDER BY seq
+        LIMIT 1
+      `);
+    }
     
-    const row = phase 
+    const row = phase && phase !== null
       ? stmt.get(dealId, fromAddr, phase) as any
       : stmt.get(dealId, fromAddr) as any;
     if (!row) return null;
