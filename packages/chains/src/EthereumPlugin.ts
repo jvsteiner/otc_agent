@@ -544,32 +544,36 @@ export class EthereumPlugin implements ChainPlugin {
       if (asset === 'ETH' || asset === 'MATIC') {
         // Native currency transfer
         const value = ethers.parseEther(amount);
-        
+
         // Build transaction directly to avoid ENS resolution
         console.log(`[EVM] Preparing transaction from wallet: ${wallet.address} (escrow: ${from.address})`);
-        
+
         // Use the escrow address for nonce, not wallet address (in case they differ)
         const nonceAddress = from.address || wallet.address;
         const nonce = await this.provider.getTransactionCount(nonceAddress);
         const gasPrice = await this.provider.getFeeData();
-        
+
         // Calculate gas cost for the transaction
         const gasLimit = 21000n; // Standard ETH transfer gas limit
         const gasCost = gasLimit * (gasPrice.gasPrice || 0n);
-        
+
         // Check if we have enough balance including gas
         // Use from.address (escrow address) not wallet.address (derived address)
         const balance = await this.provider.getBalance(from.address);
-        
-        let finalValue = value;
-        if (balance < value + gasCost) {
-          // If we don't have enough for value + gas, deduct gas from value
-          // This is useful for escrow returns where we want to send everything
-          finalValue = value - gasCost;
-          if (finalValue <= 0n) {
-            throw new Error(`Insufficient balance: gas cost ${ethers.formatEther(gasCost)} exceeds available amount ${amount}`);
-          }
-          console.log(`Deducting gas cost ${ethers.formatEther(gasCost)} from transfer amount ${amount}`);
+
+        // For native transfers, always base calculation on CURRENT balance, not requested amount
+        // This handles cases where balance has changed since queuing (e.g., gas refunds)
+        const maxSendable = balance > gasCost ? balance - gasCost : 0n;
+
+        if (maxSendable <= 0n) {
+          throw new Error(`Insufficient balance for gas: balance ${ethers.formatEther(balance)}, gas cost ${ethers.formatEther(gasCost)}`);
+        }
+
+        // Use the LESSER of: what was requested, or what we can actually send
+        const finalValue = value > maxSendable ? maxSendable : value;
+
+        if (finalValue < value) {
+          console.log(`[EVM] Adjusted send amount from ${ethers.formatEther(value)} to ${ethers.formatEther(finalValue)} due to balance/gas constraints (balance: ${ethers.formatEther(balance)}, gas: ${ethers.formatEther(gasCost)})`);
         }
         
         tx = await wallet.sendTransaction({
