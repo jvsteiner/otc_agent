@@ -540,14 +540,60 @@ export class RpcServer {
       };
     });
     
+    // Enrich deposits with resolution status
+    const enrichDepositsWithResolution = (deposits: any[] = []) => {
+      if (!deposits || deposits.length === 0) return deposits;
+
+      return deposits.map((dep: any) => {
+        // Query resolution status from database if txid is synthetic
+        if (dep.txid && dep.txid.startsWith('erc20-balance-')) {
+          const resolutionInfo = this.db.prepare(`
+            SELECT
+              is_synthetic,
+              original_txid,
+              resolution_status,
+              resolved_at,
+              resolution_metadata
+            FROM escrow_deposits
+            WHERE dealId = ? AND (txid = ? OR original_txid = ?)
+            LIMIT 1
+          `).get(params.dealId, dep.txid, dep.txid) as any;
+
+          if (resolutionInfo) {
+            return {
+              ...dep,
+              isSynthetic: resolutionInfo.is_synthetic === 1,
+              originalTxid: resolutionInfo.original_txid,
+              resolutionStatus: resolutionInfo.resolution_status,
+              resolvedAt: resolutionInfo.resolved_at,
+              resolutionMetadata: resolutionInfo.resolution_metadata ?
+                JSON.parse(resolutionInfo.resolution_metadata) : undefined
+            };
+          }
+        }
+        return dep;
+      });
+    };
+
+    // Enrich collection deposits
+    const enrichedSideA = deal.sideAState ? {
+      ...deal.sideAState,
+      deposits: enrichDepositsWithResolution(deal.sideAState.deposits)
+    } : {};
+
+    const enrichedSideB = deal.sideBState ? {
+      ...deal.sideBState,
+      deposits: enrichDepositsWithResolution(deal.sideBState.deposits)
+    } : {};
+
     return {
       stage: deal.stage,
       timeoutSeconds: deal.timeoutSeconds,
       expiresAt: deal.expiresAt,
       instructions,
       collection: {
-        sideA: deal.sideAState || {},
-        sideB: deal.sideBState || {},
+        sideA: enrichedSideA,
+        sideB: enrichedSideB,
       },
       events: deal.events,
       aliceDetails: deal.aliceDetails,
@@ -1932,7 +1978,48 @@ export class RpcServer {
           margin-top: 2px;
         }
         .tag-return { background: #ede9fe; color: #6b21a8; }
-        
+
+        /* Synthetic txid badges */
+        .synthetic-badge {
+          display: inline-block;
+          padding: 2px 6px;
+          border-radius: 8px;
+          font-size: 8px;
+          font-weight: 600;
+          text-transform: uppercase;
+          margin-left: 6px;
+          vertical-align: middle;
+        }
+
+        .synthetic-badge.resolved {
+          background: #d1fae5;
+          color: #065f46;
+        }
+
+        .synthetic-badge.pending {
+          background: #fef3c7;
+          color: #92400e;
+        }
+
+        .synthetic-badge.failed {
+          background: #fee2e2;
+          color: #991b1b;
+        }
+
+        .synthetic-badge .spinner {
+          display: inline-block;
+          width: 8px;
+          height: 8px;
+          border: 2px solid #92400e;
+          border-top-color: transparent;
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+
         .tx-escrow {
           font-size: 11px;
           color: #9ca3af;
@@ -4478,7 +4565,11 @@ export class RpcServer {
                 escrow: 'Your escrow',
                 time: dep.blockTime || dep.createdAt || new Date().toISOString(),
                 blockNumber: dep.blockHeight,
-                confirmStatus: liveConfirms >= minConfRequired ? 'confirmed' : 'pending'
+                confirmStatus: liveConfirms >= minConfRequired ? 'confirmed' : 'pending',
+                // Include resolution status for synthetic deposits
+                resolutionStatus: dep.resolutionStatus,
+                originalTxid: dep.originalTxid,
+                isSynthetic: dep.isSynthetic
               });
             }
           }
@@ -4528,7 +4619,11 @@ export class RpcServer {
                 escrow: 'Their escrow',
                 time: dep.blockTime || dep.createdAt || new Date().toISOString(),
                 blockNumber: dep.blockHeight,
-                confirmStatus: liveConfirms >= minConfRequired ? 'confirmed' : 'pending'
+                confirmStatus: liveConfirms >= minConfRequired ? 'confirmed' : 'pending',
+                // Include resolution status for synthetic deposits
+                resolutionStatus: dep.resolutionStatus,
+                originalTxid: dep.originalTxid,
+                isSynthetic: dep.isSynthetic
               });
             }
           }
@@ -4889,10 +4984,37 @@ export class RpcServer {
                 }
               }
               
-              // Explorer links - always use real txids
-              const txLink = tx.txid ? 
-                '<a href="' + getExplorerUrl(chainId, 'tx', tx.txid) + '" target="_blank" class="tx-hash-link">' + formatAddress(tx.txid) + '</a>' :
-                '<span class="tx-hash">Pending...</span>';
+              // Explorer links - handle synthetic txids with resolution status
+              let txLink;
+              if (tx.txid) {
+                // Check if txid is synthetic
+                if (tx.txid.startsWith('erc20-balance-')) {
+                  // Check resolution status from deposit data
+                  const resolutionStatus = tx.resolutionStatus || 'pending';
+                  if (resolutionStatus === 'resolved' && tx.originalTxid) {
+                    // Show resolved txid with link
+                    txLink = '<a href="' + getExplorerUrl(chainId, 'tx', tx.txid) + '" target="_blank" class="tx-hash-link">' + formatAddress(tx.txid) + '</a>' +
+                      '<span class="synthetic-badge resolved" title="Originally synthetic deposit, now resolved">✓ Resolved</span>';
+                  } else if (resolutionStatus === 'pending') {
+                    // Show resolving indicator
+                    txLink = '<span class="tx-hash">' + formatAddress(tx.txid) + '</span>' +
+                      '<span class="synthetic-badge pending" title="Resolving transaction ID..."><span class="spinner"></span> Resolving...</span>';
+                  } else if (resolutionStatus === 'failed') {
+                    // Show failed resolution
+                    txLink = '<span class="tx-hash">' + formatAddress(tx.txid) + '</span>' +
+                      '<span class="synthetic-badge failed" title="Could not resolve to real transaction">⚠ Synthetic</span>';
+                  } else {
+                    // Default case
+                    txLink = '<span class="tx-hash">' + formatAddress(tx.txid) + '</span>' +
+                      '<span class="synthetic-badge" title="Synthetic deposit">Synthetic</span>';
+                  }
+                } else {
+                  // Normal txid with explorer link
+                  txLink = '<a href="' + getExplorerUrl(chainId, 'tx', tx.txid) + '" target="_blank" class="tx-hash-link">' + formatAddress(tx.txid) + '</a>';
+                }
+              } else {
+                txLink = '<span class="tx-hash">Pending...</span>';
+              }
               
               const fromLink = fromAddr && fromAddr !== 'External' ? 
                 '<a href="' + getExplorerUrl(chainId, 'address', fromAddr) + '" target="_blank" class="tx-hash-link">' + formatAddress(fromAddr) + '</a>' :

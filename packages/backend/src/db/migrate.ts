@@ -78,18 +78,97 @@ export function runMigrations(db: DB): void {
           try {
             // First try to add the payoutId column
             const checkColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('queue_items') WHERE name = 'payoutId'").get() as { count: number };
-            
+
             if (checkColumn.count === 0) {
               console.log('Adding payoutId column to queue_items...');
               db.exec('ALTER TABLE queue_items ADD COLUMN payoutId TEXT REFERENCES payouts(payoutId)');
             } else {
               console.log('payoutId column already exists, skipping...');
             }
-            
+
             // Run the rest of the migration (tables and indexes)
             db.exec(migration);
           } catch (err: any) {
             if (!err.message.includes('duplicate column name')) {
+              throw err;
+            }
+            console.log('Migration already applied, continuing...');
+          }
+        }
+        // Special handling for the txid resolution migration
+        else if (file === '007_add_txid_resolution.sql') {
+          try {
+            // Check which columns already exist
+            const columns = ['is_synthetic', 'original_txid', 'resolution_status', 'resolution_attempts', 'resolved_at', 'resolution_metadata'];
+            const existingColumns = new Set<string>();
+
+            for (const col of columns) {
+              const checkColumn = db.prepare("SELECT COUNT(*) as count FROM pragma_table_info('escrow_deposits') WHERE name = ?").get(col) as { count: number };
+              if (checkColumn.count > 0) {
+                existingColumns.add(col);
+              }
+            }
+
+            // Add only missing columns
+            if (existingColumns.size < columns.length) {
+              console.log('Adding resolution columns to escrow_deposits...');
+              if (!existingColumns.has('is_synthetic')) {
+                db.exec('ALTER TABLE escrow_deposits ADD COLUMN is_synthetic INTEGER DEFAULT 0');
+              }
+              if (!existingColumns.has('original_txid')) {
+                db.exec('ALTER TABLE escrow_deposits ADD COLUMN original_txid TEXT');
+              }
+              if (!existingColumns.has('resolution_status')) {
+                db.exec('ALTER TABLE escrow_deposits ADD COLUMN resolution_status TEXT DEFAULT \'none\'');
+              }
+              if (!existingColumns.has('resolution_attempts')) {
+                db.exec('ALTER TABLE escrow_deposits ADD COLUMN resolution_attempts INTEGER DEFAULT 0');
+              }
+              if (!existingColumns.has('resolved_at')) {
+                db.exec('ALTER TABLE escrow_deposits ADD COLUMN resolved_at TEXT');
+              }
+              if (!existingColumns.has('resolution_metadata')) {
+                db.exec('ALTER TABLE escrow_deposits ADD COLUMN resolution_metadata TEXT');
+              }
+            } else {
+              console.log('Resolution columns already exist, skipping column additions...');
+            }
+
+            // Create txid_resolutions table (with IF NOT EXISTS)
+            db.exec(`
+              CREATE TABLE IF NOT EXISTS txid_resolutions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dealId TEXT NOT NULL,
+                chainId TEXT NOT NULL,
+                address TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                synthetic_txid TEXT NOT NULL,
+                resolved_txid TEXT,
+                amount TEXT NOT NULL,
+                blockHeight INTEGER,
+                search_from_block INTEGER,
+                search_to_block INTEGER,
+                matched_events_count INTEGER,
+                confidence_score REAL,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                attempted_at TEXT NOT NULL,
+                resolved_at TEXT,
+                metadata_json TEXT,
+                FOREIGN KEY (dealId) REFERENCES deals(dealId)
+              );
+            `);
+
+            // Create indexes
+            db.exec('CREATE INDEX IF NOT EXISTS idx_escrow_deposits_synthetic ON escrow_deposits(is_synthetic, resolution_status)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_escrow_deposits_resolution_status ON escrow_deposits(resolution_status)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_txid_resolutions_deal ON txid_resolutions(dealId)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_txid_resolutions_status ON txid_resolutions(status)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_txid_resolutions_synthetic_txid ON txid_resolutions(synthetic_txid)');
+
+            console.log('Txid resolution migration completed successfully');
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
               throw err;
             }
             console.log('Migration already applied, continuing...');

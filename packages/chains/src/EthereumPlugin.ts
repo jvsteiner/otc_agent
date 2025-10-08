@@ -742,4 +742,128 @@ export class EthereumPlugin implements ChainPlugin {
   getOperatorAddress(): string {
     return this.config?.operator?.address || '0x0000000000000000000000000000000000000000';
   }
+
+  /**
+   * Resolve Transfer events for a specific asset and recipient address.
+   * Used by TxidResolver to find real transaction hashes for synthetic deposits.
+   *
+   * @param asset - Asset code (e.g., "USDT@ETH" or token address)
+   * @param recipientAddress - Address that received the transfer
+   * @param fromBlock - Starting block number
+   * @param toBlock - Ending block number
+   * @returns Array of transfer events with transaction hashes
+   */
+  async resolveTransferEvents(
+    asset: AssetCode,
+    recipientAddress: string,
+    fromBlock: number,
+    toBlock: number
+  ): Promise<Array<{
+    txHash: string;
+    blockNumber: number;
+    blockTimestamp?: number;
+    from: string;
+    to: string;
+    value: string;
+    logIndex: number;
+  }>> {
+    console.log(`[${this.chainId}] Resolving transfer events for ${asset} to ${recipientAddress} from block ${fromBlock} to ${toBlock}`);
+
+    try {
+      // Handle native asset
+      if (asset === this.chainId || asset === `${this.chainId}@${this.chainId}`) {
+        console.log(`[${this.chainId}] Native asset transfers not supported for resolution yet`);
+        return [];
+      }
+
+      // Extract token address
+      let tokenAddress: string;
+
+      if (asset.startsWith('0x')) {
+        // Direct token address
+        tokenAddress = asset.split('@')[0];
+      } else {
+        // Named token (e.g., "USDT@ETH")
+        const baseAsset = asset.split('@')[0];
+        const knownTokens: Record<string, string> = {
+          'USDT': this.chainId === 'ETH'
+            ? '0xdac17f958d2ee523a2206206994597c13d831ec7'
+            : '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
+          'USDC': this.chainId === 'ETH'
+            ? '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+            : '0x2791bca1f2de4661ed88a30c99a7a9449aa84174',
+          'DAI': this.chainId === 'ETH'
+            ? '0x6b175474e89094c44da98b954eedeac495271d0f'
+            : '0x8f3cf7ad23cd3cadbd9735aff958023239c6a063'
+        };
+
+        tokenAddress = knownTokens[baseAsset];
+        if (!tokenAddress) {
+          throw new Error(`Unknown token: ${baseAsset}`);
+        }
+      }
+
+      console.log(`[${this.chainId}] Querying ERC-20 Transfer events for token ${tokenAddress}`);
+
+      // Create contract instance
+      const contract = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
+
+      // Get decimals for amount formatting
+      const decimals = await contract.decimals();
+
+      // Query Transfer events to the recipient address
+      // Transfer event: Transfer(address indexed from, address indexed to, uint256 value)
+      const filter = contract.filters.Transfer(null, recipientAddress);
+
+      console.log(`[${this.chainId}] Querying filter from block ${fromBlock} to ${toBlock}`);
+
+      const events = await contract.queryFilter(filter, fromBlock, toBlock);
+
+      console.log(`[${this.chainId}] Found ${events.length} Transfer events`);
+
+      // Process events and fetch block timestamps
+      const results = await Promise.all(
+        events.map(async (event) => {
+          try {
+            const block = await this.provider.getBlock(event.blockNumber);
+
+            // Type guard to check if event is EventLog (has args)
+            const eventLog = event as ethers.EventLog;
+            if (!eventLog.args) {
+              throw new Error('Event does not have args');
+            }
+
+            return {
+              txHash: event.transactionHash,
+              blockNumber: event.blockNumber,
+              blockTimestamp: block?.timestamp,
+              from: eventLog.args[0] as string,
+              to: eventLog.args[1] as string,
+              value: ethers.formatUnits(eventLog.args[2] as bigint, decimals),
+              logIndex: event.index
+            };
+          } catch (error) {
+            console.error(`[${this.chainId}] Error processing event:`, error);
+            // Return partial data if block fetch fails
+            const eventLog = event as ethers.EventLog;
+            return {
+              txHash: event.transactionHash,
+              blockNumber: event.blockNumber,
+              from: eventLog.args?.[0] as string || '',
+              to: eventLog.args?.[1] as string || '',
+              value: eventLog.args?.[2] ? ethers.formatUnits(eventLog.args[2] as bigint, decimals) : '0',
+              logIndex: event.index
+            };
+          }
+        })
+      );
+
+      console.log(`[${this.chainId}] Resolved ${results.length} transfer events`);
+
+      return results;
+    } catch (error) {
+      console.error(`[${this.chainId}] Error querying transfer events:`, error);
+      throw error;
+    }
+  }
 }

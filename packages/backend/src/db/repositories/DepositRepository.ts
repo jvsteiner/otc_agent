@@ -19,20 +19,23 @@ export class DepositRepository {
    * @param deposit - Deposit details
    * @param chainId - Chain where deposit occurred
    * @param address - Escrow address that received the deposit
+   * @param isSynthetic - Whether this is a synthetic deposit (optional)
    */
-  upsert(dealId: string, deposit: EscrowDeposit, chainId: ChainId, address: string): void {
+  upsert(dealId: string, deposit: EscrowDeposit, chainId: ChainId, address: string, isSynthetic: boolean = false): void {
     const stmt = this.db.prepare(`
       INSERT INTO escrow_deposits (
-        dealId, chainId, address, asset, txid, idx, 
-        amount, blockHeight, blockTime, confirms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        dealId, chainId, address, asset, txid, idx,
+        amount, blockHeight, blockTime, confirms, is_synthetic, resolution_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(dealId, txid, idx) DO UPDATE SET
         amount = excluded.amount,
         blockHeight = excluded.blockHeight,
         blockTime = excluded.blockTime,
-        confirms = excluded.confirms
+        confirms = excluded.confirms,
+        is_synthetic = excluded.is_synthetic,
+        resolution_status = excluded.resolution_status
     `);
-    
+
     stmt.run(
       dealId,
       chainId,
@@ -43,7 +46,9 @@ export class DepositRepository {
       deposit.amount,
       deposit.blockHeight || null,
       deposit.blockTime || null,
-      deposit.confirms
+      deposit.confirms,
+      isSynthetic ? 1 : 0,
+      isSynthetic ? 'pending' : 'none'
     );
   }
 

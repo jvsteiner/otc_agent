@@ -10,6 +10,7 @@ import { DB } from '../db/database';
 import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import { TankManager, TankConfig } from './TankManager';
+import { ResolutionWorker } from '../workers/ResolutionWorker';
 import * as crypto from 'crypto';
 
 /**
@@ -46,6 +47,7 @@ export class Engine {
   private payoutRepo: PayoutRepository;
   private engineId: string;
   private tankManager?: TankManager;
+  private resolutionWorker?: ResolutionWorker;
   private isProcessingQueues = false;  // Prevent concurrent queue processing
   private queueProcessingInterval?: NodeJS.Timeout;
 
@@ -58,6 +60,7 @@ export class Engine {
     this.queueRepo = new QueueRepository(db);
     this.payoutRepo = new PayoutRepository(db);
     this.engineId = crypto.randomBytes(8).toString('hex');
+    this.resolutionWorker = new ResolutionWorker(db, pluginManager);
   }
   
   private async initializeTankManager() {
@@ -130,6 +133,12 @@ export class Engine {
 
     // Start independent queue processor (runs every 5 seconds)
     this.startQueueProcessor(5000);
+
+    // Start resolution worker for synthetic transaction ID resolution
+    if (this.resolutionWorker) {
+      console.log('[Engine] Starting ResolutionWorker for synthetic txid resolution');
+      this.resolutionWorker.start();
+    }
   }
 
   /**
@@ -145,6 +154,10 @@ export class Engine {
     if (this.queueProcessingInterval) {
       clearInterval(this.queueProcessingInterval);
       this.queueProcessingInterval = undefined;
+    }
+    if (this.resolutionWorker) {
+      console.log('[Engine] Stopping ResolutionWorker');
+      this.resolutionWorker.stop();
     }
     console.log(`Engine ${this.engineId} stopped`);
   }
@@ -465,7 +478,9 @@ export class Engine {
       
       // Store deposits in DB
       for (const deposit of tradeDeposits.deposits) {
-        this.depositRepo.upsert(deal.id, deposit, deal.alice.chainId, deal.escrowA.address);
+        // Check if deposit is synthetic (starts with 'erc20-balance-')
+        const isSynthetic = deposit.txid.startsWith('erc20-balance-');
+        this.depositRepo.upsert(deal.id, deposit, deal.alice.chainId, deal.escrowA.address, isSynthetic);
       }
       
       // Get commission deposits if different currency
@@ -480,7 +495,8 @@ export class Engine {
         );
         
         for (const deposit of commissionDeposits.deposits) {
-          this.depositRepo.upsert(deal.id, deposit, deal.alice.chainId, deal.escrowA.address);
+          const isSynthetic = deposit.txid.startsWith('erc20-balance-');
+          this.depositRepo.upsert(deal.id, deposit, deal.alice.chainId, deal.escrowA.address, isSynthetic);
         }
         
         // Combine trade and commission deposits (different assets)
@@ -579,7 +595,8 @@ export class Engine {
       );
       
       for (const deposit of tradeDeposits.deposits) {
-        this.depositRepo.upsert(deal.id, deposit, deal.bob.chainId, deal.escrowB.address);
+        const isSynthetic = deposit.txid.startsWith('erc20-balance-');
+        this.depositRepo.upsert(deal.id, deposit, deal.bob.chainId, deal.escrowB.address, isSynthetic);
       }
       
       let allDepositsB = tradeDeposits.deposits;
@@ -599,7 +616,8 @@ export class Engine {
         );
         
         for (const deposit of commissionDeposits.deposits) {
-          this.depositRepo.upsert(deal.id, deposit, deal.bob.chainId, deal.escrowB.address);
+          const isSynthetic = deposit.txid.startsWith('erc20-balance-');
+          this.depositRepo.upsert(deal.id, deposit, deal.bob.chainId, deal.escrowB.address, isSynthetic);
         }
         
         // Combine trade and commission deposits (different assets)
