@@ -1,3 +1,9 @@
+/**
+ * @fileoverview JSON-RPC 2.0 API server for the OTC Broker Engine.
+ * Provides endpoints for deal creation, party management, status queries,
+ * and administrative functions. Also serves web interface pages.
+ */
+
 import express from 'express';
 import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, getAssetRegistry, formatAssetCode, parseAssetCode, generateDealName, validateDealName } from '@otc-broker/core';
 import { DealRepository, QueueRepository, PayoutRepository } from '../db/repositories';
@@ -39,6 +45,10 @@ interface SendInviteParams {
   link: string;
 }
 
+/**
+ * JSON-RPC server that exposes OTC broker functionality via HTTP.
+ * Handles deal creation, party management, status queries, and serves web pages.
+ */
 export class RpcServer {
   private app: express.Application;
   private dealRepo: DealRepository;
@@ -59,6 +69,18 @@ export class RpcServer {
     this.setupRoutes();
   }
 
+  /**
+   * Sets up all HTTP routes for the server.
+   *
+   * Routes include:
+   * - POST /rpc - Main JSON-RPC 2.0 endpoint for API calls
+   * - GET / - Deal creation page (public)
+   * - GET /d/:dealId/a/:token - Party A (Alice) personal page
+   * - GET /d/:dealId/b/:token - Party B (Bob) personal page
+   *
+   * The web pages are served as server-rendered HTML with embedded JavaScript
+   * that communicates back to the /rpc endpoint for all data operations.
+   */
   private setupRoutes() {
     // JSON-RPC endpoint
     this.app.post('/rpc', async (req, res) => {
@@ -706,6 +728,22 @@ export class RpcServer {
     }
   }
 
+  /**
+   * Renders the main deal creation page.
+   * This page allows users to create new OTC swap deals by selecting:
+   * - Source and destination chains
+   * - Assets to swap on each chain
+   * - Amounts for each asset
+   * - Deal timeout period
+   *
+   * The page includes client-side JavaScript for:
+   * - Dynamic asset dropdown population based on chain selection
+   * - Form validation
+   * - Deal creation via RPC call
+   * - Modal display of generated party links
+   *
+   * @returns {string} Complete HTML page with embedded CSS and JavaScript
+   */
   private renderCreateDealPage(): string {
     const registry = getAssetRegistry();
     const chains = registry.supportedChains;
@@ -1314,6 +1352,27 @@ export class RpcServer {
     `;
   }
 
+  /**
+   * Renders the personal page for a deal party (Alice or Bob).
+   * This secure page is accessed via a unique token and provides:
+   * - Deal summary and current status
+   * - Wallet address collection form (payback and recipient)
+   * - Real-time escrow balance monitoring
+   * - Transaction history log
+   * - Countdown timer for deal expiration
+   * - Deal cancellation option (if no assets locked)
+   *
+   * The page includes sophisticated client-side features:
+   * - Polling for real-time status updates (30-second intervals)
+   * - Direct blockchain balance queries via ethers.js
+   * - Progressive status indicators with visual feedback
+   * - Responsive design for mobile devices
+   *
+   * @param {string} dealId - Unique identifier for the deal
+   * @param {string} token - Security token for party authentication
+   * @param {'ALICE' | 'BOB'} party - Which party's page to render
+   * @returns {string} Complete HTML page with embedded monitoring scripts
+   */
   private renderPartyPage(dealId: string, token: string, party: 'ALICE' | 'BOB'): string {
   const partyLabel = party === 'ALICE' ? 'Asset A Seller' : 'Asset B Seller';
   const partyIcon = party === 'ALICE' ? '🅰️' : '🅱️';
@@ -2629,6 +2688,41 @@ export class RpcServer {
           });
         }
         
+        // Get direct balance from blockchain
+        async function getDirectBalance(chainId, address, asset) {
+          try {
+            if (chainId === 'POLYGON' || chainId === 'ETH' || chainId === 'BASE') {
+              const provider = blockchainProviders[chainId];
+              if (!provider) return '0';
+              
+              // Check if it's native asset or ERC20
+              const nativeAsset = chainId === 'POLYGON' ? 'MATIC' : 'ETH';
+              
+              if (asset === nativeAsset || asset === \`\${nativeAsset}@\${chainId}\`) {
+                // Get native balance
+                const balance = await provider.getBalance(address);
+                return ethers.formatEther(balance);
+              } else if (asset.startsWith('ERC20:')) {
+                // Get ERC20 token balance
+                const tokenAddress = asset.split(':')[1].split('@')[0];
+                const abi = ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)'];
+                const contract = new ethers.Contract(tokenAddress, abi, provider);
+                
+                const [balance, decimals] = await Promise.all([
+                  contract.balanceOf(address),
+                  contract.decimals()
+                ]);
+                
+                return ethers.formatUnits(balance, decimals);
+              }
+            }
+            return '0';
+          } catch (error) {
+            console.error('Error getting direct balance:', error);
+            return '0';
+          }
+        }
+        
         // Get balance and UTXOs for a Unicity address
         async function getUnicityBalance(address) {
           const scriptHash = await addressToScriptHash(address);
@@ -3129,9 +3223,12 @@ export class RpcServer {
                 
                 // Check for API errors
                 if (data.message && data.message.includes('deprecated V1 endpoint')) {
-                  console.warn('Etherscan API V1 deprecated. Falling back to blockchain query.');
-                  // Fall back to direct blockchain query
-                  throw new Error('API V1 deprecated');
+                  console.warn('Etherscan API V1 deprecated. Falling back to limited transaction history.');
+                  // Skip transaction history when API is deprecated
+                  return { 
+                    transactions: [],
+                    note: 'API deprecated - transaction history unavailable'
+                  };
                 }
                 
                 if (data.status === '1' && Array.isArray(data.result)) {
@@ -3889,9 +3986,16 @@ export class RpcServer {
           const percentageEl = document.getElementById(type + 'Percentage');
           const statusEl = document.getElementById(type + 'Status');
           const assetEl = document.getElementById(type + 'Asset');
-          
+
+          // Add null checks for all elements
+          if (!balanceEl || !progressEl || !percentageEl || !statusEl) {
+            console.error('Balance display elements not found for type:', type);
+            return;
+          }
+
           const isClosedDeal = dealData && (dealData.stage === 'CLOSED' || dealData.stage === 'REVERTED');
-          
+          const isWaitingStage = dealData && dealData.stage === 'WAITING';
+
           // Use expected amount from deal if instructions are empty
           let required, assetCode, escrowAddress, chainId;
           if (!instructions || instructions.length === 0) {
@@ -3904,14 +4008,14 @@ export class RpcServer {
             }
             // Use expected amounts from deal
             required = parseFloat(expectedDeal.amount);
-            assetCode = expectedDeal.asset.includes('@') ? 
-              expectedDeal.asset : 
+            assetCode = expectedDeal.asset.includes('@') ?
+              expectedDeal.asset :
               expectedDeal.asset + '@' + expectedDeal.chainId;
             chainId = expectedDeal.chainId;
-            
+
             // Update the asset display name when using expected deal
             if (assetEl) {
-              const cleanAsset = expectedDeal.asset.includes('@') ? 
+              const cleanAsset = expectedDeal.asset.includes('@') ?
                 expectedDeal.asset.split('@')[0] : expectedDeal.asset;
               assetEl.textContent = cleanAsset;
             }
@@ -3921,80 +4025,92 @@ export class RpcServer {
             let tradeInstruction = instructions[0];
             if (expectedDeal) {
               // Look for instruction that matches the expected trade asset
-              const expectedAssetCode = expectedDeal.asset.includes('@') ? 
-                expectedDeal.asset : 
+              const expectedAssetCode = expectedDeal.asset.includes('@') ?
+                expectedDeal.asset :
                 expectedDeal.asset + '@' + expectedDeal.chainId;
-              
-              const matchingInstruction = instructions.find(inst => 
-                inst.assetCode === expectedAssetCode || 
+
+              const matchingInstruction = instructions.find(inst =>
+                inst.assetCode === expectedAssetCode ||
                 inst.assetCode === expectedDeal.asset
               );
-              
+
               if (matchingInstruction) {
                 tradeInstruction = matchingInstruction;
               }
             }
-            
+
             required = parseFloat(tradeInstruction.amount);
             assetCode = tradeInstruction.assetCode;
             escrowAddress = tradeInstruction.to;
-            
+
             // Determine chainId from asset code
             if (type === 'your') {
               chainId = party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId;
             } else {
               chainId = party === 'ALICE' ? dealData.bob.chainId : dealData.alice.chainId;
             }
-            
+
             // Update the asset display name when we have instructions
             if (assetEl) {
-              const cleanAsset = assetCode.includes('@') ? 
+              const cleanAsset = assetCode.includes('@') ?
                 assetCode.split('@')[0] : assetCode;
               assetEl.textContent = cleanAsset;
             }
           }
-          
+
+          // ALWAYS fetch live balance from blockchain when escrow address is available
           let collected = parseFloat(collection?.collectedByAsset?.[assetCode] || '0');
-          
-          // Try to get real-time balance from blockchain
+          let liveBalance = null;
+
           if (escrowAddress && chainId) {
             try {
-              let liveBalance = null;
-              
               if (chainId === 'UNICITY') {
-                // Use Fulcrum for Unicity
+                // Use Fulcrum for Unicity - always query blockchain
                 if (electrumConnected) {
                   const balanceInfo = await getUnicityBalance(escrowAddress);
                   // Only use live balance if we actually got a valid response
                   if (balanceInfo && typeof balanceInfo.total === 'number') {
                     liveBalance = balanceInfo.total;
+                    collected = liveBalance; // Always use blockchain data
+
+                    // Add live indicator
+                    const liveIndicator = document.createElement('span');
+                    liveIndicator.style.cssText = 'color: #10b981; font-size: 8px; margin-left: 4px;';
+                    liveIndicator.innerHTML = '🟢';
+                    liveIndicator.title = 'Live blockchain data';
+                    liveIndicator.id = type + 'LiveIndicator';
+
+                    const existing = document.getElementById(type + 'LiveIndicator');
+                    if (existing) existing.remove();
+
+                    balanceEl.appendChild(liveIndicator);
                   }
-                  
+
                   // Show confirmation status if there are unconfirmed funds
                   if (balanceInfo && balanceInfo.unconfirmed > 0) {
                     const unconfirmedIndicator = document.createElement('span');
                     unconfirmedIndicator.style.cssText = 'color: #f59e0b; font-size: 10px; margin-left: 8px;';
                     unconfirmedIndicator.innerHTML = '(' + balanceInfo.unconfirmed.toFixed(4) + ' unconfirmed)';
                     unconfirmedIndicator.id = type + 'UnconfirmedIndicator';
-                    
+
                     const existing = document.getElementById(type + 'UnconfirmedIndicator');
                     if (existing) existing.remove();
-                    
+
                     balanceEl.appendChild(unconfirmedIndicator);
                   }
-                  
+
                   // Update confirmation count if we have UTXOs
                   if (balanceInfo && balanceInfo.utxos && balanceInfo.utxos.length > 0) {
                     const blockHeight = await getUnicityBlockHeight();
                     let minConfirmations = Infinity;
-                    
+
                     for (const utxo of balanceInfo.utxos) {
                       const confirmations = utxo.height === 0 ? 0 : (blockHeight - utxo.height + 1);
                       if (confirmations < minConfirmations) {
                         minConfirmations = confirmations;
                       }
                     }
-                    
+
                     // Show confirmation progress
                     const requiredConfirms = 6; // Default to 6 for Unicity
                     if (minConfirmations < requiredConfirms) {
@@ -4002,41 +4118,37 @@ export class RpcServer {
                       confirmIndicator.style.cssText = 'color: #667eea; font-size: 10px; margin-left: 8px;';
                       confirmIndicator.innerHTML = '(' + minConfirmations + '/' + requiredConfirms + ' confirmations)';
                       confirmIndicator.id = type + 'ConfirmIndicator';
-                      
+
                       const existing = document.getElementById(type + 'ConfirmIndicator');
                       if (existing) existing.remove();
-                      
+
                       balanceEl.appendChild(confirmIndicator);
                     }
                   }
                 }
               } else if (blockchainProviders[chainId]) {
-                // Use ethers for EVM chains
+                // Use ethers for EVM chains - always query blockchain
                 const queryResult = await queryBlockchainBalance(chainId, escrowAddress, assetCode);
                 if (queryResult !== null) {
                   liveBalance = parseFloat(queryResult);
+                  collected = liveBalance; // Always use blockchain data
+
+                  // Add live indicator
+                  const liveIndicator = document.createElement('span');
+                  liveIndicator.style.cssText = 'color: #10b981; font-size: 8px; margin-left: 4px;';
+                  liveIndicator.innerHTML = '🟢';
+                  liveIndicator.title = 'Live blockchain data';
+                  liveIndicator.id = type + 'LiveIndicator';
+
+                  const existing = document.getElementById(type + 'LiveIndicator');
+                  if (existing) existing.remove();
+
+                  balanceEl.appendChild(liveIndicator);
                 }
               }
-              
-              // Use live balance if available and valid
-              // Don't override with 0 if we already have collected data from backend
-              if (liveBalance !== null && (liveBalance > 0 || collected === 0)) {
-                collected = liveBalance;
-                
-                // Add live indicator
-                const liveIndicator = document.createElement('span');
-                liveIndicator.style.cssText = 'color: #10b981; font-size: 8px; margin-left: 4px;';
-                liveIndicator.innerHTML = '🟢';
-                liveIndicator.title = 'Live blockchain data';
-                liveIndicator.id = type + 'LiveIndicator';
-                
-                const existing = document.getElementById(type + 'LiveIndicator');
-                if (existing) existing.remove();
-                
-                balanceEl.appendChild(liveIndicator);
-              }
             } catch (err) {
-              console.error('Failed to get live balance:', err);
+              console.error('Failed to get live balance from blockchain:', err);
+              // Fall back to backend collected data on error
             }
           }
           
@@ -4059,18 +4171,10 @@ export class RpcServer {
                 // Update balance text
                 if (isClosedDeal) {
                   const newBalanceText = collected.toFixed(4) + ' ' + symbol;
-                  if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
-                    balanceEl.firstChild.textContent = newBalanceText;
-                  } else {
-                    balanceEl.textContent = newBalanceText;
-                  }
+                  balanceEl.textContent = newBalanceText;
                 } else {
                   const newBalanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + symbol;
-                  if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
-                    balanceEl.firstChild.textContent = newBalanceText;
-                  } else {
-                    balanceEl.textContent = newBalanceText;
-                  }
+                  balanceEl.textContent = newBalanceText;
                 }
                 
                 // Update asset element if exists
@@ -4081,7 +4185,9 @@ export class RpcServer {
             });
           }
           
-          // Display logic for closed deals
+          // Display logic based on deal stage
+          const shouldShowProgressBar = dealData && (dealData.stage === 'CREATED' || dealData.stage === 'COLLECTION');
+
           if (isClosedDeal) {
             // Show only current balance for closed deals
             const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
@@ -4091,36 +4197,69 @@ export class RpcServer {
               balanceEl.textContent = balanceText;
             }
             balanceEl.style.color = collected > 0 ? '#f59e0b' : '#888';
-            
-            // Hide progress bar
+
+            // Hide progress bar for closed deals
             if (progressEl) progressEl.style.display = 'none';
             if (percentageEl) percentageEl.style.display = 'none';
-            
+
             // Update status
             if (statusEl) {
               statusEl.textContent = collected > 0 ? '⚠️ Balance will be auto-returned' : '✅ No remaining balance';
               statusEl.style.color = collected > 0 ? '#f59e0b' : '#10b981';
             }
-          } else {
-            // Normal display for active deals
-            const percentage = Math.min(100, (collected / required) * 100);
-            
-            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + displayAssetName;
-            if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
-              balanceEl.firstChild.textContent = balanceText;
-            } else {
-              balanceEl.textContent = balanceText;
+          } else if (isWaitingStage) {
+            // WAITING stage - show balance without progress bar
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
+            balanceEl.textContent = balanceText;
+            balanceEl.style.color = '#333';
+
+            // Hide progress bar during WAITING stage
+            if (progressEl) progressEl.style.display = 'none';
+            if (percentageEl) percentageEl.style.display = 'none';
+
+            // Update status
+            if (statusEl) {
+              statusEl.textContent = '⏳ Processing swap...';
+              statusEl.style.color = '#667eea';
             }
-            
-            progressEl.style.width = percentage + '%';
-            percentageEl.textContent = Math.round(percentage) + '%';
-            
+          } else if (shouldShowProgressBar) {
+            // CREATED or COLLECTION stage - show progress bar
+            const percentage = Math.min(100, (collected / required) * 100);
+
+            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + displayAssetName;
+            balanceEl.textContent = balanceText;
+            balanceEl.style.color = '#333';
+
+            // Show progress bar
+            if (progressEl) {
+              progressEl.style.display = 'block';
+              progressEl.style.width = percentage + '%';
+            }
+            if (percentageEl) {
+              percentageEl.style.display = 'block';
+              percentageEl.textContent = Math.round(percentage) + '%';
+            }
+
             if (percentage === 100) {
               statusEl.textContent = '✅ Fully funded';
             } else if (percentage > 0) {
               statusEl.textContent = '⏳ Partial funding (' + percentage.toFixed(1) + '%)';
             } else {
               statusEl.textContent = '⏰ Waiting for deposits...';
+            }
+          } else {
+            // Other stages - show balance only, no progress bar
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
+            balanceEl.textContent = balanceText;
+            balanceEl.style.color = '#333';
+
+            // Hide progress bar
+            if (progressEl) progressEl.style.display = 'none';
+            if (percentageEl) percentageEl.style.display = 'none';
+
+            if (statusEl) {
+              statusEl.textContent = 'Current balance';
+              statusEl.style.color = '#666';
             }
           }
         }
@@ -4947,9 +5086,16 @@ export class RpcServer {
         // Initialize on load
         window.addEventListener('DOMContentLoaded', () => {
           checkInitialStatus();
+
+          // Initialize Unicity connection early if deal involves UNICITY chain
+          if (dealInfo.sendChain === 'UNICITY' || dealInfo.receiveChain === 'UNICITY') {
+            console.log('Deal involves UNICITY, connecting to Fulcrum...');
+            ensureUnicityConnection();
+          }
+
           // Always start status updates to show current deal state
           startStatusUpdates();
-          
+
           // Eagerly fetch token symbols for any ERC20 tokens
           setTimeout(() => {
             if (dealData) {
@@ -4963,7 +5109,7 @@ export class RpcServer {
                   }
                 });
               }
-              
+
               // Check if Bob's asset is ERC20
               if (dealData.bob && dealData.bob.asset && dealData.bob.asset.startsWith('ERC20:')) {
                 const tokenAddr = dealData.bob.asset.split(':')[1];

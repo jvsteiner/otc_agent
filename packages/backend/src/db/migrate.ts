@@ -1,7 +1,17 @@
+/**
+ * @fileoverview Database migration runner for SQLite schema management.
+ * Applies schema and migration files to initialize and update database structure.
+ */
+
 import fs from 'fs';
 import path from 'path';
 import { DB } from './database';
 
+/**
+ * Runs database migrations to initialize or update the database schema.
+ * Applies the base schema and any migration files in sequence.
+ * @param db - Database connection to apply migrations to
+ */
 export function runMigrations(db: DB): void {
   console.log('Running database migrations...');
   

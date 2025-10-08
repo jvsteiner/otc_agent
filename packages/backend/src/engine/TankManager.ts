@@ -1,3 +1,9 @@
+/**
+ * @fileoverview Tank Manager for automated gas funding on EVM chains.
+ * Ensures escrow accounts have sufficient gas for transaction execution,
+ * monitors balances, and handles refunds to the tank wallet.
+ */
+
 import { ethers } from 'ethers';
 import { DB } from '../db/database';
 
@@ -22,6 +28,11 @@ export interface TankConfig {
   };
 }
 
+/**
+ * Manages gas funding for EVM chain escrow accounts.
+ * Automatically funds escrows when they need gas for transactions
+ * and monitors tank balance levels.
+ */
 export class TankManager {
   private wallets: Map<string, ethers.Wallet> = new Map();
   private providers: Map<string, ethers.Provider> = new Map();
@@ -161,6 +172,14 @@ export class TankManager {
     }
   }
 
+  /**
+   * Funds an escrow account with gas for transaction execution.
+   * @param dealId - Deal identifier for tracking
+   * @param chainId - Chain to fund on (ETH, POLYGON)
+   * @param escrowAddress - Escrow address to fund
+   * @param requiredGasWei - Minimum gas amount required in wei
+   * @returns Transaction hash or 'already-funded'
+   */
   async fundEscrowForGas(
     dealId: string,
     chainId: string,

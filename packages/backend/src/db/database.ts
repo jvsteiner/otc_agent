@@ -1,7 +1,17 @@
+/**
+ * @fileoverview Database wrapper for SQLite with WAL mode and transaction support.
+ * Provides core database operations, transaction management, and wallet index persistence.
+ */
+
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
+/**
+ * Database wrapper class that manages SQLite connection and provides
+ * transaction support, prepared statements, and specialized methods
+ * for wallet index management.
+ */
 export class DB {
   private db: Database.Database;
 
@@ -27,18 +37,36 @@ export class DB {
     return this.db;
   }
 
+  /**
+   * Executes a function within a database transaction.
+   * Automatically rolls back on error.
+   * @param fn - Function to execute within transaction
+   * @returns Result of the function
+   */
   runInTransaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
   }
 
+  /**
+   * Prepares a SQL statement for repeated execution.
+   * @param sql - SQL statement to prepare
+   * @returns Prepared statement
+   */
   prepare(sql: string): Database.Statement {
     return this.db.prepare(sql);
   }
 
+  /**
+   * Executes a SQL string directly (for DDL operations).
+   * @param sql - SQL to execute
+   */
   exec(sql: string): void {
     this.db.exec(sql);
   }
 
+  /**
+   * Closes the database connection.
+   */
   close(): void {
     this.db.close();
   }

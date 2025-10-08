@@ -1,7 +1,13 @@
+/**
+ * @fileoverview Ethereum mainnet plugin implementation.
+ * Extends base EVM functionality with Ethereum-specific features including
+ * Etherscan API integration, HD wallet management, and gas tank support for ERC-20 transfers.
+ */
+
 import { ethers } from 'ethers';
 import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit } from '@otc-broker/core';
-import { 
-  ChainPlugin, 
+import {
+  ChainPlugin,
   ChainConfig,
   EscrowDepositsView,
   QuoteNativeForUSDResult,
@@ -12,6 +18,14 @@ import ERC20_ABI from './abi/ERC20.json';
 import { EtherscanAPI } from './utils/EtherscanAPI';
 import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
 
+/**
+ * Plugin implementation for Ethereum mainnet.
+ * Provides full EVM support with additional features:
+ * - HD wallet derivation (BIP-44 compatible)
+ * - Etherscan API for transaction history
+ * - Gas tank management for ERC-20 transfers
+ * - Robust deposit detection with fallback mechanisms
+ */
 export class EthereumPlugin implements ChainPlugin {
   readonly chainId: ChainId;
   private provider!: ethers.JsonRpcProvider;

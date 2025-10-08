@@ -4,15 +4,51 @@ import { UnicityKeyManager } from '@otc-broker/chains/src/utils/UnicityKeyManage
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * Options for configuring HTML wallet generation
+ */
 interface HtmlWalletOptions {
+  /** Seed phrase for key derivation (defaults to HOT_WALLET_SEED env) */
   seed?: string;
+  /** Output file path for the HTML wallet */
   output?: string;
+  /** Number of HD addresses to generate (defaults to 10) */
   addresses?: number;
+  /** Path to custom HTML wallet template */
   templatePath?: string;
+  /** Whether to encrypt the wallet (not implemented) */
   encrypted?: boolean;
+  /** Password for encryption (not implemented) */
   password?: string;
 }
 
+/**
+ * Generates a standalone HTML wallet file with embedded private keys.
+ * The resulting HTML file can be opened directly in a browser and includes
+ * all necessary functionality for managing Unicity wallet operations.
+ *
+ * Features:
+ * - Self-contained HTML with embedded JavaScript
+ * - Auto-loads wallet data when opened
+ * - No external dependencies required
+ * - Works completely offline
+ * - Compatible with Unicity blockchain
+ *
+ * @param options - Configuration options for HTML wallet generation
+ * @returns Promise that resolves when the HTML file is created
+ *
+ * @example
+ * // Generate basic HTML wallet
+ * await exportHtmlWallet({ output: 'wallet.html' });
+ *
+ * @example
+ * // Generate wallet with 50 addresses
+ * await exportHtmlWallet({
+ *   addresses: 50,
+ *   output: 'escrow-wallet.html',
+ *   seed: 'custom-seed-phrase'
+ * });
+ */
 async function exportHtmlWallet(options: HtmlWalletOptions) {
   console.log('🌐 Generating HTML Wallet with Embedded Keys');
   console.log('=' .repeat(50));
@@ -170,6 +206,12 @@ async function exportHtmlWallet(options: HtmlWalletOptions) {
   console.log(`   - Never share or upload this file`);
 }
 
+/**
+ * Generates a minimal self-contained HTML wallet template.
+ * Used when no custom template is provided and the reference wallet is unavailable.
+ *
+ * @returns Complete HTML template string with embedded CSS and JavaScript
+ */
 function getMinimalWalletTemplate(): string {
   // Minimal self-contained wallet template
   return `<!DOCTYPE html>
@@ -344,7 +386,11 @@ function getMinimalWalletTemplate(): string {
 </html>`;
 }
 
-// Parse command line arguments
+/**
+ * Parses command line arguments into HtmlWalletOptions
+ *
+ * @returns Parsed options with defaults applied
+ */
 function parseArgs(): HtmlWalletOptions {
   const args = process.argv.slice(2);
   const options: HtmlWalletOptions = {
@@ -379,6 +425,9 @@ function parseArgs(): HtmlWalletOptions {
   return options;
 }
 
+/**
+ * Displays help information for the HTML wallet generator
+ */
 function showHelp() {
   console.log(`
 OTC Broker HTML Wallet Generator

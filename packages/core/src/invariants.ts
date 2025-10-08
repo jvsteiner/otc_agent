@@ -1,14 +1,42 @@
+/**
+ * @fileoverview Business invariants and validation rules for the OTC Broker Engine.
+ * This file enforces critical business rules including state transitions, deposit validation,
+ * lock checking, and surplus calculation. These invariants ensure system integrity and
+ * prevent invalid operations throughout the deal lifecycle.
+ */
+
 import { Deal, DealStage, EscrowDeposit } from './types';
 import { isAmountGte, sumAmounts, subtractAmounts } from './decimal';
 
+/**
+ * Result of checking whether sufficient funds are locked for a trade.
+ * Contains both the lock status and the underlying deposit analysis.
+ */
 export interface LockEligibility {
+  /** Whether the trade amount is fully locked */
   tradeLocked: boolean;
+  /** Whether the commission amount is fully locked */
   commissionLocked: boolean;
+  /** Deposits that meet confirmation and timing requirements */
   eligibleDeposits: EscrowDeposit[];
+  /** Total amount collected for the trade asset */
   tradeCollected: string;
+  /** Total amount collected for commission (if different asset) */
   commissionCollected: string;
 }
 
+/**
+ * Validates that a deal stage transition is allowed by the state machine.
+ * Enforces strict progression through the deal lifecycle.
+ *
+ * @param currentStage - The current stage of the deal
+ * @param newStage - The proposed new stage
+ * @returns true if the transition is valid, false otherwise
+ *
+ * @example
+ * validateDealTransition('CREATED', 'COLLECTION') // true
+ * validateDealTransition('CREATED', 'CLOSED') // false
+ */
 export function validateDealTransition(
   currentStage: DealStage,
   newStage: DealStage,
@@ -25,6 +53,20 @@ export function validateDealTransition(
   return validTransitions[currentStage].includes(newStage);
 }
 
+/**
+ * Filters deposits to only those eligible for lock calculation.
+ * A deposit is eligible if it has sufficient confirmations and was
+ * included in a block before the deal expiration time.
+ *
+ * @param deposits - Array of all deposits to the escrow
+ * @param minConfirms - Minimum confirmations required (chain-specific)
+ * @param expiresAt - ISO timestamp when the deal expires
+ * @returns Array of deposits that meet all eligibility criteria
+ *
+ * @example
+ * const eligible = computeEligibleDeposits(deposits, 6, '2024-01-15T20:00:00Z');
+ * // Returns only deposits with 6+ confirmations and blockTime <= expiration
+ */
 export function computeEligibleDeposits(
   deposits: EscrowDeposit[],
   minConfirms: number,
@@ -59,6 +101,26 @@ export function computeEligibleDeposits(
   });
 }
 
+/**
+ * Determines whether sufficient funds are locked for both trade and commission.
+ * This is the critical function that decides when a deal can proceed to WAITING stage.
+ * Commission must always be covered by surplus, never deducted from trade amount.
+ *
+ * @param deposits - All deposits made to the escrow
+ * @param tradeAsset - The asset being traded
+ * @param tradeAmount - Required amount for the trade
+ * @param commissionAsset - The asset for commission payment (may differ from trade)
+ * @param commissionAmount - Required commission amount
+ * @param minConfirms - Minimum confirmations required
+ * @param expiresAt - Deal expiration timestamp
+ * @returns Lock status including eligible deposits and collected amounts
+ *
+ * @example
+ * const locks = checkLocks(deposits, 'ETH', '1.5', 'ETH', '0.0045', 12, expiresAt);
+ * if (locks.tradeLocked && locks.commissionLocked) {
+ *   // Proceed to WAITING stage
+ * }
+ */
 export function checkLocks(
   deposits: EscrowDeposit[],
   tradeAsset: string,
@@ -110,6 +172,23 @@ export function checkLocks(
   };
 }
 
+/**
+ * Calculates the surplus amount that can be refunded after trade and commission.
+ * Handles both same-asset and different-asset commission scenarios.
+ *
+ * @param collectedAmount - Total amount collected in the escrow
+ * @param tradeAmount - Amount required for the trade
+ * @param commissionAmount - Amount required for commission
+ * @param isCommissionSameAsset - Whether commission is in the same asset as trade
+ * @returns The surplus amount (never negative, returns '0' if insufficient)
+ *
+ * @example
+ * // Same asset: collected=1.55 ETH, trade=1.5 ETH, commission=0.0045 ETH
+ * calculateSurplus('1.55', '1.5', '0.0045', true) // '0.0455'
+ *
+ * // Different asset: collected=1.55 ETH, trade=1.5 ETH
+ * calculateSurplus('1.55', '1.5', '0', false) // '0.05'
+ */
 export function calculateSurplus(
   collectedAmount: string,
   tradeAmount: string,
@@ -126,6 +205,20 @@ export function calculateSurplus(
   }
 }
 
+/**
+ * Performs comprehensive validation of deal invariants.
+ * Checks that all required fields are present and consistent for the current stage.
+ * Used to detect corruption or invalid state transitions.
+ *
+ * @param deal - The deal to validate
+ * @returns Array of error messages (empty if valid)
+ *
+ * @example
+ * const errors = validateDealInvariants(deal);
+ * if (errors.length > 0) {
+ *   throw new Error(`Deal invariants violated: ${errors.join(', ')}`);
+ * }
+ */
 export function validateDealInvariants(deal: Deal): string[] {
   const errors: string[] = [];
   

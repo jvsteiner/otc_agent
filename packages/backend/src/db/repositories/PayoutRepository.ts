@@ -1,3 +1,8 @@
+/**
+ * @fileoverview Repository for managing payout records for UTXO chains.
+ * Tracks multi-transaction payouts and their confirmation status.
+ */
+
 import { DB } from '../database';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -18,9 +23,19 @@ export interface Payout {
   metadata?: any;
 }
 
+/**
+ * Repository for managing payouts on UTXO chains.
+ * Tracks the relationship between payouts and queue items,
+ * and monitors confirmation status across multiple transactions.
+ */
 export class PayoutRepository {
   constructor(private db: DB) {}
 
+  /**
+   * Creates a new payout record.
+   * @param params - Payout parameters
+   * @returns Generated payout ID
+   */
   createPayout(params: Omit<Payout, 'payoutId' | 'createdAt' | 'status'>): string {
     const payoutId = uuidv4();
     const createdAt = new Date().toISOString();

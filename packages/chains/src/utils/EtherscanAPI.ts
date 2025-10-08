@@ -1,5 +1,14 @@
+/**
+ * @fileoverview Etherscan API wrapper for fetching transaction history.
+ * Provides methods to query transaction and token transfer history from Etherscan
+ * and compatible block explorers (Polygonscan, Basescan, etc).
+ */
+
 import { ethers } from 'ethers';
 
+/**
+ * Transaction data structure returned by Etherscan API.
+ */
 interface Transaction {
   hash: string;
   blockNumber: string;
@@ -13,12 +22,19 @@ interface Transaction {
   confirmations: string;
 }
 
+/**
+ * Etherscan API response structure.
+ */
 interface EtherscanResponse {
   status: string;
   message: string;
   result: Transaction[] | string;
 }
 
+/**
+ * Wrapper class for Etherscan and compatible APIs.
+ * Handles transaction history queries without requiring an API key for basic operations.
+ */
 export class EtherscanAPI {
   private apiUrl: string;
   private apiKey?: string;

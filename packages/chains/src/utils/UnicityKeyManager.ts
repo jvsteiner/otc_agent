@@ -1,9 +1,18 @@
+/**
+ * @fileoverview Unicity key management and HD wallet derivation.
+ * Provides hierarchical deterministic key generation following BIP-32 standards
+ * adapted for the Unicity blockchain.
+ */
+
 import * as crypto from 'crypto';
 import { createHash } from 'crypto';
 import * as elliptic from 'elliptic';
 
 const ec = new elliptic.ec('secp256k1');
 
+/**
+ * Unicity key information including private key, public key, and address.
+ */
 export interface UnicityKey {
   privateKey: string;  // hex format
   publicKey: string;   // hex format
@@ -13,6 +22,10 @@ export interface UnicityKey {
   path: string;
 }
 
+/**
+ * Manages HD key derivation and address generation for Unicity.
+ * Implements BIP-32 style hierarchical deterministic wallets.
+ */
 export class UnicityKeyManager {
   private masterSeed: Buffer;
   private masterPrivateKey: string;

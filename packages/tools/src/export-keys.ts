@@ -4,13 +4,39 @@ import { UnicityKeyManager } from '@otc-broker/chains/src/utils/UnicityKeyManage
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * Options for configuring key export behavior
+ */
 interface ExportOptions {
+  /** Output format for the exported keys */
   format: 'json' | 'wallet' | 'wif' | 'all';
+  /** Optional file path to write output to (defaults to console) */
   output?: string;
+  /** Seed phrase for key derivation (defaults to HOT_WALLET_SEED env) */
   seed?: string;
+  /** Number of HD addresses to generate (defaults to 10) */
   addresses?: number;
 }
 
+/**
+ * Exports Unicity wallet keys in various formats for OTC broker escrow operations.
+ * Generates HD (Hierarchical Deterministic) wallet addresses from a seed phrase.
+ *
+ * @param options - Configuration options for key export
+ * @returns Promise that resolves when export is complete
+ *
+ * @example
+ * // Export wallet format to console
+ * await exportKeys({ format: 'wallet' });
+ *
+ * @example
+ * // Export 50 addresses as JSON to file
+ * await exportKeys({
+ *   format: 'json',
+ *   addresses: 50,
+ *   output: 'keys.json'
+ * });
+ */
 async function exportKeys(options: ExportOptions) {
   console.log('🔑 Unicity Key Exporter for OTC Broker');
   console.log('=' .repeat(50));
@@ -125,7 +151,11 @@ ${walletData.addresses.map((addr, i) =>
   }
 }
 
-// Parse command line arguments
+/**
+ * Parses command line arguments into ExportOptions
+ *
+ * @returns Parsed export options with defaults applied
+ */
 function parseArgs(): ExportOptions {
   const args = process.argv.slice(2);
   const options: ExportOptions = {
@@ -161,6 +191,9 @@ function parseArgs(): ExportOptions {
   return options;
 }
 
+/**
+ * Displays help information for the key export tool
+ */
 function showHelp() {
   console.log(`
 Unicity OTC Broker Key Export Tool

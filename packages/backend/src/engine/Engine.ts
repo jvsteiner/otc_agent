@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Core processing engine for the OTC Broker system.
+ * Manages deal lifecycle, monitors deposits, executes transfers, and handles
+ * all stage transitions with critical safeguards against double-spending and reorgs.
+ * Runs on a 30-second interval with an independent 5-second queue processor.
+ */
+
 import { Deal, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
 import { DB } from '../db/database';
 import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
@@ -5,7 +12,12 @@ import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import { TankManager, TankConfig } from './TankManager';
 import * as crypto from 'crypto';
 
-// Helper function to normalize asset codes for comparison
+/**
+ * Normalizes asset codes to include chain suffix for consistent comparison.
+ * @param asset - The asset code (e.g., "USDT" or "USDT@POLYGON")
+ * @param chainId - The chain identifier
+ * @returns Fully qualified asset code with chain suffix
+ */
 function normalizeAssetCode(asset: string, chainId: string): string {
   // If asset already includes chain suffix, return as is
   if (asset.includes('@')) {
@@ -15,6 +27,16 @@ function normalizeAssetCode(asset: string, chainId: string): string {
   return `${asset}@${chainId}`;
 }
 
+/**
+ * Core processing engine that manages the entire deal lifecycle.
+ * Responsibilities include:
+ * - Stage transition management (CREATED → COLLECTION → WAITING → SWAP/CLOSED)
+ * - Deposit monitoring and confirmation tracking
+ * - Lock verification and timer management
+ * - Transfer plan building and queue processing
+ * - Reorg detection and recovery
+ * - Post-close escrow monitoring
+ */
 export class Engine {
   private running = false;
   private intervalId?: NodeJS.Timeout;
@@ -88,23 +110,32 @@ export class Engine {
     }
   }
 
+  /**
+   * Starts the engine with specified interval for main processing loop.
+   * Also starts the independent queue processor with a 5-second interval.
+   * @param intervalMs - Main processing loop interval in milliseconds (default: 30000)
+   */
   async start(intervalMs: number = 30000) {
     if (this.running) return;
-    
+
     // Initialize tank manager before starting
     await this.initializeTankManager();
-    
+
     this.running = true;
     console.log(`Engine ${this.engineId} starting with ${intervalMs}ms interval`);
-    
+
     // Run immediately, then on interval
     this.processTick();
     this.intervalId = setInterval(() => this.processTick(), intervalMs);
-    
+
     // Start independent queue processor (runs every 5 seconds)
     this.startQueueProcessor(5000);
   }
 
+  /**
+   * Stops the engine and clears all intervals.
+   * Safe to call multiple times.
+   */
   stop() {
     this.running = false;
     if (this.intervalId) {
@@ -142,6 +173,11 @@ export class Engine {
     }
   }
 
+  /**
+   * Processes a single deal through its current stage.
+   * Handles stage-specific logic and transitions.
+   * @param deal - The deal to process
+   */
   private async processDeal(deal: Deal) {
     console.log(`Processing deal ${deal.id} in stage ${deal.stage}`);
     

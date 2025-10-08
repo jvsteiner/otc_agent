@@ -1,3 +1,9 @@
+/**
+ * @fileoverview Unicity blockchain plugin implementation.
+ * Provides integration with Unicity PoW blockchain using Electrum protocol over WebSocket.
+ * Handles UTXO-based transactions with SegWit support and deterministic HD wallet derivation.
+ */
+
 import WebSocket from 'ws';
 import * as crypto from 'crypto';
 import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx } from './ChainPlugin';
@@ -6,18 +12,29 @@ import { generateDeterministicKey, deriveChildPrivateKey, privateKeyToAddress } 
 import { buildAndSignSegWitTransaction, selectUTXOs, UTXO } from './utils/UnicityTransaction';
 import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
 
+/**
+ * Electrum protocol request structure.
+ */
 interface ElectrumRequest {
   id: number;
   method: string;
   params: any[];
 }
 
+/**
+ * Electrum protocol response structure.
+ */
 interface ElectrumResponse {
   id: number;
   result?: any;
   error?: any;
 }
 
+/**
+ * Plugin implementation for Unicity blockchain.
+ * Uses Electrum protocol over WebSocket for blockchain interaction.
+ * Supports UTXO-based transactions with SegWit P2WPKH addresses.
+ */
 export class UnicityPlugin implements ChainPlugin {
   readonly chainId: ChainId = 'UNICITY';
   private config!: ChainConfig;

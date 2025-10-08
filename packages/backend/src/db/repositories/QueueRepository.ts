@@ -1,10 +1,27 @@
+/**
+ * @fileoverview Repository for transaction queue management.
+ * Handles queue items for transaction submission with phase-based processing
+ * for UTXO chains and critical safeguards against double-spending.
+ */
+
 import { QueueItem, QueuePurpose, EscrowAccountRef, ChainId, AssetCode, TxRef } from '@otc-broker/core';
 import { DB } from '../database';
 import * as crypto from 'crypto';
 
+/**
+ * Repository for managing transaction queue items.
+ * Ensures sequential processing per sender and prevents conflicting operations.
+ */
 export class QueueRepository {
   constructor(private db: DB) {}
 
+  /**
+   * Enqueues a new transaction for processing.
+   * Includes critical safeguards to prevent double-spending.
+   * @param item - Queue item data
+   * @returns Created queue item with generated ID and sequence
+   * @throws Error if conflicting operations detected
+   */
   enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq' | 'status'> & { payoutId?: string }): QueueItem {
     // CRITICAL SAFEGUARD #6: Prevent double-spending by blocking conflicting queue items
     // But allow refunds for CLOSED deals (post-close surplus returns)

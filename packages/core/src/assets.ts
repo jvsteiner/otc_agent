@@ -1,11 +1,26 @@
+/**
+ * @fileoverview Asset metadata management and chain configurations.
+ * This module provides runtime asset information including decimal places,
+ * minimum sendable amounts, and chain-specific confirmation thresholds.
+ * Works alongside assetConfig.ts for complete asset management.
+ */
+
 import { ChainId, AssetCode } from './types';
 import { parseAmount } from './decimal';
 
+/**
+ * Runtime metadata for an asset including precision and chain information.
+ */
 export interface AssetMetadata {
+  /** Display symbol for the asset (ETH, MATIC, ALPHA) */
   symbol: string;
+  /** Number of decimal places for this asset */
   decimals: number;
+  /** Minimum amount that can be sent on-chain */
   minSendable: string; // minimum amount that can be sent
+  /** Whether this is the native token of its chain */
   isNative: boolean;
+  /** The blockchain this asset belongs to */
   chainId: ChainId;
 }
 
@@ -61,6 +76,18 @@ const ASSET_METADATA: Record<string, AssetMetadata> = {
   },
 };
 
+/**
+ * Retrieves metadata for a specific asset on a given chain.
+ * Returns default values for unknown ERC20 and SPL tokens.
+ *
+ * @param asset - The asset code to look up
+ * @param chainId - The blockchain where the asset resides
+ * @returns Asset metadata or undefined if not found
+ *
+ * @example
+ * getAssetMetadata('ETH', 'ETH') // { symbol: 'ETH', decimals: 18, ... }
+ * getAssetMetadata('ERC20:0x...', 'ETH') // Default ERC20 metadata
+ */
 export function getAssetMetadata(asset: AssetCode, chainId: ChainId): AssetMetadata | undefined {
   // Check direct lookup first
   if (ASSET_METADATA[asset]) {
@@ -92,6 +119,19 @@ export function getAssetMetadata(asset: AssetCode, chainId: ChainId): AssetMetad
   return undefined;
 }
 
+/**
+ * Returns the native asset code for a given blockchain.
+ * Used to identify gas tokens for commission payments.
+ *
+ * @param chainId - The blockchain to get the native asset for
+ * @returns The asset code of the native token
+ * @throws Error if the chain is unknown
+ *
+ * @example
+ * getNativeAsset('ETH') // 'ETH'
+ * getNativeAsset('POLYGON') // 'MATIC'
+ * getNativeAsset('UNICITY') // 'ALPHA@UNICITY'
+ */
 export function getNativeAsset(chainId: ChainId): AssetCode {
   switch (chainId) {
     case 'UNICITY':
@@ -112,6 +152,19 @@ export function getNativeAsset(chainId: ChainId): AssetCode {
   }
 }
 
+/**
+ * Checks if an amount meets the minimum sendable threshold for an asset.
+ * Used to validate that transaction amounts are viable on-chain.
+ *
+ * @param amount - The amount to validate as a string
+ * @param asset - The asset code
+ * @param chainId - The blockchain for the transaction
+ * @returns true if amount is above minimum, false otherwise
+ *
+ * @example
+ * isAboveMinSendable("0.1", "ETH", "ETH") // true
+ * isAboveMinSendable("0.0000001", "ETH", "ETH") // false (below min)
+ */
 export function isAboveMinSendable(amount: string, asset: AssetCode, chainId: ChainId): boolean {
   const metadata = getAssetMetadata(asset, chainId);
   if (!metadata) return true; // assume OK if no metadata
@@ -121,6 +174,18 @@ export function isAboveMinSendable(amount: string, asset: AssetCode, chainId: Ch
   return amountDecimal.gte(minSendableDecimal);
 }
 
+/**
+ * Returns the minimum number of confirmations required for a blockchain.
+ * These thresholds balance security with reasonable wait times.
+ *
+ * @param chainId - The blockchain to get confirmation threshold for
+ * @returns Number of confirmations required for finality
+ *
+ * @example
+ * getConfirmationThreshold('ETH') // 3
+ * getConfirmationThreshold('POLYGON') // 64 (higher due to potential reorgs)
+ * getConfirmationThreshold('UNICITY') // 6
+ */
 export function getConfirmationThreshold(chainId: ChainId): number {
   switch (chainId) {
     case 'UNICITY':

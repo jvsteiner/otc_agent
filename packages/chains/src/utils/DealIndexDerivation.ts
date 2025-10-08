@@ -1,12 +1,18 @@
+/**
+ * @fileoverview Utility for deriving HD wallet indices from deal IDs.
+ * Ensures deterministic and unique address generation for each deal party.
+ */
+
 import * as crypto from 'crypto';
 
 /**
  * Derives a deterministic HD wallet index from a deal ID and party.
  * This ensures each deal gets unique escrow addresses that won't collide.
- * 
+ * Uses SHA-256 hashing to distribute indices uniformly across the space.
+ *
  * @param dealId - The unique deal identifier
  * @param party - Either 'ALICE' or 'BOB'
- * @returns A positive integer suitable for HD wallet derivation
+ * @returns A positive integer suitable for HD wallet derivation (0-999999)
  */
 export function deriveIndexFromDealId(dealId: string, party: 'ALICE' | 'BOB'): number {
   // Combine dealId with party to ensure Alice and Bob get different indices
@@ -26,8 +32,13 @@ export function deriveIndexFromDealId(dealId: string, party: 'ALICE' | 'BOB'): n
 }
 
 /**
- * Alternative simpler approach: Use last 6 hex chars of dealId as number
- * This is simpler but has slightly higher collision risk
+ * Alternative simpler approach: Use last 6 hex chars of dealId as number.
+ * This is simpler but has slightly higher collision risk.
+ * Not recommended for production use.
+ *
+ * @param dealId - The unique deal identifier
+ * @param party - Either 'ALICE' or 'BOB'
+ * @returns A positive integer with BOB offset by 1000000
  */
 export function deriveIndexFromDealIdSimple(dealId: string, party: 'ALICE' | 'BOB'): number {
   // Take last 6 hex characters

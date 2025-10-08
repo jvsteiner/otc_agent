@@ -1,7 +1,16 @@
+/**
+ * @fileoverview Unicity transaction building and signing utilities.
+ * Provides functions for constructing and signing SegWit transactions,
+ * including UTXO selection algorithms and multi-output support.
+ */
+
 import * as crypto from 'crypto';
 import * as secp256k1 from 'secp256k1';
 import { bech32 } from 'bech32';
 
+/**
+ * Unspent Transaction Output (UTXO) structure.
+ */
 export interface UTXO {
   tx_hash: string;
   tx_pos: number;
@@ -9,18 +18,29 @@ export interface UTXO {
   height: number;
 }
 
+/**
+ * Transaction output specification.
+ */
 interface TxOutput {
   address: string;
   value: number; // in satoshis
 }
 
+/**
+ * Signed transaction with hex encoding and transaction ID.
+ */
 interface SignedTransaction {
   hex: string;
   txid: string;
 }
 
 /**
- * Convert bits for bech32 decoding
+ * Convert bits for bech32 decoding.
+ * @param data - Input data array
+ * @param fromBits - Source bit width
+ * @param toBits - Target bit width
+ * @param pad - Whether to pad the output
+ * @returns Converted bit array
  */
 function convertBits(data: number[], fromBits: number, toBits: number, pad: boolean): number[] {
   let acc = 0;

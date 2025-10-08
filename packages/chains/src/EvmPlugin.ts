@@ -1,8 +1,17 @@
+/**
+ * @fileoverview Base EVM (Ethereum Virtual Machine) blockchain plugin implementation.
+ * Provides generic support for EVM-compatible chains using ethers.js library.
+ * Handles native currency and ERC-20 token transfers with deterministic HD wallet generation.
+ */
+
 import { ethers } from 'ethers';
 import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx } from './ChainPlugin';
 import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts, parseAssetCode } from '@otc-broker/core';
 
-// ERC20 ABI - minimal interface for balance and Transfer events
+/**
+ * Minimal ERC-20 ABI for token interaction.
+ * Includes only the methods needed for balance queries and transfers.
+ */
 const ERC20_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
   'function transfer(address to, uint256 amount) returns (bool)',
@@ -10,6 +19,11 @@ const ERC20_ABI = [
   'event Transfer(address indexed from, address indexed to, uint256 value)'
 ];
 
+/**
+ * Generic plugin implementation for EVM-compatible blockchains.
+ * Can be used directly or extended for chain-specific implementations.
+ * Supports both native currency and ERC-20 token operations.
+ */
 export class EvmPlugin implements ChainPlugin {
   readonly chainId: ChainId;
   private config!: ChainConfig;

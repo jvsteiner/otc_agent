@@ -1,6 +1,18 @@
+/**
+ * @fileoverview Polygon (MATIC) blockchain plugin implementation.
+ * Extends EthereumPlugin with Polygon-specific configuration and parameters.
+ */
+
 import { EthereumPlugin } from './EthereumPlugin';
 import { ChainConfig } from './ChainPlugin';
 
+/**
+ * Plugin implementation for Polygon PoS chain.
+ * Inherits all EVM functionality from EthereumPlugin with Polygon-specific defaults:
+ * - Higher confirmation requirements (30 blocks due to reorg risk)
+ * - Polygon RPC endpoints
+ * - MATIC as native currency
+ */
 export class PolygonPlugin extends EthereumPlugin {
   constructor(config?: Partial<ChainConfig>) {
     // Override defaults for Polygon

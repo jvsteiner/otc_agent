@@ -1,9 +1,25 @@
+/**
+ * @fileoverview Repository for managing escrow deposit records.
+ * Tracks confirmed deposits with deduplication by txid/index to prevent double-counting.
+ */
+
 import { EscrowDeposit, ChainId, AssetCode } from '@otc-broker/core';
 import { DB } from '../database';
 
+/**
+ * Repository for tracking confirmed deposits to escrow addresses.
+ * Ensures deposits are counted only once using txid/index deduplication.
+ */
 export class DepositRepository {
   constructor(private db: DB) {}
 
+  /**
+   * Inserts or updates a deposit record.
+   * @param dealId - Deal identifier
+   * @param deposit - Deposit details
+   * @param chainId - Chain where deposit occurred
+   * @param address - Escrow address that received the deposit
+   */
   upsert(dealId: string, deposit: EscrowDeposit, chainId: ChainId, address: string): void {
     const stmt = this.db.prepare(`
       INSERT INTO escrow_deposits (

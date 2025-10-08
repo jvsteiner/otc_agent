@@ -1,3 +1,9 @@
+/**
+ * @fileoverview Unicity address generation and key management utilities.
+ * Provides functions for generating SegWit P2WPKH addresses and managing private keys
+ * for the Unicity blockchain.
+ */
+
 import * as crypto from 'crypto';
 import { bech32 } from 'bech32';
 import * as secp256k1 from 'secp256k1';
@@ -5,7 +11,9 @@ import * as secp256k1 from 'secp256k1';
 const bs58 = require('bs58');
 
 /**
- * Convert hex string to bytes
+ * Convert hex string to bytes.
+ * @param hex - Hexadecimal string
+ * @returns Uint8Array of bytes
  */
 function hexToBytes(hex: string): Uint8Array {
   const bytes = new Uint8Array(hex.length / 2);

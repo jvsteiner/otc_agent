@@ -1,3 +1,9 @@
+/**
+ * @fileoverview Main entry point for the OTC Broker Engine backend server.
+ * Initializes the database, plugin manager, RPC server, and processing engine.
+ * Manages the lifecycle of all backend components including graceful shutdown.
+ */
+
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 
@@ -9,6 +15,14 @@ import { RpcServer } from './api/rpc-server';
 import { Engine } from './engine/Engine';
 import { PluginManager, ChainConfig } from '@otc-broker/chains';
 
+/**
+ * Main entry point for the backend server.
+ * Initializes all components in the correct order:
+ * 1. Database with migrations
+ * 2. Plugin manager with chain configurations
+ * 3. Processing engine
+ * 4. RPC API server
+ */
 async function main() {
   console.log('Starting OTC Broker Engine... (v2)'); // Force reload
   console.log('Electrum URL:', process.env.UNICITY_ELECTRUM || 'not set, using default');

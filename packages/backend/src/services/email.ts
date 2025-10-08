@@ -1,3 +1,8 @@
+/**
+ * @fileoverview Email service for sending deal invitations and notifications.
+ * Supports SMTP configuration or console logging fallback for development.
+ */
+
 import * as nodemailer from 'nodemailer';
 import { getAssetRegistry, formatAssetCode } from '@otc-broker/core';
 import { DB } from '../db/database';
@@ -10,6 +15,10 @@ export interface EmailInviteParams {
   link: string;
 }
 
+/**
+ * Service for sending email notifications to deal participants.
+ * Falls back to console logging if SMTP is not configured.
+ */
 export class EmailService {
   private db: DB;
   private transporter?: nodemailer.Transporter;

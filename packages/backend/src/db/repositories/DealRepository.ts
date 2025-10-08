@@ -1,10 +1,24 @@
+/**
+ * @fileoverview Repository for deal data management.
+ * Handles CRUD operations, stage transitions, and event logging for deals.
+ */
+
 import { Deal, DealStage } from '@otc-broker/core';
 import { DB } from '../database';
 import * as crypto from 'crypto';
 
+/**
+ * Repository class for managing deals in the database.
+ * Provides atomic operations for deal state management and transitions.
+ */
 export class DealRepository {
   constructor(private db: DB) {}
 
+  /**
+   * Creates a new deal in the database.
+   * @param deal - Deal data without auto-generated fields
+   * @returns Created deal with generated ID and timestamps
+   */
   create(deal: Omit<Deal, 'id' | 'createdAt' | 'outQueue' | 'refundQueue' | 'events'>): Deal {
     const id = crypto.randomBytes(16).toString('hex');
     const createdAt = new Date().toISOString();
@@ -34,6 +48,11 @@ export class DealRepository {
     return newDeal;
   }
 
+  /**
+   * Retrieves a deal by ID with party details from database.
+   * @param dealId - Deal identifier
+   * @returns Deal object or null if not found
+   */
   get(dealId: string): Deal | null {
     const stmt = this.db.prepare('SELECT json FROM deals WHERE dealId = ?');
     const row = stmt.get(dealId) as { json: string } | undefined;
