@@ -345,11 +345,17 @@ export class RpcServer {
       // Generate escrow for Alice's send chain with dealId for uniqueness
       deal.escrowA = await sendPlugin.generateEscrowAccount(deal.alice.asset, deal.id, 'ALICE');
       escrowRef = deal.escrowA;
+
+      // Initialize gas reimbursement tracking if this is an ERC-20 deal on EVM chain
+      this.initializeGasReimbursement(deal, 'ALICE');
     } else {
       deal.bobDetails = details;
       // Generate escrow for Bob's send chain with dealId for uniqueness
       deal.escrowB = await sendPlugin.generateEscrowAccount(deal.bob.asset, deal.id, 'BOB');
       escrowRef = deal.escrowB;
+
+      // Initialize gas reimbursement tracking if this is an ERC-20 deal on EVM chain
+      this.initializeGasReimbursement(deal, 'BOB');
     }
     
     // Save party details to database
@@ -4920,14 +4926,14 @@ export class RpcServer {
               if (tx.type === 'in') {
                 // Deposit - from external to escrow
                 fromAddr = tx.from || 'External';
-                toAddr = tx.escrow === 'Your escrow' ? 
-                  (dealData?.escrowA?.address || dealData?.escrowB?.address) : 
-                  (dealData?.escrowB?.address || dealData?.escrowA?.address);
+                toAddr = tx.escrow === 'Your escrow' ?
+                  (party === 'ALICE' ? dealData?.escrowA?.address : dealData?.escrowB?.address) :
+                  (party === 'ALICE' ? dealData?.escrowB?.address : dealData?.escrowA?.address);
               } else {
                 // Transfer - from escrow to recipient
-                fromAddr = tx.escrow === 'Your escrow' ? 
-                  (dealData?.escrowA?.address || dealData?.escrowB?.address) : 
-                  (dealData?.escrowB?.address || dealData?.escrowA?.address);
+                fromAddr = tx.escrow === 'Your escrow' ?
+                  (party === 'ALICE' ? dealData?.escrowA?.address : dealData?.escrowB?.address) :
+                  (party === 'ALICE' ? dealData?.escrowB?.address : dealData?.escrowA?.address);
                 toAddr = tx.to || '';
               }
               
@@ -5256,6 +5262,37 @@ export class RpcServer {
     </html>
   `;
 }
+
+  /**
+   * Initialize gas reimbursement tracking for a party when escrow is generated
+   */
+  private initializeGasReimbursement(deal: Deal, party: 'ALICE' | 'BOB'): void {
+    // Check if gas reimbursement already initialized
+    if (deal.gasReimbursement?.enabled !== undefined) {
+      return;
+    }
+
+    const spec = party === 'ALICE' ? deal.alice : deal.bob;
+
+    // Check if this is an ERC-20 deal on an EVM chain
+    const evmChains = ['ETH', 'POLYGON', 'BASE'];
+    const isEVM = evmChains.includes(spec.chainId);
+    const isERC20 = spec.asset.startsWith('ERC20:');
+
+    if (isEVM && isERC20) {
+      console.log(`[GasReimbursement] Initializing for ${party} in deal ${deal.id}`);
+
+      // Initialize gas reimbursement tracking
+      deal.gasReimbursement = {
+        enabled: true,
+        escrowSide: party === 'ALICE' ? 'A' : 'B',
+        status: 'PENDING_CALCULATION'
+      };
+
+      this.dealRepo.addEvent(deal.id, `Gas reimbursement enabled for ${party} escrow`);
+      console.log(`[GasReimbursement] Enabled for ${party}, will reimburse tank wallet`);
+    }
+  }
 
   start(port: number) {
     this.app.listen(port, () => {
