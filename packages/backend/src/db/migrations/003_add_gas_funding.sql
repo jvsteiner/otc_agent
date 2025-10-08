@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS gas_funding (
   createdAt TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'PENDING',
   confirmedAt TEXT,
-  FOREIGN KEY (dealId) REFERENCES deals(id)
+  FOREIGN KEY (dealId) REFERENCES deals(dealId)
 );
 
 -- Track tank wallet balances per chain

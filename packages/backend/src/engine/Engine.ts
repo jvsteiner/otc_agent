@@ -86,8 +86,8 @@ export class Engine {
       chainConfigs.set('ETH', { 
         rpcUrl: process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com' 
       });
-      chainConfigs.set('POLYGON', { 
-        rpcUrl: process.env.POLYGON_RPC || 'https://polygon-rpc.com' 
+      chainConfigs.set('POLYGON', {
+        rpcUrl: process.env.POLYGON_RPC || 'https://polygon-mainnet.g.alchemy.com/v2/9LkJ1e22_qxEBFxOQ4pD3'
       });
       
       if (chainConfigs.size > 0) {

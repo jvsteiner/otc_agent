@@ -57,7 +57,7 @@ async function main() {
   // Register Polygon plugin (always enabled with default or configured RPC)
   await pluginManager.registerPlugin({
     chainId: 'POLYGON',
-    rpcUrl: process.env.POLYGON_RPC || 'https://polygon-bor-rpc.publicnode.com',
+    rpcUrl: process.env.POLYGON_RPC || 'https://polygon-mainnet.g.alchemy.com/v2/9LkJ1e22_qxEBFxOQ4pD3',
     confirmations: parseInt(process.env.POLYGON_CONFIRMATIONS || '30'),
     collectConfirms: parseInt(process.env.POLYGON_COLLECT_CONFIRMS || '30'),
     operator: { address: process.env.POLYGON_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },

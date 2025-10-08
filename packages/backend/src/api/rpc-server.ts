@@ -659,7 +659,7 @@ export class RpcServer {
               config.rpcUrl = process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com';
               break;
             case 'POLYGON':
-              config.rpcUrl = process.env.POLYGON_RPC || 'https://polygon-rpc.com';
+              config.rpcUrl = process.env.POLYGON_RPC || 'https://polygon-mainnet.g.alchemy.com/v2/9LkJ1e22_qxEBFxOQ4pD3';
               break;
             case 'SOLANA':
               config.rpcUrl = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
