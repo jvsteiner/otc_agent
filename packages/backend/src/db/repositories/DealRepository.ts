@@ -53,6 +53,15 @@ export class DealRepository {
    * @param dealId - Deal identifier
    * @returns Deal object or null if not found
    */
+  getById(dealId: string): Deal | null {
+    return this.get(dealId);
+  }
+
+  /**
+   * Retrieves a deal by ID with party details from database.
+   * @param dealId - Deal identifier
+   * @returns Deal object or null if not found
+   */
   get(dealId: string): Deal | null {
     const stmt = this.db.prepare('SELECT json FROM deals WHERE dealId = ?');
     const row = stmt.get(dealId) as { json: string } | undefined;

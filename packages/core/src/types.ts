@@ -180,7 +180,7 @@ export interface DealSideState {
  * Identifies the purpose of a queued transaction.
  * Used to prioritize and track different types of payouts.
  */
-export type QueuePurpose = 'SWAP_PAYOUT' | 'OP_COMMISSION' | 'SURPLUS_REFUND' | 'TIMEOUT_REFUND' | 'GAS_REFUND_TO_TANK';
+export type QueuePurpose = 'SWAP_PAYOUT' | 'OP_COMMISSION' | 'GAS_REIMBURSEMENT' | 'SURPLUS_REFUND' | 'TIMEOUT_REFUND' | 'GAS_REFUND_TO_TANK';
 
 /**
  * Execution phase for UTXO-based chains.
@@ -209,6 +209,10 @@ export interface TxRef {
   nonceOrInputs?: string; // serialized
   /** For Unicity multi-UTXO transactions, additional transaction IDs */
   additionalTxids?: string[];
+  /** Actual gas used by the transaction (in gas units) */
+  gasUsed?: string;
+  /** Gas price paid (in wei for EVM chains) */
+  gasPrice?: string;
 }
 
 /**
@@ -294,6 +298,43 @@ export interface Deal {
   outQueue: QueueItem[];
   /** Refund queue for surplus and timeout refunds */
   refundQueue: QueueItem[];
+
+  /** Gas reimbursement tracking and calculation */
+  gasReimbursement?: {
+    /** Whether gas reimbursement is enabled for this deal */
+    enabled: boolean;
+    /** Token to use for reimbursement (e.g., 'USDT', 'USDC') */
+    token?: AssetCode;
+    /** Chain where reimbursement will be paid */
+    chainId?: ChainId;
+    /** Escrow that was gas-funded (A or B) */
+    escrowSide?: 'A' | 'B';
+    /** Calculation details */
+    calculation?: {
+      /** Actual gas used from first swap transaction (in gas units) */
+      actualGasUsed: string;
+      /** Gas price for the transaction (in wei) */
+      gasPrice: string;
+      /** Estimated total gas for all 4 transactions */
+      estimatedTotalGas: string;
+      /** Native cost in wei */
+      nativeCostWei: string;
+      /** Native USD value */
+      nativeUsdValue: string;
+      /** Native USD rate used */
+      nativeUsdRate: string;
+      /** Token USD rate used */
+      tokenUsdRate?: string;
+      /** Final reimbursement amount in tokens */
+      tokenAmount?: string;
+      /** Timestamp when calculated */
+      calculatedAt: string;
+    };
+    /** Reimbursement status */
+    status?: 'PENDING_CALCULATION' | 'CALCULATED' | 'QUEUED' | 'COMPLETED' | 'SKIPPED';
+    /** Reason if reimbursement was skipped */
+    skipReason?: string;
+  };
 
   /** Event log for debugging and audit trail */
   events: Array<{ t: string; msg: string }>;

@@ -11,6 +11,7 @@ import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } 
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import { TankManager, TankConfig } from './TankManager';
 import { ResolutionWorker } from '../workers/ResolutionWorker';
+import { GasReimbursementCalculator } from '../services/GasReimbursementCalculator';
 import * as crypto from 'crypto';
 
 /**
@@ -48,6 +49,7 @@ export class Engine {
   private engineId: string;
   private tankManager?: TankManager;
   private resolutionWorker?: ResolutionWorker;
+  private gasReimbursementCalculator: GasReimbursementCalculator;
   private isProcessingQueues = false;  // Prevent concurrent queue processing
   private queueProcessingInterval?: NodeJS.Timeout;
 
@@ -61,6 +63,7 @@ export class Engine {
     this.payoutRepo = new PayoutRepository(db);
     this.engineId = crypto.randomBytes(8).toString('hex');
     this.resolutionWorker = new ResolutionWorker(db, pluginManager);
+    this.gasReimbursementCalculator = new GasReimbursementCalculator();
   }
   
   private async initializeTankManager() {
@@ -965,10 +968,10 @@ export class Engine {
       }
       
       if (deal.escrowB && parseFloat(sideBCommission) > 0) {
-        const commAsset = deal.commissionPlan.sideB.currency === 'ASSET' 
-          ? deal.bob.asset 
+        const commAsset = deal.commissionPlan.sideB.currency === 'ASSET'
+          ? deal.bob.asset
           : getNativeAsset(deal.bob.chainId);
-        
+
         const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
         this.queueRepo.enqueue({
           dealId: deal.id,
@@ -982,7 +985,69 @@ export class Engine {
           phase: deal.bob.chainId === 'UNICITY' ? 'PHASE_2_COMMISSION' : undefined,
         });
       }
-      
+
+      // Queue gas reimbursement (seq 2.5, after commission, before refunds)
+      if (deal.gasReimbursement?.status === 'CALCULATED' &&
+          deal.gasReimbursement?.calculation?.tokenAmount &&
+          deal.gasReimbursement?.token &&
+          deal.gasReimbursement?.chainId &&
+          deal.gasReimbursement?.escrowSide) {
+
+        const escrow = deal.gasReimbursement.escrowSide === 'A' ? deal.escrowA : deal.escrowB;
+        const escrowSideState = deal.gasReimbursement.escrowSide === 'A' ? deal.sideAState : deal.sideBState;
+
+        if (escrow) {
+          console.log('[GasReimbursement] Queuing gas reimbursement:', {
+            dealId: deal.id,
+            token: deal.gasReimbursement.token,
+            amount: deal.gasReimbursement.calculation.tokenAmount,
+            escrowSide: deal.gasReimbursement.escrowSide
+          });
+
+          // Verify escrow has sufficient balance for reimbursement
+          const tokenBalance = escrowSideState?.collectedByAsset[deal.gasReimbursement.token] || '0';
+          const reimbursementAmount = parseFloat(deal.gasReimbursement.calculation.tokenAmount);
+
+          if (parseFloat(tokenBalance) >= reimbursementAmount) {
+            const tankAddress = this.getTankAddress();
+
+            if (!tankAddress) {
+              console.error('[GasReimbursement] Tank address not available, skipping reimbursement');
+              this.dealRepo.addEvent(deal.id, 'Gas reimbursement skipped: tank address not available');
+            } else {
+              this.queueRepo.enqueue({
+                dealId: deal.id,
+                chainId: deal.gasReimbursement.chainId,
+                from: escrow,
+                to: tankAddress,
+                asset: deal.gasReimbursement.token,
+                amount: deal.gasReimbursement.calculation.tokenAmount,
+                purpose: 'GAS_REIMBURSEMENT',
+                // Non-phased (for EVM chains)
+                phase: undefined,
+              });
+
+              // Update status to queued
+              deal.gasReimbursement.status = 'QUEUED';
+              this.dealRepo.update(deal);
+              this.dealRepo.addEvent(deal.id, `Gas reimbursement queued: ${deal.gasReimbursement.calculation.tokenAmount} ${deal.gasReimbursement.token} to tank`);
+
+              console.log('[GasReimbursement] Successfully queued gas reimbursement');
+            }
+          } else {
+            console.error('[GasReimbursement] Insufficient balance for reimbursement:', {
+              tokenBalance,
+              reimbursementAmount
+            });
+
+            deal.gasReimbursement.status = 'SKIPPED';
+            deal.gasReimbursement.skipReason = `Insufficient balance: have ${tokenBalance}, need ${reimbursementAmount}`;
+            this.dealRepo.update(deal);
+            this.dealRepo.addEvent(deal.id, `Gas reimbursement skipped: insufficient balance`);
+          }
+        }
+      }
+
       // Queue surplus refunds (anything left after swap and commission)
       // This ensures we return any overpayments to the users
       if (deal.escrowA && deal.aliceDetails) {
@@ -1664,18 +1729,23 @@ export class Engine {
     // Get all SUBMITTED queue items
     const submittedItems = this.queueRepo.getAll()
       .filter(q => q.status === 'SUBMITTED' && q.submittedTx);
-    
+
     // Track payouts that need updating
     const payoutUpdates = new Map<string, number>();
-    
+
     for (const item of submittedItems) {
       try {
         const txRef = item.submittedTx!;
         const plugin = this.pluginManager.getPlugin(item.chainId);
-        
+
         // Check transaction confirmations
         const confirmations = await plugin.getTxConfirmations(txRef.txid);
-        
+
+        // CRITICAL: Capture gas information from first confirmed SWAP transaction
+        if (item.purpose === 'SWAP_PAYOUT' && confirmations >= 1 && confirmations < txRef.requiredConfirms) {
+          await this.captureGasAndCalculateReimbursement(item, plugin);
+        }
+
         // For Unicity with multiple txids, check all transactions
         if (item.chainId === 'UNICITY' && txRef.additionalTxids && txRef.additionalTxids.length > 0) {
           const allTxids = [txRef.txid, ...txRef.additionalTxids];
@@ -1797,6 +1867,109 @@ export class Engine {
       
       await this.processAllQueues();
     }, intervalMs);
+  }
+
+  /**
+   * Capture gas information from first confirmed SWAP transaction
+   * and calculate reimbursement amount
+   */
+  private async captureGasAndCalculateReimbursement(
+    item: any,
+    plugin: ChainPlugin
+  ): Promise<void> {
+    try {
+      // Skip if not an EVM chain
+      const evmChains = ['ETH', 'POLYGON', 'BASE'];
+      if (!evmChains.includes(item.chainId)) {
+        return;
+      }
+
+      // Get the deal
+      const deal = this.dealRepo.getById(item.dealId);
+      if (!deal) return;
+
+      // Skip if gas reimbursement already calculated
+      if (deal.gasReimbursement?.status === 'CALCULATED' ||
+          deal.gasReimbursement?.status === 'QUEUED' ||
+          deal.gasReimbursement?.status === 'COMPLETED') {
+        return;
+      }
+
+      // Skip if not enabled
+      if (!deal.gasReimbursement?.enabled) {
+        return;
+      }
+
+      console.log(`[GasReimbursement] Capturing gas information from SWAP tx ${item.submittedTx?.txid}`);
+
+      // Get transaction receipt to extract gas information
+      const provider = (plugin as any).provider;
+      if (!provider) {
+        console.error('[GasReimbursement] Provider not available on plugin');
+        return;
+      }
+
+      const receipt = await provider.getTransactionReceipt(item.submittedTx!.txid);
+      if (!receipt) {
+        console.log('[GasReimbursement] Receipt not yet available');
+        return;
+      }
+
+      // Extract gas information
+      const gasUsed = receipt.gasUsed.toString();
+      const gasPrice = receipt.gasPrice ? receipt.gasPrice.toString() : receipt.effectiveGasPrice.toString();
+
+      console.log(`[GasReimbursement] Gas captured: gasUsed=${gasUsed}, gasPrice=${gasPrice}`);
+
+      // Update the TxRef with gas information
+      if (item.submittedTx) {
+        item.submittedTx.gasUsed = gasUsed;
+        item.submittedTx.gasPrice = gasPrice;
+        this.queueRepo.updateStatus(item.id, 'SUBMITTED', item.submittedTx);
+      }
+
+      // Calculate reimbursement
+      const result = await this.gasReimbursementCalculator.calculateReimbursement(
+        deal,
+        gasUsed,
+        gasPrice,
+        plugin
+      );
+
+      console.log(`[GasReimbursement] Calculation result:`, result);
+
+      // Update deal with calculation
+      if (result.shouldReimburse && result.calculation && result.token) {
+        deal.gasReimbursement = {
+          ...deal.gasReimbursement,
+          enabled: true,
+          token: result.token,
+          chainId: result.chainId,
+          escrowSide: result.escrowSide,
+          calculation: result.calculation,
+          status: 'CALCULATED'
+        };
+
+        this.dealRepo.update(deal);
+        this.dealRepo.addEvent(deal.id, `Gas reimbursement calculated: ${result.calculation.tokenAmount} ${result.token}`);
+
+        console.log(`[GasReimbursement] Updated deal with calculation`);
+      } else if (!result.shouldReimburse) {
+        deal.gasReimbursement = {
+          ...deal.gasReimbursement,
+          enabled: false,
+          status: 'SKIPPED',
+          skipReason: result.skipReason
+        };
+
+        this.dealRepo.update(deal);
+        this.dealRepo.addEvent(deal.id, `Gas reimbursement skipped: ${result.skipReason}`);
+
+        console.log(`[GasReimbursement] Skipped: ${result.skipReason}`);
+      }
+    } catch (error) {
+      console.error('[GasReimbursement] Error capturing gas and calculating reimbursement:', error);
+    }
   }
 
   /**
