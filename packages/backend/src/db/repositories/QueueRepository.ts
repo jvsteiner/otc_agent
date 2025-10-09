@@ -222,8 +222,51 @@ export class QueueRepository {
     return this.mapRowToQueueItem(row);
   }
 
+  /**
+   * Update submission metadata for stuck transaction handling
+   */
+  updateSubmissionMetadata(id: string, metadata: {
+    lastSubmitAt?: string;
+    originalNonce?: number;
+    lastGasPrice?: string;
+    gasBumpAttempts?: number;
+  }): void {
+    // Build dynamic update query based on provided metadata
+    const updates: string[] = [];
+    const values: any[] = [];
+
+    if (metadata.lastSubmitAt !== undefined) {
+      updates.push('lastSubmitAt = ?');
+      values.push(metadata.lastSubmitAt);
+    }
+
+    if (metadata.originalNonce !== undefined) {
+      updates.push('originalNonce = ?');
+      values.push(metadata.originalNonce);
+    }
+
+    if (metadata.lastGasPrice !== undefined) {
+      updates.push('lastGasPrice = ?');
+      values.push(metadata.lastGasPrice);
+    }
+
+    if (metadata.gasBumpAttempts !== undefined) {
+      updates.push('gasBumpAttempts = ?');
+      values.push(metadata.gasBumpAttempts);
+    }
+
+    if (updates.length === 0) return;
+
+    // Add id at the end for WHERE clause
+    values.push(id);
+
+    const query = `UPDATE queue_items SET ${updates.join(', ')} WHERE id = ?`;
+    const stmt = this.db.prepare(query);
+    stmt.run(...values);
+  }
+
   private mapRowToQueueItem(row: any): QueueItem {
-    return {
+    const item: QueueItem = {
       id: row.id,
       dealId: row.dealId,
       chainId: row.chainId as ChainId,
@@ -241,5 +284,21 @@ export class QueueRepository {
       createdAt: row.createdAt,
       submittedTx: row.submittedTx ? JSON.parse(row.submittedTx) : undefined,
     };
+
+    // Add gas bump metadata only if present
+    if (row.gasBumpAttempts !== undefined) {
+      item.gasBumpAttempts = row.gasBumpAttempts;
+    }
+    if (row.lastSubmitAt) {
+      item.lastSubmitAt = row.lastSubmitAt;
+    }
+    if (row.originalNonce !== undefined) {
+      item.originalNonce = row.originalNonce;
+    }
+    if (row.lastGasPrice) {
+      item.lastGasPrice = row.lastGasPrice;
+    }
+
+    return item;
   }
 }

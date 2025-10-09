@@ -8,6 +8,7 @@
 import { Deal, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
 import { DB } from '../db/database';
 import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
+import { AccountRepository } from '../db/repositories/AccountRepository';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import { TankManager, TankConfig } from './TankManager';
 import { ResolutionWorker } from '../workers/ResolutionWorker';
@@ -46,6 +47,7 @@ export class Engine {
   private depositRepo: DepositRepository;
   private queueRepo: QueueRepository;
   private payoutRepo: PayoutRepository;
+  private accountRepo: AccountRepository;
   private engineId: string;
   private tankManager?: TankManager;
   private resolutionWorker?: ResolutionWorker;
@@ -61,6 +63,7 @@ export class Engine {
     this.depositRepo = new DepositRepository(db);
     this.queueRepo = new QueueRepository(db);
     this.payoutRepo = new PayoutRepository(db);
+    this.accountRepo = new AccountRepository(db.getDatabase());
     this.engineId = crypto.randomBytes(8).toString('hex');
     this.resolutionWorker = new ResolutionWorker(db, pluginManager);
     this.gasReimbursementCalculator = new GasReimbursementCalculator();
@@ -541,8 +544,24 @@ export class Engine {
         commissionLocked: locks.commissionLocked,
         minConf: lockMinConf
       });
-      
-      deal.sideAState.deposits = allDeposits;
+
+      // Merge deposits: keep existing + add new unique ones (by txid+index)
+      const existingDeposits = deal.sideAState.deposits || [];
+      const depositMap = new Map<string, typeof allDeposits[0]>();
+
+      // Add existing deposits to map
+      for (const dep of existingDeposits) {
+        const key = `${dep.txid}:${dep.index || 0}`;
+        depositMap.set(key, dep);
+      }
+
+      // Add/update with new deposits
+      for (const dep of allDeposits) {
+        const key = `${dep.txid}:${dep.index || 0}`;
+        depositMap.set(key, dep);  // Overwrites if exists (updates confirms)
+      }
+
+      deal.sideAState.deposits = Array.from(depositMap.values());
       
       // Store lock readiness for Alice (will decide on locks after checking both sides)
       if (deal.stage === 'COLLECTION' || deal.stage === 'WAITING') {
@@ -671,8 +690,24 @@ export class Engine {
         commissionLocked: locks.commissionLocked,
         minConf: lockMinConfB
       });
-      
-      deal.sideBState.deposits = allDepositsB;
+
+      // Merge deposits: keep existing + add new unique ones (by txid+index)
+      const existingDepositsB = deal.sideBState.deposits || [];
+      const depositMapB = new Map<string, typeof allDepositsB[0]>();
+
+      // Add existing deposits to map
+      for (const dep of existingDepositsB) {
+        const key = `${dep.txid}:${dep.index || 0}`;
+        depositMapB.set(key, dep);
+      }
+
+      // Add/update with new deposits
+      for (const dep of allDepositsB) {
+        const key = `${dep.txid}:${dep.index || 0}`;
+        depositMapB.set(key, dep);  // Overwrites if exists (updates confirms)
+      }
+
+      deal.sideBState.deposits = Array.from(depositMapB.values());
       
       // Store lock readiness for Bob (will decide on locks after checking both sides)
       if (deal.stage === 'COLLECTION' || deal.stage === 'WAITING') {
@@ -1110,6 +1145,99 @@ export class Engine {
     });
   }
 
+  /**
+   * Ensures an escrow address has sufficient gas for ERC-20 token transfers.
+   * This is critical for timeout refunds where the escrow may have depleted its gas.
+   */
+  private async ensureGasForRefund(
+    escrowAddress: string,
+    chainId: string,
+    dealId: string,
+    asset: AssetCode
+  ): Promise<boolean> {
+    // Only needed for ERC-20 tokens on EVM chains
+    const isEVMChain = chainId === 'ETH' || chainId === 'POLYGON';
+    const isERC20 = asset.startsWith('ERC20:');
+
+    if (!isEVMChain || !isERC20) {
+      return true; // No gas funding needed for native assets or non-EVM chains
+    }
+
+    // If tank manager is not configured, log warning but continue
+    if (!this.tankManager) {
+      console.warn(`No tank manager configured for gas funding`, {
+        dealId,
+        chainId,
+        escrowAddress,
+        asset
+      });
+      return false;
+    }
+
+    try {
+      // Extract token address from asset code (format: ERC20:0x123...@CHAIN)
+      const tokenAddress = asset.split(':')[1]?.split('@')[0] || '0x0000000000000000000000000000000000000000';
+
+      // Estimate gas needed for ERC-20 transfer (with safety margin)
+      // Use placeholder values for estimation purposes
+      const gasEstimate = await this.tankManager.estimateGasForERC20Transfer(
+        chainId,
+        tokenAddress,
+        escrowAddress, // from
+        escrowAddress, // to (placeholder, just for estimation)
+        '1000000' // amount (placeholder, just for estimation)
+      );
+      const requiredGasWei = gasEstimate.totalCostWei;
+
+      // Fund the escrow address with gas
+      const txHash = await this.tankManager.fundEscrowForGas(
+        dealId,
+        chainId,
+        escrowAddress,
+        requiredGasWei
+      );
+
+      if (txHash === 'already-funded') {
+        console.info(`Escrow already has sufficient gas`, {
+          dealId,
+          chainId,
+          escrowAddress
+        });
+        return true;
+      }
+
+      console.info(`Funded escrow with gas for refund`, {
+        dealId,
+        chainId,
+        escrowAddress,
+        txHash,
+        requiredGasWei: requiredGasWei.toString()
+      });
+
+      // Add event to deal history
+      this.dealRepo.addEvent(dealId,
+        `Funded ${escrowAddress} with gas for ${asset} refund on ${chainId} (tx: ${txHash})`
+      );
+
+      // Wait a moment for the transaction to be included
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      return true;
+    } catch (error) {
+      console.error(`Failed to fund escrow with gas for refund`, {
+        dealId,
+        chainId,
+        escrowAddress,
+        asset,
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      // Still return false but don't throw - allow refund attempt to proceed
+      // User might manually fund the escrow
+      return false;
+    }
+  }
+
   private async revertDeal(deal: Deal) {
     // CRITICAL SAFEGUARD #1: Never revert if BOTH sides are locked
     const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
@@ -1156,6 +1284,65 @@ export class Engine {
     
     console.log(`[Engine] Reverting deal ${deal.id} - no locks detected, safe to refund`);
     
+    // Ensure gas funding for ERC-20 refunds BEFORE starting the transaction
+    const gasFundingTasks: Promise<void>[] = [];
+
+    // Check Alice's deposits for ERC-20 tokens that need gas
+    if (deal.escrowA && deal.aliceDetails && deal.sideAState) {
+      for (const [asset, amount] of Object.entries(deal.sideAState.collectedByAsset)) {
+        if (parseFloat(amount) > 0) {
+          gasFundingTasks.push(
+            this.ensureGasForRefund(
+              deal.escrowA.address,
+              deal.alice.chainId,
+              deal.id,
+              asset as AssetCode
+            ).then(funded => {
+              if (!funded) {
+                console.warn(`Proceeding with Alice refund despite gas funding failure`, {
+                  dealId: deal.id,
+                  asset,
+                  escrow: deal.escrowA?.address
+                });
+              }
+            })
+          );
+        }
+      }
+    }
+
+    // Check Bob's deposits for ERC-20 tokens that need gas
+    if (deal.escrowB && deal.bobDetails && deal.sideBState) {
+      for (const [asset, amount] of Object.entries(deal.sideBState.collectedByAsset)) {
+        if (parseFloat(amount) > 0) {
+          gasFundingTasks.push(
+            this.ensureGasForRefund(
+              deal.escrowB.address,
+              deal.bob.chainId,
+              deal.id,
+              asset as AssetCode
+            ).then(funded => {
+              if (!funded) {
+                console.warn(`Proceeding with Bob refund despite gas funding failure`, {
+                  dealId: deal.id,
+                  asset,
+                  escrow: deal.escrowB?.address
+                });
+              }
+            })
+          );
+        }
+      }
+    }
+
+    // Wait for all gas funding operations to complete
+    if (gasFundingTasks.length > 0) {
+      console.info(`Ensuring gas for ${gasFundingTasks.length} potential ERC-20 refunds`, {
+        dealId: deal.id
+      });
+      await Promise.all(gasFundingTasks);
+    }
+
     this.db.runInTransaction(() => {
       // Queue refunds for all confirmed deposits
       if (deal.escrowA && deal.aliceDetails && deal.sideAState) {
@@ -1173,7 +1360,7 @@ export class Engine {
           }
         }
       }
-      
+
       if (deal.escrowB && deal.bobDetails && deal.sideBState) {
         for (const [asset, amount] of Object.entries(deal.sideBState.collectedByAsset)) {
           if (parseFloat(amount) > 0) {
@@ -1189,7 +1376,7 @@ export class Engine {
           }
         }
       }
-      
+
       this.dealRepo.updateStage(deal.id, 'REVERTED');
       this.dealRepo.addEvent(deal.id, 'Deal reverted due to timeout');
     });
@@ -1475,15 +1662,26 @@ export class Engine {
   }
 
   private async monitorAndReturnEscrowFunds(deal: Deal) {
-    // Monitor and return any remaining funds in escrows
+    // Monitor and return any remaining funds in escrows for up to 7 days
     // This handles both REVERTED deals and post-close deposits
-    
+
     // Skip if deal isn't in a terminal state
     if (!['CLOSED', 'REVERTED'].includes(deal.stage)) {
       return;
     }
-    
-    console.log(`[Engine] Monitoring escrows for ${deal.stage} deal ${deal.id}`);
+
+    // Check if deal has been closed/reverted for more than 7 days
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    const dealCreatedAt = new Date(deal.createdAt).getTime();
+    const now = Date.now();
+    const dealAge = now - dealCreatedAt;
+
+    if (dealAge > SEVEN_DAYS_MS) {
+      console.log(`[Engine] Skipping escrow monitoring for deal ${deal.id} - older than 7 days (${Math.floor(dealAge / (24 * 60 * 60 * 1000))} days old)`);
+      return;
+    }
+
+    console.log(`[Engine] Monitoring escrows for ${deal.stage} deal ${deal.id} (age: ${Math.floor(dealAge / (24 * 60 * 60 * 1000))} days)`);
     
     try {
       // Check if escrows were gas-funded by tank
@@ -1528,22 +1726,18 @@ export class Engine {
         if (!alreadyQueued) {
           console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${aliceAsset} in Alice's escrow ${escrowAddress}`);
           
-          // Ensure gas for refund if needed
-          try {
-            const isNativeAsset = aliceAsset === getNativeAsset(deal.alice.chainId);
-            if (!isNativeAsset) {
-              // For token transfers, ensure we have gas
-              await plugin.ensureFeeBudget(
-                deal.escrowA,
-                aliceAsset,
-                'TOKEN',
-                '0.01' // Minimum gas amount
-              );
-            }
-          } catch (error) {
-            console.log(`[ESCROW MONITOR] Gas funding may be needed for refund:`, error);
+          // Ensure gas for ERC-20 refund if needed
+          const funded = await this.ensureGasForRefund(
+            escrowAddress,
+            deal.alice.chainId,
+            deal.id,
+            aliceAsset
+          );
+
+          if (!funded) {
+            console.log(`[ESCROW MONITOR] Proceeding with refund despite gas funding issue for ${aliceAsset}`);
           }
-          
+
           this.queueRepo.enqueue({
             dealId: deal.id,
             chainId: deal.alice.chainId,
@@ -1641,22 +1835,18 @@ export class Engine {
             return;
           }
           
-          // Ensure gas for refund if needed
-          try {
-            const isNativeAsset = bobAsset === getNativeAsset(deal.bob.chainId);
-            if (!isNativeAsset) {
-              // For token transfers, ensure we have gas
-              await plugin.ensureFeeBudget(
-                deal.escrowB,
-                bobAsset,
-                'TOKEN',
-                '0.01' // Minimum gas amount
-              );
-            }
-          } catch (error) {
-            console.log(`[ESCROW MONITOR] Gas funding may be needed for refund:`, error);
+          // Ensure gas for ERC-20 refund if needed
+          const funded = await this.ensureGasForRefund(
+            escrowAddress,
+            deal.bob.chainId,
+            deal.id,
+            bobAsset
+          );
+
+          if (!funded) {
+            console.log(`[ESCROW MONITOR] Proceeding with refund despite gas funding issue for ${bobAsset}`);
           }
-          
+
           this.queueRepo.enqueue({
             dealId: deal.id,
             chainId: deal.bob.chainId,
@@ -1973,7 +2163,7 @@ export class Engine {
   }
 
   /**
-   * Process all pending queues across all deals
+   * Process all pending queues across all deals with serial processing per address
    * This is called independently from the main engine loop
    */
   private async processAllQueues() {
@@ -1982,66 +2172,378 @@ export class Engine {
       console.log('[QueueProcessor] Already processing queues, skipping');
       return;
     }
-    
+
     this.isProcessingQueues = true;
-    
+
     try {
-      // Get all deals that might have pending queue items
-      const deals = this.dealRepo.getActiveDeals();
-      
-      let totalPending = 0;
-      let processedCount = 0;
-      
-      // Count total pending items first
-      for (const deal of deals) {
-        const pendingCount = this.queueRepo.getPendingCount(deal.id);
-        if (pendingCount > 0) {
-          totalPending += pendingCount;
-          console.log(`[QueueProcessor] Deal ${deal.id}: ${pendingCount} pending items`);
-        }
-      }
-      
-      if (totalPending === 0) {
-        // No pending items, nothing to do
+      // First, detect and handle stuck transactions
+      await this.handleStuckTransactions();
+
+      // Get all pending queue items across all deals
+      const allPendingItems = this.queueRepo.getAll()
+        .filter(q => q.status === 'PENDING')
+        .sort((a, b) => a.seq - b.seq); // Process in order by sequence number
+
+      if (allPendingItems.length === 0) {
         return;
       }
-      
-      console.log(`[QueueProcessor] Processing ${totalPending} total pending queue items`);
-      
-      // Process each deal's queues
-      for (const deal of deals) {
-        const pendingCount = this.queueRepo.getPendingCount(deal.id);
-        if (pendingCount === 0) continue;
-        
-        console.log(`[QueueProcessor] Processing deal ${deal.id} (${deal.stage})`);
-        
-        try {
-          // Check if deal uses phased processing (Unicity)
-          const usesPhases = deal.alice.chainId === 'UNICITY' || deal.bob.chainId === 'UNICITY';
-          
-          if (usesPhases && (deal.stage === 'SWAP' || deal.stage === 'CLOSED')) {
-            // Process phased queues for Unicity
-            await this.processQueuesPhased(deal);
-            processedCount++;
-          } else {
-            // Process normal (non-phased) queues
-            await this.processQueuesNormal(deal);
-            processedCount++;
+
+      console.log(`[QueueProcessor] Found ${allPendingItems.length} pending queue items`);
+
+      // Group items by sender (chainId + fromAddr)
+      const itemsBySender = new Map<string, typeof allPendingItems>();
+
+      for (const item of allPendingItems) {
+        const senderKey = `${item.chainId}:${item.from.address.toLowerCase()}`;
+        if (!itemsBySender.has(senderKey)) {
+          itemsBySender.set(senderKey, []);
+        }
+        itemsBySender.get(senderKey)!.push(item);
+      }
+
+      console.log(`[QueueProcessor] Processing transactions for ${itemsBySender.size} unique senders`);
+
+      // Process each sender's transactions serially
+      for (const [senderKey, items] of itemsBySender) {
+        const [chainId, address] = senderKey.split(':');
+        console.log(`[QueueProcessor] Processing ${items.length} transactions for ${chainId}:${address}`);
+
+        // Process items for this sender one at a time (serial processing)
+        for (const item of items) {
+          try {
+            // Get the deal for this item
+            const deal = this.dealRepo.get(item.dealId);
+            if (!deal) {
+              console.error(`[QueueProcessor] Deal ${item.dealId} not found for queue item ${item.id}`);
+              continue;
+            }
+
+            // Check if this is a phased item (Unicity)
+            if (item.phase) {
+              // For phased items, check if we can process this phase
+              const canProcess = await this.canProcessPhase(deal, item);
+              if (!canProcess) {
+                console.log(`[QueueProcessor] Skipping phased item ${item.id} - phase not ready`);
+                continue;
+              }
+            }
+
+            // Process this single transaction
+            await this.processSingleQueueItem(deal, item);
+
+            // Wait a bit between transactions from same sender to ensure nonce ordering
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+          } catch (error) {
+            console.error(`[QueueProcessor] Error processing item ${item.id}:`, error);
+            this.dealRepo.addEvent(item.dealId, `Queue processing error: ${error}`);
           }
-        } catch (error) {
-          console.error(`[QueueProcessor] Error processing deal ${deal.id}:`, error);
         }
       }
-      
-      if (processedCount > 0) {
-        console.log(`[QueueProcessor] Completed processing ${processedCount} deals`);
-      }
-      
+
     } catch (error) {
       console.error('[QueueProcessor] Unexpected error:', error);
     } finally {
       // Always release the lock
       this.isProcessingQueues = false;
+    }
+  }
+
+  /**
+   * Check if a phased item can be processed based on phase completion status
+   */
+  private async canProcessPhase(deal: Deal, item: any): Promise<boolean> {
+    if (!item.phase) return true; // Non-phased items can always be processed
+
+    // Check if previous phases are complete
+    if (item.phase === 'PHASE_1_SWAP') {
+      return true; // Phase 1 can always proceed
+    } else if (item.phase === 'PHASE_2_COMMISSION') {
+      // Phase 2 can only proceed if Phase 1 is complete
+      return this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP');
+    } else if (item.phase === 'PHASE_3_REFUND') {
+      // Phase 3 can only proceed if Phase 1 and 2 are complete
+      return this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP') &&
+             (this.queueRepo.getPhaseItems(deal.id, 'PHASE_2_COMMISSION').length === 0 ||
+              this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_2_COMMISSION'));
+    }
+
+    return false;
+  }
+
+  /**
+   * Process a single queue item with proper nonce management for EVM chains
+   */
+  private async processSingleQueueItem(deal: Deal, item: any): Promise<void> {
+    try {
+      // CRITICAL SAFEGUARD: Block refunds if uncompleted swap payouts exist
+      if (item.purpose === 'TIMEOUT_REFUND' && deal.stage !== 'CLOSED') {
+        const swapPayouts = this.queueRepo.getByDeal(deal.id)
+          .filter(q => q.purpose === 'SWAP_PAYOUT' && q.status !== 'COMPLETED');
+
+        if (swapPayouts.length > 0) {
+          console.error(`[CRITICAL] Blocking TIMEOUT_REFUND for deal ${deal.id} - uncompleted swap payouts exist!`);
+          this.dealRepo.addEvent(deal.id, `CRITICAL: Blocked refund - ${swapPayouts.length} uncompleted swap payouts exist`);
+          return;
+        }
+      }
+
+      // Get the full escrow account ref with keyRef from the deal
+      let fromAccountWithKey: any = item.from;
+      if (deal.escrowA && deal.escrowA.address === item.from.address) {
+        fromAccountWithKey = deal.escrowA;
+      } else if (deal.escrowB && deal.escrowB.address === item.from.address) {
+        fromAccountWithKey = deal.escrowB;
+      }
+
+      console.log(`[QueueProcessor] Submitting transaction:`, {
+        id: item.id,
+        chainId: item.chainId,
+        from: item.from.address,
+        to: item.to,
+        asset: item.asset,
+        amount: item.amount,
+        purpose: item.purpose,
+        phase: item.phase
+      });
+
+      const plugin = this.pluginManager.getPlugin(item.chainId);
+      console.log(`[QueueProcessor] Using plugin for chain ${item.chainId}: ${plugin.constructor.name}`);
+
+      // Prepare transaction options with nonce for EVM chains
+      let txOptions: any = undefined;
+
+      // Check if this is an EVM chain (has getCurrentNonce method)
+      const isEvmChain = item.chainId === 'ETH' || item.chainId === 'POLYGON';
+      if (isEvmChain && 'getCurrentNonce' in plugin) {
+        // Get or initialize nonce for this address
+        let nonce = this.accountRepo.getNextNonce(item.chainId, item.from.address);
+
+        if (nonce === null) {
+          // First transaction for this address - fetch from network
+          console.log(`[QueueProcessor] Fetching initial nonce from network for ${item.from.address}`);
+          nonce = await (plugin as any).getCurrentNonce(item.from.address);
+          console.log(`[QueueProcessor] Got initial nonce from network: ${nonce}`);
+        } else {
+          console.log(`[QueueProcessor] Using tracked nonce: ${nonce}`);
+        }
+
+        txOptions = { nonce };
+
+        // Update the last used nonce atomically with transaction submission
+        // We'll do this after successful submission
+      }
+
+      // Submit the transaction with explicit nonce if EVM
+      const tx = await plugin.send(
+        item.asset,
+        fromAccountWithKey,
+        item.to,
+        item.amount,
+        txOptions
+      );
+
+      // Update nonce tracking for EVM chains after successful submission
+      if (isEvmChain && txOptions?.nonce !== undefined) {
+        this.accountRepo.updateLastUsedNonce(item.chainId, item.from.address, txOptions.nonce);
+        console.log(`[QueueProcessor] Updated last used nonce to ${txOptions.nonce} for ${item.from.address}`);
+      }
+
+      // Update queue item with tx info
+      const txRef: any = {
+        txid: tx.txid,
+        chainId: item.chainId,
+        requiredConfirms: getConfirmationThreshold(item.chainId),
+        submittedAt: tx.submittedAt,
+        confirms: 0,  // Initial confirms
+        status: 'SUBMITTED',
+        additionalTxids: tx.additionalTxids
+      };
+
+      this.queueRepo.updateStatus(item.id, 'SUBMITTED', txRef);
+
+      // Store submission metadata for stuck detection
+      this.queueRepo.updateSubmissionMetadata(item.id, {
+        lastSubmitAt: new Date().toISOString(),
+        originalNonce: txOptions?.nonce,
+        lastGasPrice: (tx as any).gasPrice
+      });
+
+      this.dealRepo.addEvent(deal.id, `Submitted ${item.purpose} tx: ${tx.txid.slice(0, 10)}...`);
+
+      console.log(`[QueueProcessor] Transaction submitted:`, {
+        queueId: item.id,
+        txid: tx.txid,
+        nonce: txOptions?.nonce,
+        gasPrice: (tx as any).gasPrice
+      });
+
+    } catch (error: any) {
+      console.error(`[QueueProcessor] Failed to submit transaction for item ${item.id}:`, error);
+
+      // Check if it's a nonce-related error
+      if (error.message?.includes('nonce') || error.code === 'NONCE_EXPIRED') {
+        console.log(`[QueueProcessor] Nonce error detected, resetting nonce tracking for ${item.from.address}`);
+        this.accountRepo.resetNonce(item.chainId, item.from.address);
+      }
+
+      this.dealRepo.addEvent(deal.id, `Failed to submit ${item.purpose}: ${error.message}`);
+
+      // Mark item as failed after too many attempts
+      if (item.gasBumpAttempts && item.gasBumpAttempts >= 5) {
+        // For now, mark as COMPLETED with error in event log
+        this.queueRepo.updateStatus(item.id, 'COMPLETED');
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Detect and handle stuck transactions by bumping gas price
+   */
+  private async handleStuckTransactions(): Promise<void> {
+    try {
+      // Get all submitted transactions
+      const submittedItems = this.queueRepo.getAll()
+        .filter(q => q.status === 'SUBMITTED' && q.submittedTx);
+
+      const now = Date.now();
+      const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
+      for (const item of submittedItems) {
+        if (!item.submittedTx || !item.lastSubmitAt) continue;
+
+        const submittedAt = new Date(item.lastSubmitAt).getTime();
+        const timeSinceSubmission = now - submittedAt;
+
+        // Check if transaction has been pending for too long
+        if (timeSinceSubmission > STUCK_THRESHOLD_MS) {
+          const plugin = this.pluginManager.getPlugin(item.chainId);
+
+          // Check if transaction is still stuck
+          const confirmations = await plugin.getTxConfirmations(item.submittedTx.txid);
+
+          if (confirmations === 0) {
+            // Check if it's actually stuck in mempool (for EVM chains)
+            const isEvmChain = item.chainId === 'ETH' || item.chainId === 'POLYGON';
+
+            if (isEvmChain && 'isTransactionStuck' in plugin) {
+              const isStuck = await (plugin as any).isTransactionStuck(item.submittedTx.txid);
+
+              if (isStuck) {
+                console.log(`[QueueProcessor] Detected stuck transaction ${item.submittedTx.txid} for item ${item.id}`);
+                await this.bumpGasAndResubmit(item);
+              }
+            }
+          } else if (confirmations > 0) {
+            // Transaction has confirmations, update nonce tracking
+            if (item.originalNonce !== undefined) {
+              this.accountRepo.updateLastConfirmedNonce(item.chainId, item.from.address, item.originalNonce);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[QueueProcessor] Error handling stuck transactions:', error);
+    }
+  }
+
+  /**
+   * Bump gas price and resubmit a stuck transaction
+   */
+  private async bumpGasAndResubmit(item: any): Promise<void> {
+    try {
+      const gasBumpAttempts = item.gasBumpAttempts || 0;
+
+      if (gasBumpAttempts >= 5) {
+        console.log(`[QueueProcessor] Max gas bump attempts reached for item ${item.id}`);
+        return;
+      }
+
+      const deal = this.dealRepo.get(item.dealId);
+      if (!deal) {
+        console.error(`[QueueProcessor] Deal ${item.dealId} not found for gas bump`);
+        return;
+      }
+
+      const plugin = this.pluginManager.getPlugin(item.chainId);
+
+      // Get current gas price from network
+      const currentGasPrice = await (plugin as any).getCurrentGasPrice();
+
+      // Calculate new gas price (20% higher)
+      let newGasPrice: any = {};
+      if (currentGasPrice.gasPrice) {
+        const oldPrice = parseFloat(item.lastGasPrice || currentGasPrice.gasPrice);
+        const bumpedPrice = oldPrice * 1.2;
+        newGasPrice.gasPrice = bumpedPrice.toFixed(2);
+        console.log(`[QueueProcessor] Bumping gas price from ${oldPrice} to ${bumpedPrice} gwei`);
+      } else if (currentGasPrice.maxFeePerGas) {
+        // EIP-1559
+        const oldMaxFee = parseFloat(item.lastGasPrice || currentGasPrice.maxFeePerGas);
+        const bumpedMaxFee = oldMaxFee * 1.2;
+        const bumpedPriority = parseFloat(currentGasPrice.maxPriorityFeePerGas!) * 1.2;
+        newGasPrice.maxFeePerGas = bumpedMaxFee.toFixed(2);
+        newGasPrice.maxPriorityFeePerGas = bumpedPriority.toFixed(2);
+        console.log(`[QueueProcessor] Bumping EIP-1559 fees: maxFee ${bumpedMaxFee}, priority ${bumpedPriority} gwei`);
+      }
+
+      // Get the escrow account with key
+      let fromAccountWithKey: any = item.from;
+      if (deal.escrowA && deal.escrowA.address === item.from.address) {
+        fromAccountWithKey = deal.escrowA;
+      } else if (deal.escrowB && deal.escrowB.address === item.from.address) {
+        fromAccountWithKey = deal.escrowB;
+      }
+
+      // Resubmit with same nonce but higher gas price
+      const txOptions = {
+        nonce: item.originalNonce,
+        ...newGasPrice
+      };
+
+      console.log(`[QueueProcessor] Resubmitting transaction with gas bump:`, {
+        queueId: item.id,
+        originalTx: item.submittedTx.txid.slice(0, 10),
+        nonce: txOptions.nonce,
+        ...newGasPrice
+      });
+
+      const tx = await plugin.send(
+        item.asset,
+        fromAccountWithKey,
+        item.to,
+        item.amount,
+        txOptions
+      );
+
+      // Update queue item with new tx info
+      const txRef: any = {
+        txid: tx.txid,
+        chainId: item.chainId,
+        requiredConfirms: getConfirmationThreshold(item.chainId),
+        submittedAt: tx.submittedAt,
+        confirms: 0,  // Reset confirms for new submission
+        status: 'SUBMITTED',
+        additionalTxids: tx.additionalTxids
+      };
+
+      // Update with new transaction details
+      this.queueRepo.updateStatus(item.id, 'SUBMITTED', txRef);
+
+      // Update gas bump metadata
+      this.queueRepo.updateSubmissionMetadata(item.id, {
+        gasBumpAttempts: gasBumpAttempts + 1,
+        lastSubmitAt: new Date().toISOString(),
+        lastGasPrice: (tx as any).gasPrice
+      });
+
+      this.dealRepo.addEvent(item.dealId, `Gas bumped tx: ${tx.txid.slice(0, 10)}... (attempt ${gasBumpAttempts + 1})`);
+
+    } catch (error) {
+      console.error(`[QueueProcessor] Failed to bump gas for item ${item.id}:`, error);
+      this.dealRepo.addEvent(item.dealId, `Failed to bump gas: ${error}`);
     }
   }
 }

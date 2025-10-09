@@ -246,6 +246,16 @@ export interface QueueItem {
   createdAt: string;
   /** Reference to submitted transaction if broadcasted */
   submittedTx?: TxRef;
+
+  // Gas bump tracking metadata (for stuck transaction handling)
+  /** Number of times gas has been bumped for this transaction */
+  gasBumpAttempts?: number;
+  /** ISO timestamp of last submission attempt */
+  lastSubmitAt?: string;
+  /** Original nonce used for the first submission (EVM chains) */
+  originalNonce?: number;
+  /** Last gas price used (in gwei for EVM chains) */
+  lastGasPrice?: string;
 }
 
 /**

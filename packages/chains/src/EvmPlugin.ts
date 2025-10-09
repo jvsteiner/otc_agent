@@ -191,30 +191,50 @@ export class EvmPlugin implements ChainPlugin {
     asset: AssetCode,
     from: EscrowAccountRef,
     to: string,
-    amount: string
+    amount: string,
+    options?: {
+      nonce?: number;
+      gasPrice?: string;  // For gas bumping
+      maxFeePerGas?: string;  // For EIP-1559
+      maxPriorityFeePerGas?: string;  // For EIP-1559
+    }
   ): Promise<SubmittedTx> {
     const wallet = this.wallets.get(from.address);
     if (!wallet) {
       throw new Error('Wallet not found for address: ' + from.address);
     }
-    
+
     const connectedWallet = wallet.connect(this.provider);
-    
+
     // Remove chain suffix if present
     let assetToProcess: AssetCode = asset;
     if (asset.includes('@')) {
       assetToProcess = asset.split('@')[0] as AssetCode;
     }
-    
+
     let tx;
     // Check if it's a native asset
     const assetConfig = parseAssetCode(assetToProcess, this.chainId);
+
+    // Build transaction parameters with explicit nonce if provided
+    const txParams: any = {
+      to,
+      nonce: options?.nonce,  // Use explicit nonce if provided
+    };
+
+    // Add gas price parameters if provided (for gas bumping)
+    if (options?.gasPrice) {
+      txParams.gasPrice = ethers.parseUnits(options.gasPrice, 'gwei');
+    } else if (options?.maxFeePerGas && options?.maxPriorityFeePerGas) {
+      // EIP-1559 style
+      txParams.maxFeePerGas = ethers.parseUnits(options.maxFeePerGas, 'gwei');
+      txParams.maxPriorityFeePerGas = ethers.parseUnits(options.maxPriorityFeePerGas, 'gwei');
+    }
+
     if (assetConfig && assetConfig.native) {
       // Native transfer
-      tx = await connectedWallet.sendTransaction({
-        to,
-        value: ethers.parseEther(amount),
-      });
+      txParams.value = ethers.parseEther(amount);
+      tx = await connectedWallet.sendTransaction(txParams);
     } else {
       // Handle ERC20 tokens - assetConfig already parsed above
       if (assetConfig && assetConfig.type === 'ERC20' && assetConfig.contractAddress) {
@@ -223,25 +243,44 @@ export class EvmPlugin implements ChainPlugin {
           ERC20_ABI,
           connectedWallet
         );
-        
+
         // Parse amount based on token decimals
         const decimals = assetConfig.decimals || 18;
         const amountWei = ethers.parseUnits(amount, decimals);
-        
-        // Send ERC20 transfer
-        tx = await tokenContract.transfer(to, amountWei);
+
+        // For ERC20, we need to call the transfer function with explicit nonce
+        if (options?.nonce !== undefined) {
+          // Build override object for the contract call
+          const overrides: any = {
+            nonce: options.nonce
+          };
+
+          if (options.gasPrice) {
+            overrides.gasPrice = ethers.parseUnits(options.gasPrice, 'gwei');
+          } else if (options.maxFeePerGas && options.maxPriorityFeePerGas) {
+            overrides.maxFeePerGas = ethers.parseUnits(options.maxFeePerGas, 'gwei');
+            overrides.maxPriorityFeePerGas = ethers.parseUnits(options.maxPriorityFeePerGas, 'gwei');
+          }
+
+          tx = await tokenContract.transfer(to, amountWei, overrides);
+        } else {
+          // No explicit nonce, use default behavior
+          tx = await tokenContract.transfer(to, amountWei);
+        }
       } else {
         throw new Error(`Unsupported asset: ${asset}`);
       }
     }
-    
+
     if (!tx) {
+      throw new Error('Transaction creation failed');
     }
-    
+
     return {
       txid: tx.hash,
       submittedAt: new Date().toISOString(),
       nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
     };
   }
 
@@ -263,11 +302,59 @@ export class EvmPlugin implements ChainPlugin {
     try {
       const receipt = await this.provider.getTransactionReceipt(txid);
       if (!receipt) return 0;
-      
+
       const currentBlock = await this.provider.getBlockNumber();
       return currentBlock - receipt.blockNumber + 1;
     } catch (error) {
       return 0;
+    }
+  }
+
+  /**
+   * Get the current nonce for an address from the network
+   * Used for initializing nonce tracking
+   */
+  async getCurrentNonce(address: string): Promise<number> {
+    return await this.provider.getTransactionCount(address, 'pending');
+  }
+
+  /**
+   * Get current gas price from the network
+   * Returns gas price in gwei as string
+   */
+  async getCurrentGasPrice(): Promise<{ gasPrice?: string; maxFeePerGas?: string; maxPriorityFeePerGas?: string }> {
+    const feeData = await this.provider.getFeeData();
+
+    if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
+      // EIP-1559 network
+      return {
+        maxFeePerGas: ethers.formatUnits(feeData.maxFeePerGas, 'gwei'),
+        maxPriorityFeePerGas: ethers.formatUnits(feeData.maxPriorityFeePerGas, 'gwei')
+      };
+    } else if (feeData.gasPrice) {
+      // Legacy gas price
+      return {
+        gasPrice: ethers.formatUnits(feeData.gasPrice, 'gwei')
+      };
+    }
+
+    // Fallback
+    return { gasPrice: '20' }; // 20 gwei default
+  }
+
+  /**
+   * Check if a transaction is stuck in the mempool
+   * Returns true if transaction exists but has 0 confirmations
+   */
+  async isTransactionStuck(txid: string): Promise<boolean> {
+    try {
+      const tx = await this.provider.getTransaction(txid);
+      if (!tx) return false;  // Transaction not found
+
+      const receipt = await this.provider.getTransactionReceipt(txid);
+      return receipt === null;  // Transaction exists but not mined
+    } catch (error) {
+      return false;
     }
   }
 
