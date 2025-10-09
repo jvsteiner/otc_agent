@@ -4168,7 +4168,7 @@ export class RpcServer {
                 swapStatus += '</div>';
               }
 
-              swapStatus += '<br><div style="margin-top: 15px; padding: 10px; background: #f9fafb; border-left: 3px solid #3b82f6;">' +
+              swapStatus += '<br><div style="margin-top: 15px; padding: 10px; background: rgba(0, 255, 65, 0.08); border-left: 3px solid #00ff41;">' +
                 '<strong>⚡ Important Information:</strong><br>' +
                 '• All transactions are being processed automatically<br>' +
                 '• Timer permanently removed - no timeout risk<br>' +
