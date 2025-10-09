@@ -36,8 +36,11 @@ npm run db:migrate
 # Run all tests
 npm test
 
-# Run specific test
-npm test -- <test-name>
+# Run specific test file
+npm test packages/core/test/specific-test.test.ts
+
+# Run tests in watch mode
+npm test -- --watch
 
 # Lint code
 npm run lint
@@ -124,6 +127,7 @@ CREATED → COLLECTION → WAITING → SWAP → CLOSED (or REVERTED)
   - PHASE_1_SWAP: Payout transfers to Alice and Bob
   - PHASE_2_COMMISSION: Commission to operator
   - PHASE_3_REFUND: Surplus/timeout refunds
+  - Gas refunds (GAS_REFUND_TO_TANK) processed after all other queue items
 
 ### Tank Manager (Gas Funding System)
 - Optional EVM gas funding mechanism for escrow addresses
@@ -241,3 +245,25 @@ E2E test scenarios that MUST pass:
 - Use atomic database transactions for all state changes
 - Handle reorgs via confirmation thresholds per chain
 - Escrow addresses are HD-derived (BIP32/44) from HOT_WALLET_SEED
+- All transaction queue items must be persisted to `queue_items` table before submission
+- Gas refunds must complete before marking deal as fully closed
+
+## Debugging & Development Tools
+
+### Inspecting Deal State
+```bash
+# Query deal details from database
+sqlite3 ./data/otc.db "SELECT * FROM deals WHERE id='<deal-id>';"
+
+# Check queue items for a deal
+sqlite3 ./data/otc.db "SELECT * FROM queue_items WHERE dealId='<deal-id>';"
+
+# View escrow deposits
+sqlite3 ./data/otc.db "SELECT * FROM escrow_deposits WHERE dealId='<deal-id>';"
+```
+
+### Common Issues
+- **Stuck transactions**: Check queue_items table for PENDING items without submittedTx
+- **Missing confirmations**: Verify chain RPC endpoints are accessible
+- **Reorg handling**: Check if collectConfirms threshold is sufficient for chain
+- **Gas refund failures**: Verify tank wallet has sufficient native currency balance

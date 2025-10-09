@@ -1449,12 +1449,19 @@ export class RpcServer {
     'BASE': '🔵',
     'SOLANA': '◎'
   };
-  
+
+  // Helper function to get display name for chain
+  const getChainDisplayName = (chainId: string): string => {
+    const registry = getAssetRegistry();
+    const chainInfo = registry.supportedChains.find(c => c.chainId === chainId);
+    return chainInfo?.name || chainId;
+  };
+
   if (deal) {
     const registry = getAssetRegistry();
     const assetA = registry.assets.find(a => a.chainId === deal.alice.chainId && formatAssetCode(a) === deal.alice.asset);
     const assetB = registry.assets.find(a => a.chainId === deal.bob.chainId && formatAssetCode(a) === deal.bob.asset);
-    
+
     if (party === 'ALICE') {
       dealInfo = {
         sendChain: deal.alice.chainId,
@@ -2262,7 +2269,7 @@ export class RpcServer {
             <div class="escrow-address" id="escrowAddress">Loading...</div>
             <div style="margin-top: 10px;">
               <span style="font-size: 14px; color: #92400e;">
-                Amount Required: <strong id="escrowAmount">${dealInfo.sendAmount} ${dealInfo.sendAsset}</strong>
+                Amount Required: <strong id="escrowAmount">${dealInfo.sendAmount} ${dealInfo.sendAsset} on ${getChainDisplayName(dealInfo.sendChain)}</strong>
               </span>
             </div>
             <button class="escrow-copy-btn" onclick="copyEscrowAddress()">
@@ -3801,11 +3808,12 @@ export class RpcServer {
             const escrowAsset = dealData.instructions[yourSide][0].assetCode;
             const escrowChainId = party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId;
             let assetName = getCleanAssetName(escrowAsset, escrowChainId);
-            
+            const chainDisplayName = getChainDisplayName(escrowChainId);
+
             document.getElementById('escrowSection').style.display = 'block';
             document.getElementById('escrowAddress').textContent = escrowAddr;
-            document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + assetName;
-            
+            document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + assetName + ' on ' + chainDisplayName;
+
             // Fetch actual token symbol for ERC20 tokens
             let cleanedEscrowAsset = escrowAsset;
             if (escrowAsset && escrowAsset.includes('@')) {
@@ -3814,7 +3822,7 @@ export class RpcServer {
             if (cleanedEscrowAsset && cleanedEscrowAsset.startsWith('ERC20:')) {
               getAssetNameAsync(cleanedEscrowAsset, escrowChainId).then(symbol => {
                 if (symbol && symbol !== assetName) {
-                  document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + symbol;
+                  document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + symbol + ' on ' + chainDisplayName;
                 }
               });
             }
@@ -4032,10 +4040,10 @@ export class RpcServer {
         // Get clean asset name from asset code
         function getCleanAssetName(assetCode, chainId) {
           if (!assetCode) return '';
-          
+
           // Remove chain suffix if present
           let asset = assetCode.includes('@') ? assetCode.split('@')[0] : assetCode;
-          
+
           // Check for ERC20/SPL token addresses
           if (assetCode.startsWith('ERC20:') || assetCode.startsWith('SPL:')) {
             const address = assetCode.split(':')[1];
@@ -4045,8 +4053,20 @@ export class RpcServer {
             }
             return 'TOKEN';
           }
-          
+
           return asset;
+        }
+
+        // Get display name for chain
+        function getChainDisplayName(chainId) {
+          const chainNames = {
+            'UNICITY': 'Unicity',
+            'ETH': 'Ethereum',
+            'POLYGON': 'Polygon',
+            'BASE': 'Base',
+            'SOLANA': 'Solana'
+          };
+          return chainNames[chainId] || chainId;
         }
         
         // Get asset name with async ERC20 symbol fetch
@@ -4262,11 +4282,12 @@ export class RpcServer {
                 displayAssetName = symbol;
                 
                 // Update balance text
+                const chainName = getChainDisplayName(chainId);
                 if (isClosedDeal) {
-                  const newBalanceText = collected.toFixed(4) + ' ' + symbol;
+                  const newBalanceText = collected.toFixed(4) + ' ' + symbol + ' on ' + chainName;
                   balanceEl.textContent = newBalanceText;
                 } else {
-                  const newBalanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + symbol;
+                  const newBalanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + symbol + ' on ' + chainName;
                   balanceEl.textContent = newBalanceText;
                 }
                 
@@ -4283,7 +4304,8 @@ export class RpcServer {
 
           if (isClosedDeal) {
             // Show only current balance for closed deals
-            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
+            const chainName = getChainDisplayName(chainId);
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName + ' on ' + chainName;
             if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
               balanceEl.firstChild.textContent = balanceText;
             } else {
@@ -4302,7 +4324,8 @@ export class RpcServer {
             }
           } else if (isWaitingStage) {
             // WAITING stage - show balance without progress bar
-            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
+            const chainName = getChainDisplayName(chainId);
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName + ' on ' + chainName;
             balanceEl.textContent = balanceText;
             balanceEl.style.color = '#333';
 
@@ -4319,7 +4342,8 @@ export class RpcServer {
             // CREATED or COLLECTION stage - show progress bar
             const percentage = Math.min(100, (collected / required) * 100);
 
-            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + displayAssetName;
+            const chainName = getChainDisplayName(chainId);
+            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + displayAssetName + ' on ' + chainName;
             balanceEl.textContent = balanceText;
             balanceEl.style.color = '#333';
 
@@ -4342,7 +4366,8 @@ export class RpcServer {
             }
           } else {
             // Other stages - show balance only, no progress bar
-            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
+            const chainName = getChainDisplayName(chainId);
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName + ' on ' + chainName;
             balanceEl.textContent = balanceText;
             balanceEl.style.color = '#333';
 
