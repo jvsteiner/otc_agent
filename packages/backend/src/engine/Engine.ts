@@ -1714,18 +1714,29 @@ export class Engine {
       if (remainingBalance > 0.000001) { // Small threshold to avoid dust
         // Check if we already have a pending or submitted return for this escrow
         const existingQueues = this.queueRepo.getByDeal(deal.id)
-          .filter(q => q.from.address === escrowAddress && 
+          .filter(q => q.from.address === escrowAddress &&
                       q.asset === aliceAsset &&
                       (q.status === 'PENDING' || q.status === 'SUBMITTED'));
-        
+
         // Check if we already have a queue item for approximately this amount
-        const alreadyQueued = existingQueues.some(q => 
+        const alreadyQueued = existingQueues.some(q =>
           Math.abs(parseFloat(q.amount) - remainingBalance) < 0.01 // Within 0.01 ALPHA
         );
-        
-        if (!alreadyQueued) {
+
+        if (alreadyQueued) {
+          // There's already a PENDING/SUBMITTED queue item, but we need to check if it has gas
+          console.log(`[ESCROW MONITOR] Found existing queue item for ${aliceAsset} - checking gas`);
+
+          // Ensure gas for ERC-20 refund if needed
+          await this.ensureGasForRefund(
+            escrowAddress,
+            deal.alice.chainId,
+            deal.id,
+            aliceAsset
+          );
+        } else {
           console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${aliceAsset} in Alice's escrow ${escrowAddress}`);
-          
+
           // Ensure gas for ERC-20 refund if needed
           const funded = await this.ensureGasForRefund(
             escrowAddress,
@@ -1819,22 +1830,33 @@ export class Engine {
       if (remainingBalance > 0.000001) { // Small threshold to avoid dust
         // Check if we already have a pending or submitted return for this escrow
         const existingQueues = this.queueRepo.getByDeal(deal.id)
-          .filter(q => q.from.address === escrowAddress && 
+          .filter(q => q.from.address === escrowAddress &&
                       q.asset === bobAsset &&
                       (q.status === 'PENDING' || q.status === 'SUBMITTED') &&
                       Math.abs(parseFloat(q.amount) - remainingBalance) < 0.01);
-        
-        if (existingQueues.length === 0) {
+
+        if (existingQueues.length > 0) {
+          // There's already a PENDING/SUBMITTED queue item, but we need to check if it has gas
+          console.log(`[ESCROW MONITOR] Found existing queue item for ${bobAsset} - checking gas`);
+
+          // Ensure gas for ERC-20 refund if needed
+          await this.ensureGasForRefund(
+            escrowAddress,
+            deal.bob.chainId,
+            deal.id,
+            bobAsset
+          );
+        } else {
           console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${bobAsset} in Bob's escrow ${escrowAddress}`);
           console.log(`[ESCROW MONITOR] Bob's payback address: ${deal.bobDetails.paybackAddress}`);
           console.log(`[ESCROW MONITOR] Bob's recipient address: ${deal.bobDetails.recipientAddress}`);
-          
+
           // CRITICAL: Use payback address for refunds, NOT the source address
           if (!deal.bobDetails.paybackAddress) {
             console.error(`[CRITICAL] No payback address for Bob in deal ${deal.id}!`);
             return;
           }
-          
+
           // Ensure gas for ERC-20 refund if needed
           const funded = await this.ensureGasForRefund(
             escrowAddress,
