@@ -3991,7 +3991,10 @@ export class RpcServer {
                 return '<strong>Partially Ready - Waiting for Party B</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
                   '✅ Alice (Party A) has submitted wallet addresses<br>' +
-                  '⏳ Waiting for Bob (Party B) to provide ' + bobChain + ' wallet addresses<br>' +
+                  '⏳ Waiting for Bob (Party B) to provide wallet addresses<br>' +
+                  '<br><strong>Bob needs to submit:</strong><br>' +
+                  '• Payback address on ' + bobChain + ' (for refunds if deal fails)<br>' +
+                  '• Recipient address on ' + aliceChain + ' (to receive ' + aliceAsset + ')<br>' +
                   '<br><strong>What happens next:</strong><br>' +
                   '1. Bob needs to open their party link and submit details<br>' +
                   '2. Once Bob submits, the 1-hour countdown timer will start<br>' +
@@ -4003,7 +4006,10 @@ export class RpcServer {
                 return '<strong>Partially Ready - Waiting for Party A</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
                   '✅ Bob (Party B) has submitted wallet addresses<br>' +
-                  '⏳ Waiting for Alice (Party A) to provide ' + aliceChain + ' wallet addresses<br>' +
+                  '⏳ Waiting for Alice (Party A) to provide wallet addresses<br>' +
+                  '<br><strong>Alice needs to submit:</strong><br>' +
+                  '• Payback address on ' + aliceChain + ' (for refunds if deal fails)<br>' +
+                  '• Recipient address on ' + bobChain + ' (to receive ' + bobAsset + ')<br>' +
                   '<br><strong>What happens next:</strong><br>' +
                   '1. Alice needs to open their party link and submit details<br>' +
                   '2. Once Alice submits, the 1-hour countdown timer will start<br>' +
