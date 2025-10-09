@@ -4073,7 +4073,104 @@ export class RpcServer {
                 'The engine is executing the cross-chain swap.<br>' +
                 'Assets are being transferred to recipient addresses.<br>' +
                 'This may take a few minutes for confirmations.';
-              
+
+            case 'SWAP':
+              // Count transactions by status
+              const allQueueItems = dealData.transactions || [];
+              const pendingTxs = allQueueItems.filter(qi => qi.status === 'PENDING').length;
+              const submittedTxs = allQueueItems.filter(qi => qi.status === 'SUBMITTED').length;
+              const completedTxs = allQueueItems.filter(qi => qi.status === 'COMPLETED').length;
+              const totalTxs = allQueueItems.length;
+
+              // Build per-chain breakdown
+              let swapStatus = '<strong>🔄 Swap Execution In Progress</strong><br><br>';
+              swapStatus += '<strong>📊 Transaction Progress:</strong> ' + completedTxs + ' Completed, ' +
+                            submittedTxs + ' In Progress, ' + pendingTxs + ' Queued<br>';
+
+              // Helper function to format transaction hash
+              function formatTxHash(txid) {
+                if (!txid) return '';
+                return txid.substring(0, 8) + '...' + txid.substring(txid.length - 4);
+              }
+
+              // Helper function to get recipient description
+              function getRecipientDescription(qi) {
+                const isAlice = qi.to === dealData.aliceDetails?.paybackAddress;
+                const isBob = qi.to === dealData.bobDetails?.paybackAddress;
+
+                if (qi.purpose === 'SWAP_PAYOUT') {
+                  return (isAlice ? 'Alice' : isBob ? 'Bob' : 'Party') + ' receives';
+                } else if (qi.purpose === 'OP_COMMISSION') {
+                  return 'Operator commission';
+                } else if (qi.purpose === 'GAS_REIMBURSEMENT') {
+                  return 'Gas reimbursement to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
+                } else if (qi.purpose === 'SURPLUS_REFUND') {
+                  return 'Surplus refund to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
+                } else if (qi.purpose === 'TIMEOUT_REFUND') {
+                  return 'Timeout refund to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
+                } else if (qi.purpose === 'GAS_REFUND_TO_TANK') {
+                  return 'Gas tank refund';
+                }
+                return 'Transfer';
+              }
+
+              // Group transactions by chain
+              const txsByChain = {};
+              for (const qi of allQueueItems) {
+                if (!txsByChain[qi.chainId]) {
+                  txsByChain[qi.chainId] = [];
+                }
+                txsByChain[qi.chainId].push(qi);
+              }
+
+              // Display each chain's transactions
+              const chainIds = Object.keys(txsByChain).sort();
+              for (const chainId of chainIds) {
+                const chainTxs = txsByChain[chainId];
+                const chainName = getChainDisplayName(chainId);
+
+                swapStatus += '<br><div style="border-top: 2px solid #e5e7eb; margin: 10px 0; padding-top: 10px;">';
+                swapStatus += '<strong>🔹 ' + chainName + ' Network:</strong><br>';
+
+                // Show each transaction on this chain
+                for (const qi of chainTxs) {
+                  const statusIcon = qi.status === 'COMPLETED' ? '✅' :
+                                   qi.status === 'SUBMITTED' ? '⏳' : '⏸️';
+                  const asset = getCleanAssetName(qi.asset, qi.chainId);
+                  const description = getRecipientDescription(qi);
+
+                  swapStatus += '<div style="margin: 8px 0 8px 15px;">';
+                  swapStatus += statusIcon + ' <strong>' + description + ' ' + parseFloat(qi.amount).toFixed(4) + ' ' + asset + '</strong>';
+
+                  // Show confirmation status or pending state
+                  if (qi.status === 'SUBMITTED' && qi.submittedTx) {
+                    swapStatus += ' (Confirming ' + qi.submittedTx.confirms + '/' + qi.submittedTx.requiredConfirms + ')';
+                  } else if (qi.status === 'COMPLETED' && qi.submittedTx) {
+                    swapStatus += ' (Confirmed ' + qi.submittedTx.confirms + '/' + qi.submittedTx.requiredConfirms + ')';
+                  }
+                  swapStatus += '<br>';
+
+                  // Show transaction hash if available
+                  if (qi.submittedTx && qi.submittedTx.txid) {
+                    swapStatus += '<span style="color: #6b7280; font-size: 11px; margin-left: 15px;">TX: ' +
+                                 formatTxHash(qi.submittedTx.txid) + '</span><br>';
+                  }
+
+                  swapStatus += '</div>';
+                }
+
+                swapStatus += '</div>';
+              }
+
+              swapStatus += '<br><div style="margin-top: 15px; padding: 10px; background: #f9fafb; border-left: 3px solid #3b82f6;">' +
+                '<strong>⚡ Important Information:</strong><br>' +
+                '• All transactions are being processed automatically<br>' +
+                '• Timer permanently removed - no timeout risk<br>' +
+                '• You can safely close this page<br>' +
+                '</div>';
+
+              return swapStatus;
+
             case 'CLOSED':
               return '<strong>Deal completed successfully!</strong><br>' +
                 'All assets have been swapped and delivered.<br>' +
