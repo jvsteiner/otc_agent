@@ -1593,21 +1593,67 @@ export class RpcServer {
         }
         
         .stage-details {
-          font-size: 11px;
-          color: rgba(255, 255, 255, 0.9);
-          background: rgba(0, 0, 0, 0.2);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          font-size: 13px;
+          font-family: 'Courier New', 'Monaco', 'Consolas', monospace;
+          color: #00ff41;
+          background: #0a0a0a;
+          border: 2px solid #00ff41;
           border-radius: 8px;
           margin-top: 12px;
-          padding: 12px 15px;
-          line-height: 1.5;
+          padding: 15px 18px;
+          line-height: 1.6;
           text-align: left;
-          backdrop-filter: blur(10px);
+          box-shadow: 0 0 20px rgba(0, 255, 65, 0.3), inset 0 0 40px rgba(0, 255, 65, 0.05);
+          position: relative;
+          overflow: hidden;
         }
-        
+
+        /* CRT scanline effect */
+        .stage-details::before {
+          content: "";
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: repeating-linear-gradient(
+            0deg,
+            rgba(0, 0, 0, 0.15),
+            rgba(0, 0, 0, 0.15) 1px,
+            transparent 1px,
+            transparent 2px
+          );
+          pointer-events: none;
+          z-index: 1;
+        }
+
+        /* Text glow effect */
+        .stage-details * {
+          position: relative;
+          z-index: 2;
+          text-shadow: 0 0 5px rgba(0, 255, 65, 0.7), 0 0 10px rgba(0, 255, 65, 0.3);
+        }
+
         .stage-details strong {
-          color: #fff;
-          font-weight: 600;
+          color: #00ff41;
+          font-weight: 700;
+          text-shadow: 0 0 8px rgba(0, 255, 65, 0.9), 0 0 15px rgba(0, 255, 65, 0.5);
+        }
+
+        /* Blinking cursor */
+        .terminal-cursor {
+          display: inline-block;
+          width: 8px;
+          height: 14px;
+          background-color: #00ff41;
+          margin-left: 2px;
+          animation: blink 0.8s infinite;
+          box-shadow: 0 0 5px rgba(0, 255, 65, 0.8);
+        }
+
+        @keyframes blink {
+          0%, 49% { opacity: 1; }
+          50%, 100% { opacity: 0; }
         }
         
         .stage-created { background: rgba(255,255,255,0.2); }
@@ -2426,7 +2472,11 @@ export class RpcServer {
         let blockchainProviders = {};
         let blockchainQueryCache = {};
         let lastSyncTime = Date.now();
-        
+
+        // Typing animation state
+        let currentTypingAnimation = null;
+        let lastTypedText = '';
+
         // RPC endpoints will be populated from backend
         let RPC_ENDPOINTS = {};
         
@@ -3676,7 +3726,66 @@ export class RpcServer {
             syncText.textContent = 'Disconnected';
           }
         }
-        
+
+        // Terminal typing animation effect
+        function typeText(element, htmlText, callback) {
+          // Cancel any ongoing animation
+          if (currentTypingAnimation) {
+            clearTimeout(currentTypingAnimation);
+            currentTypingAnimation = null;
+          }
+
+          // Skip animation if text hasn't changed
+          if (lastTypedText === htmlText) {
+            element.innerHTML = htmlText;
+            if (callback) callback();
+            return;
+          }
+
+          lastTypedText = htmlText;
+
+          // Strip HTML tags to get plain text for character-by-character typing
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = htmlText;
+          const plainText = tempDiv.textContent || tempDiv.innerText || '';
+
+          // Clear element and prepare for typing
+          element.textContent = '';
+
+          // Add cursor
+          const cursor = document.createElement('span');
+          cursor.className = 'terminal-cursor';
+          element.appendChild(cursor);
+
+          let charIndex = 0;
+          const typingSpeed = 15; // Milliseconds per character (fast but readable)
+
+          function typeNextChar() {
+            if (charIndex < plainText.length) {
+              // Remove cursor temporarily
+              cursor.remove();
+
+              // Add next character
+              const currentText = element.textContent;
+              element.textContent = currentText + plainText[charIndex];
+
+              // Re-add cursor
+              element.appendChild(cursor);
+
+              charIndex++;
+              currentTypingAnimation = setTimeout(typeNextChar, typingSpeed);
+            } else {
+              // Typing complete - replace with formatted HTML
+              cursor.remove();
+              element.innerHTML = htmlText;
+              currentTypingAnimation = null;
+              if (callback) callback();
+            }
+          }
+
+          typeNextChar();
+        }
+
         // Update status from server
         async function updateStatus() {
           try {
@@ -3731,9 +3840,10 @@ export class RpcServer {
             stageEl.className = 'stage-badge stage-' + dealData.stage.toLowerCase();
           }
           
-          // Update detailed status explanation
+          // Update detailed status explanation with typing animation
           if (detailsEl) {
-            detailsEl.innerHTML = getDetailedStatus();
+            const statusText = getDetailedStatus();
+            typeText(detailsEl, statusText);
           }
           
           // Update countdown
@@ -3860,6 +3970,12 @@ export class RpcServer {
           const bobCollected = Object.values(dealData.collection?.sideB?.collectedByAsset || {}).reduce((sum, val) => sum + parseFloat(val), 0);
           const aliceExpected = parseFloat(dealData.alice.amount);
           const bobExpected = parseFloat(dealData.bob.amount);
+
+          // Get asset names and chain names for display
+          const aliceAsset = getCleanAssetName(dealData.alice.asset, dealData.alice.chainId);
+          const bobAsset = getCleanAssetName(dealData.bob.asset, dealData.bob.chainId);
+          const aliceChain = getChainDisplayName(dealData.alice.chainId);
+          const bobChain = getChainDisplayName(dealData.bob.chainId);
           
           switch(dealData.stage) {
             case 'CREATED':
@@ -3867,33 +3983,33 @@ export class RpcServer {
                 return '<strong>Deal initialized - Setup Phase</strong><br>' +
                   '<br><strong>Current Status:</strong> Waiting for both parties to provide wallet addresses<br>' +
                   '<br><strong>Next Steps:</strong><br>' +
-                  '1. Alice (Asset Seller) needs to submit Unicity wallet addresses<br>' +
-                  '2. Bob (Asset Buyer) needs to submit Polygon wallet addresses<br>' +
+                  '1. Alice (Asset Seller) needs to submit ' + aliceChain + ' wallet addresses<br>' +
+                  '2. Bob (Asset Buyer) needs to submit ' + bobChain + ' wallet addresses<br>' +
                   '3. Once both submit, timer will start and collection phase begins<br>' +
                   '4. Both parties will then deposit assets to their escrow addresses';
               } else if (hasAliceDetails && !hasBobDetails) {
                 return '<strong>Partially Ready - Waiting for Party B</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
                   '✅ Alice (Party A) has submitted wallet addresses<br>' +
-                  '⏳ Waiting for Bob (Party B) to provide Polygon wallet addresses<br>' +
+                  '⏳ Waiting for Bob (Party B) to provide ' + bobChain + ' wallet addresses<br>' +
                   '<br><strong>What happens next:</strong><br>' +
                   '1. Bob needs to open their party link and submit details<br>' +
                   '2. Once Bob submits, the 1-hour countdown timer will start<br>' +
                   '3. Both parties must then deposit their assets:<br>' +
-                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ALPHA to Unicity escrow<br>' +
-                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' MATIC to Polygon escrow<br>' +
+                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' to ' + aliceChain + ' escrow<br>' +
+                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' to ' + bobChain + ' escrow<br>' +
                   '4. After both fully fund, automatic swap will execute';
               } else if (!hasAliceDetails && hasBobDetails) {
                 return '<strong>Partially Ready - Waiting for Party A</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
                   '✅ Bob (Party B) has submitted wallet addresses<br>' +
-                  '⏳ Waiting for Alice (Party A) to provide Unicity wallet addresses<br>' +
+                  '⏳ Waiting for Alice (Party A) to provide ' + aliceChain + ' wallet addresses<br>' +
                   '<br><strong>What happens next:</strong><br>' +
                   '1. Alice needs to open their party link and submit details<br>' +
                   '2. Once Alice submits, the 1-hour countdown timer will start<br>' +
                   '3. Both parties must then deposit their assets:<br>' +
-                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ALPHA to Unicity escrow<br>' +
-                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' MATIC to Polygon escrow<br>' +
+                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' to ' + aliceChain + ' escrow<br>' +
+                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' to ' + bobChain + ' escrow<br>' +
                   '4. After both fully fund, automatic swap will execute';
               }
               return '<strong>Both parties ready!</strong><br>Transitioning to collection phase...';
@@ -3901,12 +4017,12 @@ export class RpcServer {
             case 'COLLECTION':
               const alicePercent = Math.min(100, (aliceCollected / aliceExpected) * 100).toFixed(1);
               const bobPercent = Math.min(100, (bobCollected / bobExpected) * 100).toFixed(1);
-              
+
               if (aliceCollected < aliceExpected && bobCollected < bobExpected) {
                 return '<strong>Collection Phase Active - Both Parties Need to Deposit</strong><br>' +
                   '<br><strong>Current Funding Status:</strong><br>' +
-                  '• Alice: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ALPHA (' + alicePercent + '%) on Unicity<br>' +
-                  '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%) on Polygon<br>' +
+                  '• Alice: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' (' + alicePercent + '%) on ' + aliceChain + '<br>' +
+                  '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' ' + bobAsset + ' (' + bobPercent + '%) on ' + bobChain + '<br>' +
                   '<br><strong>⚠️ Action Required:</strong><br>' +
                   'Both parties must deposit their full amounts to escrow addresses<br>' +
                   '⏱️ Timer is running - complete deposits before expiry!<br>' +
@@ -3915,29 +4031,29 @@ export class RpcServer {
               } else if (aliceCollected >= aliceExpected && bobCollected < bobExpected) {
                 return '<strong>Waiting for Bob - Alice Fully Funded!</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
-                  '✅ Alice has deposited ' + aliceExpected.toFixed(4) + ' ALPHA (100%)<br>' +
-                  '⏳ Bob has deposited ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%)<br>' +
-                  '<br><strong>Bob needs to deposit:</strong> ' + (bobExpected - bobCollected).toFixed(4) + ' more MATIC<br>' +
+                  '✅ Alice has deposited ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + ' (100%)<br>' +
+                  '⏳ Bob has deposited ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + ' (' + bobPercent + '%)<br>' +
+                  '<br><strong>Bob needs to deposit:</strong> ' + (bobExpected - bobCollected).toFixed(4) + ' more ' + bobAsset + ' on ' + bobChain + '<br>' +
                   '<br>Once Bob completes funding, the swap will execute automatically';
               } else if (aliceCollected < aliceExpected && bobCollected >= bobExpected) {
                 return '<strong>Waiting for Alice - Bob Fully Funded!</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
-                  '⏳ Alice has deposited ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ALPHA (' + alicePercent + '%)<br>' +
-                  '✅ Bob has deposited ' + bobExpected.toFixed(4) + ' MATIC (100%)<br>' +
-                  '<br><strong>Alice needs to deposit:</strong> ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ALPHA<br>' +
+                  '⏳ Alice has deposited ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + ' (' + alicePercent + '%)<br>' +
+                  '✅ Bob has deposited ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + ' (100%)<br>' +
+                  '<br><strong>Alice needs to deposit:</strong> ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ' + aliceAsset + ' on ' + aliceChain + '<br>' +
                   '<br>Once Alice completes funding, the swap will execute automatically';
               } else {
                 // Check if we're waiting for confirmations
                 const sideALocked = dealData.sideAState?.locks?.tradeLockedAt && dealData.sideAState?.locks?.commissionLockedAt;
                 const sideBLocked = dealData.sideBState?.locks?.tradeLockedAt && dealData.sideBState?.locks?.commissionLockedAt;
-                
+
                 if (!sideALocked || !sideBLocked) {
                   return '<strong>🎉 Both Parties Fully Funded!</strong><br>' +
                     '<br><strong>Status:</strong> ⏸️ Timer paused - waiting for confirmations<br>' +
                     '<br><strong>Current State:</strong><br>' +
-                    '✅ Alice has deposited required ALPHA<br>' +
-                    '✅ Bob has deposited required MATIC<br>' +
-                    '⏳ Waiting for blockchain confirmations (6 for Unicity, 30 for Polygon)<br>' +
+                    '✅ Alice has deposited required ' + aliceAsset + ' on ' + aliceChain + '<br>' +
+                    '✅ Bob has deposited required ' + bobAsset + ' on ' + bobChain + '<br>' +
+                    '⏳ Waiting for blockchain confirmations<br>' +
                     '<br><strong>Note:</strong> The countdown timer is paused while funds are secured.<br>' +
                     'If a chain reorganization occurs and funds drop below requirements,<br>' +
                     'the timer will automatically resume.';
@@ -3961,8 +4077,8 @@ export class RpcServer {
             case 'CLOSED':
               return '<strong>Deal completed successfully!</strong><br>' +
                 'All assets have been swapped and delivered.<br>' +
-                'Alice received ' + bobExpected.toFixed(4) + ' MATIC on Polygon.<br>' +
-                'Bob received ' + aliceExpected.toFixed(4) + ' ALPHA on Unicity.';
+                'Alice received ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + '.<br>' +
+                'Bob received ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + '.';
               
             case 'REVERTED':
               return '<strong>Deal cancelled/expired.</strong><br>' +
