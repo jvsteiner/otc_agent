@@ -57,7 +57,6 @@ contract UnicitySwapEscrow is ReentrancyGuard {
     error InvalidState(State current, State required);
     error InvalidStateMultiple(State current, State required1, State required2);
     error InvalidStateTransition(State from, State to);
-    error DealAlreadyExists(bytes32 dealId);
     error InvalidAddress(string param);
     error InsufficientBalance(uint256 required, uint256 available);
     error TransferFailed(address token, address to, uint256 amount);
@@ -105,13 +104,6 @@ contract UnicitySwapEscrow is ReentrancyGuard {
     /// @notice Tracks if swap has been executed (critical security flag)
     bool private _swapExecuted;
 
-    /// @notice Global registry to prevent duplicate dealIDs
-    /// @dev This is a contract-level storage variable
-    /// @dev In practice, each escrow instance has its own storage, so this doesn't
-    ///      actually prevent duplicates across instances. For production, consider
-    ///      using a separate registry contract or factory-based validation.
-    mapping(bytes32 => bool) private _dealRegistry;
-
     /*//////////////////////////////////////////////////////////////
                               MODIFIERS
     //////////////////////////////////////////////////////////////*/
@@ -140,7 +132,7 @@ contract UnicitySwapEscrow is ReentrancyGuard {
     /**
      * @notice Initialize escrow with immutable parameters
      * @param _escrowOperator Address authorized to trigger swap/revert
-     * @param _dealID Unique deal identifier (must not exist)
+     * @param _dealID Unique deal identifier
      * @param _payback Refund address for remaining balance
      * @param _recipient Swap recipient address
      * @param _feeRecipient Operator fee destination
@@ -167,10 +159,6 @@ contract UnicitySwapEscrow is ReentrancyGuard {
         if (_feeRecipient == address(0)) revert InvalidAddress("feeRecipient");
         if (_gasTank == address(0)) revert InvalidAddress("gasTank");
         if (_dealID == bytes32(0)) revert InvalidAddress("dealID");
-
-        // Ensure dealID is unique
-        if (_dealRegistry[_dealID]) revert DealAlreadyExists(_dealID);
-        _dealRegistry[_dealID] = true;
 
         // Set immutable state
         escrowOperator = _escrowOperator;

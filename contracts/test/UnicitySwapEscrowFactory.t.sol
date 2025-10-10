@@ -256,43 +256,6 @@ contract UnicitySwapEscrowFactoryTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        ERROR HANDLING TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_CreateEscrow_RevertsOnDuplicateDealID() public {
-        bytes32 dealId = keccak256("DUPLICATE");
-
-        // Create first escrow
-        factory.createEscrow(
-            operator,
-            dealId,
-            payback,
-            recipient,
-            feeRecipient,
-            gasTank,
-            address(token),
-            SWAP_VALUE,
-            FEE_VALUE
-        );
-
-        // Attempt to create second with same dealID should revert
-        vm.expectRevert(
-            abi.encodeWithSelector(UnicitySwapEscrow.DealAlreadyExists.selector, dealId)
-        );
-        factory.createEscrow(
-            operator,
-            dealId,
-            payback,
-            recipient,
-            feeRecipient,
-            gasTank,
-            address(token),
-            SWAP_VALUE,
-            FEE_VALUE
-        );
-    }
-
-    /*//////////////////////////////////////////////////////////////
                         GAS COMPARISON TESTS
     //////////////////////////////////////////////////////////////*/
 

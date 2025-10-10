@@ -63,26 +63,6 @@ contract UnicitySwapEscrowTest is Test {
         assertFalse(escrow.isSwapExecuted());
     }
 
-    function test_Constructor_RevertsOnDuplicateDealID() public {
-        // First escrow created successfully in setUp()
-
-        // Attempt to create another with same dealID
-        vm.expectRevert(
-            abi.encodeWithSelector(UnicitySwapEscrow.DealAlreadyExists.selector, DEAL_ID)
-        );
-        new UnicitySwapEscrow(
-            operator,
-            DEAL_ID,
-            payback,
-            recipient,
-            feeRecipient,
-            gasTank,
-            address(token),
-            SWAP_VALUE,
-            FEE_VALUE
-        );
-    }
-
     function test_Constructor_RevertsOnInvalidOperator() public {
         vm.expectRevert(
             abi.encodeWithSelector(UnicitySwapEscrow.InvalidAddress.selector, "escrowOperator")
