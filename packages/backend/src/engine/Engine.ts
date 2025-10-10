@@ -5,7 +5,7 @@
  * Runs on a 30-second interval with an independent 5-second queue processor.
  */
 
-import { Deal, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
+import { Deal, QueueItem, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
 import { DB } from '../db/database';
 import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { AccountRepository } from '../db/repositories/AccountRepository';
@@ -427,10 +427,8 @@ export class Engine {
         }
       } else if (deal.stage === 'CLOSED') {
         // Continuously monitor escrows for any funds and return them immediately
+        // Note: monitorAndReturnEscrowFunds calls processQueues internally at the end
         await this.monitorAndReturnEscrowFunds(deal);
-        
-        // Process any pending refund queues for late deposits
-        await this.processQueues(deal);
       }
   }
 
@@ -1458,49 +1456,9 @@ export class Engine {
           }
         }
         
-        // Get the full escrow account ref with keyRef from the deal
-        let fromAccountWithKey: any = nextItem.from;
-        if (deal.escrowA && deal.escrowA.address === address) {
-          fromAccountWithKey = { ...deal.escrowA, dealId: deal.id };
-        } else if (deal.escrowB && deal.escrowB.address === address) {
-          fromAccountWithKey = { ...deal.escrowB, dealId: deal.id };
-        }
-        
-        // Submit transaction
-        console.log(`[Engine] Processing queue item:`, {
-          itemId: nextItem.id,
-          chainId: nextItem.chainId,
-          asset: nextItem.asset,
-          from: fromAccountWithKey.address,
-          to: nextItem.to,
-          amount: nextItem.amount,
-          purpose: nextItem.purpose,
-          CRITICAL: nextItem.purpose === 'TIMEOUT_REFUND' ? 'This is a refund - verify swap not executed!' : undefined
-        });
-        
-        const plugin = this.pluginManager.getPlugin(nextItem.chainId);
-        console.log(`[Engine] Using plugin for chain ${nextItem.chainId}: ${plugin.constructor.name}`);
-        
-        const tx = await plugin.send(
-          nextItem.asset,
-          fromAccountWithKey,
-          nextItem.to,
-          nextItem.amount
-        );
-        
-        // Update queue item with tx info
-        this.queueRepo.updateStatus(nextItem.id, 'SUBMITTED', {
-          txid: tx.txid,
-          chainId: nextItem.chainId,
-          submittedAt: tx.submittedAt,
-          confirms: 0,
-          requiredConfirms: getConfirmationThreshold(nextItem.chainId),
-          status: 'PENDING',
-          nonceOrInputs: tx.nonceOrInputs,
-          additionalTxids: tx.additionalTxids,
-        });
-        
-        this.dealRepo.addEvent(deal.id, `Submitted ${nextItem.purpose} tx (${currentPhase}): ${tx.txid}`);
+        // UNIFIED SUBMISSION: Use atomic nonce reservation method
+        console.log(`[Engine] Processing phased queue item ${nextItem.id} (${currentPhase}: ${nextItem.purpose})`);
+        await this.submitQueueItemAtomic(nextItem, deal);
       } catch (error: any) {
         console.error(`Failed to submit tx for queue item ${nextItem.id}:`, error);
         this.dealRepo.addEvent(deal.id, `Failed to submit ${nextItem.purpose}: ${error.message}`);
@@ -1536,54 +1494,205 @@ export class Engine {
           }
         }
         
-        // Get the full escrow account ref with keyRef from the deal
-        let fromAccountWithKey: any = nextItem.from;
-        if (deal.escrowA && deal.escrowA.address === address) {
-          fromAccountWithKey = { ...deal.escrowA, dealId: deal.id };
-        } else if (deal.escrowB && deal.escrowB.address === address) {
-          fromAccountWithKey = { ...deal.escrowB, dealId: deal.id };
-        }
-        
-        // Submit transaction
-        console.log(`[Engine] Processing queue item:`, {
-          itemId: nextItem.id,
-          chainId: nextItem.chainId,
-          asset: nextItem.asset,
-          from: fromAccountWithKey.address,
-          to: nextItem.to,
-          amount: nextItem.amount,
-          purpose: nextItem.purpose,
-          CRITICAL: nextItem.purpose === 'TIMEOUT_REFUND' ? 'This is a refund - verify swap not executed!' : undefined
-        });
-        
-        const plugin = this.pluginManager.getPlugin(nextItem.chainId);
-        console.log(`[Engine] Using plugin for chain ${nextItem.chainId}: ${plugin.constructor.name}`);
-        
-        const tx = await plugin.send(
-          nextItem.asset,
-          fromAccountWithKey,
-          nextItem.to,
-          nextItem.amount
-        );
-        
-        // Update queue item with tx info
-        this.queueRepo.updateStatus(nextItem.id, 'SUBMITTED', {
-          txid: tx.txid,
-          chainId: nextItem.chainId,
-          submittedAt: tx.submittedAt,
-          confirms: 0,
-          requiredConfirms: getConfirmationThreshold(nextItem.chainId),
-          status: 'PENDING',
-          nonceOrInputs: tx.nonceOrInputs,
-          additionalTxids: tx.additionalTxids,
-        });
-        
-        this.dealRepo.addEvent(deal.id, `Submitted ${nextItem.purpose} tx: ${tx.txid}`);
+        // UNIFIED SUBMISSION: Use atomic nonce reservation method
+        console.log(`[Engine] Processing queue item ${nextItem.id} (${nextItem.purpose})`);
+        await this.submitQueueItemAtomic(nextItem, deal);
       } catch (error: any) {
         console.error(`Failed to submit tx for queue item ${nextItem.id}:`, error);
         this.dealRepo.addEvent(deal.id, `Failed to submit ${nextItem.purpose}: ${error.message}`);
       }
     }
+  }
+
+  /**
+   * UNIFIED ATOMIC TRANSACTION SUBMISSION
+   * This is the ONLY method that should submit transactions from queue items.
+   * Ensures atomic nonce reservation for EVM chains and prevents race conditions.
+   *
+   * @param item - Queue item to submit
+   * @param deal - Deal associated with queue item
+   * @returns Transaction reference or throws error
+   */
+  private async submitQueueItemAtomic(item: QueueItem, deal: Deal): Promise<void> {
+    // Get the full escrow account ref with keyRef from the deal
+    let fromAccountWithKey: any = item.from;
+    if (deal.escrowA && deal.escrowA.address === item.from.address) {
+      fromAccountWithKey = deal.escrowA;
+    } else if (deal.escrowB && deal.escrowB.address === item.from.address) {
+      fromAccountWithKey = deal.escrowB;
+    }
+
+    console.log(`[AtomicSubmit] Submitting transaction:`, {
+      id: item.id,
+      chainId: item.chainId,
+      from: item.from.address,
+      to: item.to,
+      asset: item.asset,
+      amount: item.amount,
+      purpose: item.purpose,
+      phase: item.phase
+    });
+
+    const plugin = this.pluginManager.getPlugin(item.chainId);
+
+    // Prepare transaction options with nonce for EVM chains
+    let txOptions: any = undefined;
+
+    // Check if this is an EVM chain (has getCurrentNonce method)
+    const isEvmChain = item.chainId === 'ETH' || item.chainId === 'POLYGON';
+    if (isEvmChain && 'getCurrentNonce' in plugin) {
+      // PRE-VALIDATION: Check queue integrity before reserving nonce
+      const validation = this.queueRepo.validateNonceSequence(item.chainId, item.from.address);
+
+      if (!validation.isValid) {
+        console.warn(`[AtomicSubmit] Queue integrity check FAILED for ${item.from.address}:`, validation);
+        console.warn(`[AtomicSubmit] Gaps: ${validation.gaps.join(', ')}, Duplicates: ${validation.duplicates.join(', ')}`);
+
+        // Don't throw - log and skip this item, it will be retried next cycle
+        this.dealRepo.addEvent(deal.id, `Queue integrity issue - gaps: ${validation.gaps.length}, duplicates: ${validation.duplicates.length}`);
+
+        // Reset nonce tracking to recover
+        this.accountRepo.resetNonce(item.chainId, item.from.address);
+        console.log(`[AtomicSubmit] Reset nonce tracking for ${item.from.address} - will retry next cycle`);
+
+        return; // Skip this item for now
+      }
+
+      // ATOMIC nonce reservation with retry logic
+      let nonce: number;
+      let attempt = 0;
+      const maxAttempts = 3;
+
+      while (attempt < maxAttempts) {
+        try {
+          // Check if we need to fetch initial nonce from network
+          const trackedNonce = this.accountRepo.getNextNonce(item.chainId, item.from.address);
+
+          if (trackedNonce === null) {
+            // First transaction for this address - fetch from network
+            console.log(`[AtomicSubmit] Fetching initial nonce from network for ${item.from.address}`);
+            const networkNonce = await (plugin as any).getCurrentNonce(item.from.address);
+            console.log(`[AtomicSubmit] Got initial nonce from network: ${networkNonce}`);
+
+            // Reserve nonce atomically with network nonce
+            nonce = this.db.runInTransaction(() => {
+              return this.accountRepo.reserveNextNonce(item.chainId, item.from.address, networkNonce);
+            });
+          } else {
+            // Validate expected sequence: next nonce should be highest queued + 1
+            const highestQueued = this.queueRepo.getHighestQueuedNonce(item.chainId, item.from.address);
+            const expectedNonce = highestQueued !== null ? highestQueued + 1 : trackedNonce;
+
+            console.log(`[AtomicSubmit] Expected nonce: ${expectedNonce} (highest queued: ${highestQueued}, tracked: ${trackedNonce})`);
+
+            // Reserve next nonce atomically
+            nonce = this.db.runInTransaction(() => {
+              return this.accountRepo.reserveNextNonce(item.chainId, item.from.address);
+            });
+
+            // VALIDATION: Verify we got the expected nonce
+            if (nonce !== expectedNonce) {
+              console.warn(`[AtomicSubmit] Nonce mismatch! Expected ${expectedNonce}, got ${nonce}`);
+              throw new Error(`Nonce sequence violation: expected ${expectedNonce}, got ${nonce}`);
+            }
+          }
+
+          console.log(`[AtomicSubmit] ✓ ATOMICALLY reserved nonce ${nonce} for ${item.from.address} (attempt ${attempt + 1})`);
+          txOptions = { nonce };
+          break; // Success!
+
+        } catch (error: any) {
+          attempt++;
+          console.error(`[AtomicSubmit] Nonce reservation attempt ${attempt} failed:`, error.message);
+
+          if (attempt < maxAttempts) {
+            // Exponential backoff: 100ms, 500ms, 2000ms
+            const delay = Math.pow(5, attempt) * 100;
+            console.log(`[AtomicSubmit] Retrying in ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+
+            // Reset nonce tracking before retry
+            this.accountRepo.resetNonce(item.chainId, item.from.address);
+          } else {
+            // Max retries exceeded
+            console.error(`[AtomicSubmit] Max retry attempts exceeded for ${item.from.address}`);
+            this.dealRepo.addEvent(deal.id, `Failed to reserve nonce after ${maxAttempts} attempts`);
+            throw error; // Re-throw to trigger error handling
+          }
+        }
+      }
+    }
+
+    // Submit the transaction with explicit nonce if EVM
+    const tx = await plugin.send(
+      item.asset,
+      fromAccountWithKey,
+      item.to,
+      item.amount,
+      txOptions
+    );
+
+    // SANITY CHECK: Verify nonce is not already used by another queue item
+    if (isEvmChain && tx.nonceOrInputs) {
+      const conflictingItem = this.queueRepo.findNonceConflict(
+        item.chainId,
+        item.from.address,
+        tx.nonceOrInputs,
+        item.id
+      );
+
+      if (conflictingItem) {
+        const error = `CRITICAL: Nonce collision detected! Nonce ${tx.nonceOrInputs} already used by queue item ${conflictingItem.id}`;
+        console.error(`[AtomicSubmit] ${error}`);
+        console.error(`[AtomicSubmit] Current item: ${item.id} (${item.purpose})`);
+        console.error(`[AtomicSubmit] Conflicting item: ${conflictingItem.id} (${conflictingItem.purpose})`);
+
+        this.dealRepo.addEvent(deal.id, `COLLISION: Nonce ${tx.nonceOrInputs} conflict between ${item.purpose} and ${conflictingItem.purpose}`);
+
+        // GRACEFUL RECOVERY: Don't throw, instead reset and retry next cycle
+        this.accountRepo.resetNonce(item.chainId, item.from.address);
+
+        // Log full queue state for debugging
+        const queueValidation = this.queueRepo.validateNonceSequence(item.chainId, item.from.address);
+        console.error(`[AtomicSubmit] Queue state after collision:`, queueValidation);
+
+        // Return without throwing - this will be retried in next engine cycle
+        console.log(`[AtomicSubmit] Skipping ${item.id} - will retry in next cycle after nonce reset`);
+        return;
+      }
+
+      console.log(`[AtomicSubmit] ✓ Nonce ${tx.nonceOrInputs} validation passed - no duplicates found`);
+    }
+
+    // Update queue item with tx info
+    const txRef: any = {
+      txid: tx.txid,
+      chainId: item.chainId,
+      requiredConfirms: getConfirmationThreshold(item.chainId),
+      submittedAt: tx.submittedAt,
+      confirms: 0,
+      status: 'SUBMITTED',
+      nonceOrInputs: tx.nonceOrInputs,
+      additionalTxids: tx.additionalTxids
+    };
+
+    this.queueRepo.updateStatus(item.id, 'SUBMITTED', txRef);
+
+    // Store submission metadata for stuck detection
+    this.queueRepo.updateSubmissionMetadata(item.id, {
+      lastSubmitAt: new Date().toISOString(),
+      originalNonce: txOptions?.nonce,
+      lastGasPrice: (tx as any).gasPrice
+    });
+
+    this.dealRepo.addEvent(deal.id, `Submitted ${item.purpose} tx: ${tx.txid.slice(0, 10)}...`);
+
+    console.log(`[AtomicSubmit] Transaction submitted successfully:`, {
+      queueId: item.id,
+      txid: tx.txid,
+      nonce: txOptions?.nonce,
+      purpose: item.purpose
+    });
   }
 
   /**
