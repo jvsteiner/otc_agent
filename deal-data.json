@@ -1,0 +1,437 @@
+{
+    "jsonrpc": "2.0",
+    "result": {
+        "stage": "CLOSED",
+        "timeoutSeconds": 3600,
+        "instructions": {
+            "sideA": [
+                {
+                    "assetCode": "ALPHA@UNICITY",
+                    "amount": "0.2",
+                    "to": "alpha1ql9tj350lxhel3n3rumunj3dncgyfva599errpl"
+                }
+            ],
+            "sideB": [
+                {
+                    "assetCode": "ERC20:0xc2132D05D31c914a87C6611C10748AEb04B58e8F@POLYGON",
+                    "amount": "0.1",
+                    "to": "0x630f8637F761195433D7CcdaE9F931E9d24CD694"
+                }
+            ]
+        },
+        "collection": {
+            "sideA": {
+                "deposits": [
+                    {
+                        "txid": "6378713a78ff216b1faf89d12a8ae35c0160749dd6784fb6a5847880d867368a",
+                        "index": 0,
+                        "amount": "0.00120191",
+                        "asset": "ALPHA@UNICITY",
+                        "blockHeight": 353564,
+                        "blockTime": "2025-10-08T19:39:46.000Z",
+                        "confirms": 18
+                    },
+                    {
+                        "txid": "278e825c70f51a88dac20154d890b0b53fbc7f2fb6fdf92a9286db0ba06550bd",
+                        "index": 0,
+                        "amount": "0.0002013",
+                        "asset": "ALPHA@UNICITY",
+                        "blockHeight": 353564,
+                        "blockTime": "2025-10-08T19:39:46.000Z",
+                        "confirms": 18
+                    },
+                    {
+                        "txid": "3d67bcdce98fc16588136258e3ed8dfc63fb7f16511fd9789631dff6d77e1acf",
+                        "index": 0,
+                        "amount": "0.00151671",
+                        "asset": "ALPHA@UNICITY",
+                        "blockHeight": 353564,
+                        "blockTime": "2025-10-08T19:39:46.000Z",
+                        "confirms": 18
+                    },
+                    {
+                        "txid": "429acc2bf666d6738646503157702bf444304835a030414d36b447389a708de8",
+                        "index": 0,
+                        "amount": "0.00010192",
+                        "asset": "ALPHA@UNICITY",
+                        "blockHeight": 353564,
+                        "blockTime": "2025-10-08T19:39:46.000Z",
+                        "confirms": 18
+                    },
+                    {
+                        "txid": "a681e5990475b962985c86dcc39226b978b7e53514399732fd7270b531dc6c02",
+                        "index": 1,
+                        "amount": "0.00121924",
+                        "asset": "ALPHA@UNICITY",
+                        "blockHeight": 353570,
+                        "blockTime": "2025-10-08T19:47:06.000Z",
+                        "confirms": 12
+                    },
+                    {
+                        "txid": "cad99c8d83eb14a46e4845cef4b936bfbd4220b4a135cd1ed0b9a2ee23b69615",
+                        "index": 1,
+                        "amount": "0.09515791",
+                        "asset": "ALPHA@UNICITY",
+                        "blockHeight": 353576,
+                        "blockTime": "2025-10-08T19:58:03.000Z",
+                        "confirms": 6
+                    }
+                ],
+                "collectedByAsset": {
+                    "ALPHA@UNICITY": "0.09939899"
+                },
+                "locks": {}
+            },
+            "sideB": {
+                "deposits": [
+                    {
+                        "txid": "erc20-balance-0xc2132D05",
+                        "amount": "0.0997",
+                        "asset": "ERC20:0xc2132D05D31c914a87C6611C10748AEb04B58e8F@POLYGON",
+                        "confirms": 100,
+                        "blockHeight": 77423803,
+                        "blockTime": "2025-10-08T19:05:10.595Z",
+                        "isSynthetic": false,
+                        "originalTxid": null,
+                        "resolutionStatus": "none",
+                        "resolvedAt": null
+                    }
+                ],
+                "collectedByAsset": {
+                    "ERC20:0xc2132D05D31c914a87C6611C10748AEb04B58e8F@POLYGON": "0.0997"
+                },
+                "locks": {}
+            }
+        },
+        "events": [],
+        "aliceDetails": {
+            "paybackAddress": "alpha1q9sc5wjxs549l9j7ymt84f75qq2v9jdqzck7ctj",
+            "recipientAddress": "0xC7DcbF135F088dA2a4BeC3FaB5c21C30735166c8",
+            "email": "vrogojin.net@gmail.com",
+            "filledAt": "2025-10-08T19:37:53.368Z",
+            "locked": true
+        },
+        "bobDetails": {
+            "paybackAddress": "0x9b17B793A2aB1f7234ddB599f8Ad5B1b7F3E39De",
+            "recipientAddress": "alpha1qecu3p3u6xzkgs754w7ta0ky0x664ej3tga4y27",
+            "email": "vrogojin@vrogojin.net",
+            "filledAt": "2025-10-08T19:38:51.207Z",
+            "locked": true
+        },
+        "alice": {
+            "chainId": "UNICITY",
+            "asset": "ALPHA",
+            "amount": "0.2"
+        },
+        "bob": {
+            "chainId": "POLYGON",
+            "asset": "ERC20:0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+            "amount": "0.1"
+        },
+        "commissionPlan": {
+            "sideA": {
+                "mode": "PERCENT_BPS",
+                "currency": "ASSET",
+                "percentBps": 30,
+                "coveredBySurplus": true
+            },
+            "sideB": {
+                "mode": "PERCENT_BPS",
+                "currency": "ASSET",
+                "percentBps": 30,
+                "coveredBySurplus": true
+            }
+        },
+        "escrowA": {
+            "chainId": "UNICITY",
+            "address": "alpha1ql9tj350lxhel3n3rumunj3dncgyfva599errpl",
+            "keyRef": "m/44'/0'/0'/0/12880"
+        },
+        "escrowB": {
+            "chainId": "POLYGON",
+            "address": "0x630f8637F761195433D7CcdaE9F931E9d24CD694",
+            "keyRef": "m/44'/60'/0'/0/215246"
+        },
+        "transactions": [
+            {
+                "id": "95ef7baf3fa61f102a0d08d4a44f9076",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "POLYGON",
+                "from": {
+                    "chainId": "POLYGON",
+                    "address": "0x630f8637F761195433D7CcdaE9F931E9d24CD694"
+                },
+                "to": "0xC7DcbF135F088dA2a4BeC3FaB5c21C30735166c8",
+                "asset": "ERC20:0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+                "amount": "0.1",
+                "purpose": "SWAP_PAYOUT",
+                "seq": 1,
+                "status": "COMPLETED",
+                "createdAt": "2025-10-08T19:43:40.047Z",
+                "submittedTx": {
+                    "txid": "0x80027ffe0b73fd66587fe8b7ee686114ece7f732f273a035d76e72395cdc980f",
+                    "chainId": "POLYGON",
+                    "submittedAt": "2025-10-08T19:43:49.526Z",
+                    "confirms": 67,
+                    "requiredConfirms": 64,
+                    "status": "CONFIRMED",
+                    "nonceOrInputs": "0"
+                },
+                "tag": "swap",
+                "blockTime": "2025-10-08T19:43:49.526Z"
+            },
+            {
+                "id": "83f3b1aa52e1b10ebd0b3fd491f5b177",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "POLYGON",
+                "from": {
+                    "chainId": "POLYGON",
+                    "address": "0x630f8637F761195433D7CcdaE9F931E9d24CD694"
+                },
+                "to": "0xEd3f3F5974599f6455B06bB566C267cc64A6F1d1",
+                "asset": "ERC20:0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+                "amount": "0.000300000000000000",
+                "purpose": "OP_COMMISSION",
+                "seq": 2,
+                "status": "COMPLETED",
+                "createdAt": "2025-10-08T19:43:40.047Z",
+                "submittedTx": {
+                    "txid": "0x96903eaf0a0a971a54eed68b65af0f68c75dfe209674252fc77d66eac83fff53",
+                    "chainId": "POLYGON",
+                    "submittedAt": "2025-10-08T19:43:52.917Z",
+                    "confirms": 66,
+                    "requiredConfirms": 64,
+                    "status": "CONFIRMED",
+                    "nonceOrInputs": "1"
+                },
+                "tag": "commission",
+                "blockTime": "2025-10-08T19:43:52.917Z"
+            },
+            {
+                "id": "1f42694172f37860ef5595979362fab2",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "POLYGON",
+                "from": {
+                    "chainId": "POLYGON",
+                    "address": "0x630f8637F761195433D7CcdaE9F931E9d24CD694"
+                },
+                "to": "0x9b17B793A2aB1f7234ddB599f8Ad5B1b7F3E39De",
+                "asset": "ERC20:0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+                "amount": "0.0997",
+                "purpose": "TIMEOUT_REFUND",
+                "seq": 3,
+                "status": "COMPLETED",
+                "createdAt": "2025-10-08T20:05:38.522Z",
+                "submittedTx": {
+                    "txid": "0x2631addee9394284d4048004be922619d5f8c85807ec888009e081b2c0bafb59",
+                    "chainId": "POLYGON",
+                    "submittedAt": "2025-10-08T20:05:38.872Z",
+                    "confirms": 210,
+                    "requiredConfirms": 64,
+                    "status": "CONFIRMED",
+                    "nonceOrInputs": "2"
+                },
+                "tag": "refund",
+                "blockTime": "2025-10-08T20:05:38.872Z"
+            },
+            {
+                "id": "04b8de6de575b8ef465353d47d3224d1",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "POLYGON",
+                "from": {
+                    "chainId": "POLYGON",
+                    "address": "0x630f8637F761195433D7CcdaE9F931E9d24CD694"
+                },
+                "to": "0x2f750c3Ac8e85E0DdA3D97bBb6144f15C1A2123D",
+                "asset": "MATIC",
+                "amount": "0.49648778518410136",
+                "purpose": "GAS_REFUND_TO_TANK",
+                "seq": 4,
+                "status": "PENDING",
+                "createdAt": "2025-10-08T20:05:38.524Z",
+                "tag": "unknown",
+                "blockTime": "2025-10-08T20:05:38.524Z"
+            },
+            {
+                "id": "a75c29756aeff40b3c244744277831e1",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "UNICITY",
+                "from": {
+                    "chainId": "UNICITY",
+                    "address": "alpha1ql9tj350lxhel3n3rumunj3dncgyfva599errpl"
+                },
+                "to": "alpha1qecu3p3u6xzkgs754w7ta0ky0x664ej3tga4y27",
+                "asset": "ALPHA",
+                "amount": "0.2",
+                "purpose": "SWAP_PAYOUT",
+                "phase": "PHASE_1_SWAP",
+                "seq": 1,
+                "status": "COMPLETED",
+                "createdAt": "2025-10-08T19:43:40.047Z",
+                "submittedTx": {
+                    "txid": "313cfdfff8a647492d0d5c201e9bbc89dde712c412d7dd438ce00677601a7a63",
+                    "chainId": "UNICITY",
+                    "submittedAt": "2025-10-08T19:43:49.558Z",
+                    "confirms": 6,
+                    "requiredConfirms": 6,
+                    "status": "CONFIRMED",
+                    "nonceOrInputs": "[\"313cfdfff8a647492d0d5c201e9bbc89dde712c412d7dd438ce00677601a7a63\",\"a681e5990475b962985c86dcc39226b978b7e53514399732fd7270b531dc6c02\"]",
+                    "additionalTxids": [
+                        "a681e5990475b962985c86dcc39226b978b7e53514399732fd7270b531dc6c02"
+                    ]
+                },
+                "tag": "swap",
+                "blockTime": "2025-10-08T19:43:49.558Z",
+                "payoutId": "8492ef5e-610f-487f-92b6-55f26a52547d",
+                "payoutInfo": {
+                    "payoutId": "8492ef5e-610f-487f-92b6-55f26a52547d",
+                    "totalAmount": "0.2",
+                    "toAddr": "alpha1qecu3p3u6xzkgs754w7ta0ky0x664ej3tga4y27",
+                    "purpose": "SWAP_PAYOUT",
+                    "status": "PENDING",
+                    "minConfirmations": null
+                }
+            },
+            {
+                "id": "00408589310735f4ddbd7d6b0dfa82e0",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "UNICITY",
+                "from": {
+                    "chainId": "UNICITY",
+                    "address": "alpha1ql9tj350lxhel3n3rumunj3dncgyfva599errpl"
+                },
+                "to": "alpha1qv003pgutceeewj4fzvpdy58rem3xf6lnlv88ku",
+                "asset": "ALPHA",
+                "amount": "0.000600000000000000",
+                "purpose": "OP_COMMISSION",
+                "phase": "PHASE_2_COMMISSION",
+                "seq": 2,
+                "status": "COMPLETED",
+                "createdAt": "2025-10-08T19:43:40.047Z",
+                "submittedTx": {
+                    "txid": "cad99c8d83eb14a46e4845cef4b936bfbd4220b4a135cd1ed0b9a2ee23b69615",
+                    "chainId": "UNICITY",
+                    "submittedAt": "2025-10-08T19:57:37.391Z",
+                    "confirms": 6,
+                    "requiredConfirms": 6,
+                    "status": "CONFIRMED",
+                    "nonceOrInputs": "[\"cad99c8d83eb14a46e4845cef4b936bfbd4220b4a135cd1ed0b9a2ee23b69615\"]",
+                    "additionalTxids": []
+                },
+                "tag": "commission",
+                "blockTime": "2025-10-08T19:57:37.391Z"
+            },
+            {
+                "id": "d8384d935ca54518c6ac7e8d47a76d45",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "UNICITY",
+                "from": {
+                    "chainId": "UNICITY",
+                    "address": "alpha1ql9tj350lxhel3n3rumunj3dncgyfva599errpl"
+                },
+                "to": "alpha1q9sc5wjxs549l9j7ymt84f75qq2v9jdqzck7ctj",
+                "asset": "ALPHA",
+                "amount": "0.09939899",
+                "purpose": "TIMEOUT_REFUND",
+                "seq": 3,
+                "status": "COMPLETED",
+                "createdAt": "2025-10-08T20:05:38.422Z",
+                "submittedTx": {
+                    "txid": "4e089f6fb46f3dce38f9f15abc45b667af6dce3c2a64da2ec510016d0829ba94",
+                    "chainId": "UNICITY",
+                    "submittedAt": "2025-10-08T20:05:38.944Z",
+                    "confirms": 6,
+                    "requiredConfirms": 6,
+                    "status": "CONFIRMED",
+                    "nonceOrInputs": "[\"4e089f6fb46f3dce38f9f15abc45b667af6dce3c2a64da2ec510016d0829ba94\",\"10d9294cc5e4dbd404ef89e3615291dd2e8aff074ca02aea8cef8df86b7e5441\",\"ee945da4048635ebe38469a44e62d6b5a19c7285842e22f45bc047278d788c9e\",\"a4bbe2445028601826bcf0ed6fbb3fbcb54a07526e714f143f90db70860922c3\",\"92ac9b346a79cf55d1bb139a3aa720a88b025d1e8fdcd414d2912376a9a55128\",\"6075ccf460bfbd31ea027d9f718a1e4480d234a8b711cd9a0cf4610b5eef0b0c\"]",
+                    "additionalTxids": [
+                        "10d9294cc5e4dbd404ef89e3615291dd2e8aff074ca02aea8cef8df86b7e5441",
+                        "ee945da4048635ebe38469a44e62d6b5a19c7285842e22f45bc047278d788c9e",
+                        "a4bbe2445028601826bcf0ed6fbb3fbcb54a07526e714f143f90db70860922c3",
+                        "92ac9b346a79cf55d1bb139a3aa720a88b025d1e8fdcd414d2912376a9a55128",
+                        "6075ccf460bfbd31ea027d9f718a1e4480d234a8b711cd9a0cf4610b5eef0b0c"
+                    ]
+                },
+                "tag": "refund",
+                "blockTime": "2025-10-08T20:05:38.944Z"
+            },
+            {
+                "id": "b56de8fc4cd33fd8736a20dc7574133d",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "UNICITY",
+                "from": {
+                    "chainId": "UNICITY",
+                    "address": "alpha1ql9tj350lxhel3n3rumunj3dncgyfva599errpl"
+                },
+                "to": "alpha1q9sc5wjxs549l9j7ymt84f75qq2v9jdqzck7ctj",
+                "asset": "ALPHA@UNICITY",
+                "amount": "0.09939899",
+                "purpose": "TIMEOUT_REFUND",
+                "seq": 4,
+                "status": "COMPLETED",
+                "createdAt": "2025-10-08T20:05:38.431Z",
+                "submittedTx": {
+                    "txid": "4e089f6fb46f3dce38f9f15abc45b667af6dce3c2a64da2ec510016d0829ba94",
+                    "chainId": "UNICITY",
+                    "submittedAt": "2025-10-08T20:05:39.242Z",
+                    "confirms": 6,
+                    "requiredConfirms": 6,
+                    "status": "CONFIRMED",
+                    "nonceOrInputs": "[\"4e089f6fb46f3dce38f9f15abc45b667af6dce3c2a64da2ec510016d0829ba94\",\"10d9294cc5e4dbd404ef89e3615291dd2e8aff074ca02aea8cef8df86b7e5441\",\"ee945da4048635ebe38469a44e62d6b5a19c7285842e22f45bc047278d788c9e\",\"a4bbe2445028601826bcf0ed6fbb3fbcb54a07526e714f143f90db70860922c3\",\"92ac9b346a79cf55d1bb139a3aa720a88b025d1e8fdcd414d2912376a9a55128\",\"6075ccf460bfbd31ea027d9f718a1e4480d234a8b711cd9a0cf4610b5eef0b0c\"]",
+                    "additionalTxids": [
+                        "10d9294cc5e4dbd404ef89e3615291dd2e8aff074ca02aea8cef8df86b7e5441",
+                        "ee945da4048635ebe38469a44e62d6b5a19c7285842e22f45bc047278d788c9e",
+                        "a4bbe2445028601826bcf0ed6fbb3fbcb54a07526e714f143f90db70860922c3",
+                        "92ac9b346a79cf55d1bb139a3aa720a88b025d1e8fdcd414d2912376a9a55128",
+                        "6075ccf460bfbd31ea027d9f718a1e4480d234a8b711cd9a0cf4610b5eef0b0c"
+                    ]
+                },
+                "tag": "refund",
+                "blockTime": "2025-10-08T20:05:39.242Z"
+            }
+        ],
+        "payouts": [
+            {
+                "payoutId": "8492ef5e-610f-487f-92b6-55f26a52547d",
+                "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                "chainId": "UNICITY",
+                "fromAddr": "alpha1ql9tj350lxhel3n3rumunj3dncgyfva599errpl",
+                "toAddr": "alpha1qecu3p3u6xzkgs754w7ta0ky0x664ej3tga4y27",
+                "asset": "ALPHA",
+                "totalAmount": "0.2",
+                "purpose": "SWAP_PAYOUT",
+                "phase": "PHASE_1_SWAP",
+                "status": "PENDING",
+                "minConfirmations": null,
+                "createdAt": "2025-10-08T19:43:40.046Z",
+                "completedAt": null,
+                "metadata": {
+                    "side": "A"
+                },
+                "transactions": [
+                    {
+                        "id": "a75c29756aeff40b3c244744277831e1",
+                        "dealId": "2b282a0717717f766e12b64d6cdf180d",
+                        "chainId": "UNICITY",
+                        "fromAddr": "alpha1ql9tj350lxhel3n3rumunj3dncgyfva599errpl",
+                        "toAddr": "alpha1qecu3p3u6xzkgs754w7ta0ky0x664ej3tga4y27",
+                        "asset": "ALPHA",
+                        "amount": "0.2",
+                        "purpose": "SWAP_PAYOUT",
+                        "seq": 1,
+                        "status": "COMPLETED",
+                        "submittedTx": "{\"txid\":\"313cfdfff8a647492d0d5c201e9bbc89dde712c412d7dd438ce00677601a7a63\",\"chainId\":\"UNICITY\",\"submittedAt\":\"2025-10-08T19:43:49.558Z\",\"confirms\":6,\"requiredConfirms\":6,\"status\":\"CONFIRMED\",\"nonceOrInputs\":\"[\\\"313cfdfff8a647492d0d5c201e9bbc89dde712c412d7dd438ce00677601a7a63\\\",\\\"a681e5990475b962985c86dcc39226b978b7e53514399732fd7270b531dc6c02\\\"]\",\"additionalTxids\":[\"a681e5990475b962985c86dcc39226b978b7e53514399732fd7270b531dc6c02\"]}",
+                        "createdAt": "2025-10-08T19:43:40.047Z",
+                        "phase": "PHASE_1_SWAP",
+                        "payoutId": "8492ef5e-610f-487f-92b6-55f26a52547d"
+                    }
+                ]
+            }
+        ],
+        "rpcEndpoints": {
+            "UNICITY": "wss://fulcrum.unicity.network:50004",
+            "POLYGON": "https://polygon-rpc.com"
+        }
+    },
+    "id": 1
+}

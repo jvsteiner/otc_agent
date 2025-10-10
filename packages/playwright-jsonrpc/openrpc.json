@@ -1,0 +1,809 @@
+{
+  "openrpc": "1.2.6",
+  "info": {
+    "title": "Playwright JSON-RPC Browser Automation API",
+    "description": "A production-ready headless browser microservice that exposes Playwright browser automation capabilities through a JSON-RPC 2.0 API. Supports session management, page navigation, content extraction, user interactions, and debugging with built-in security features including API key authentication, host allowlists, and rate limiting.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "API Support",
+      "email": "support@example.com"
+    },
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "name": "Local Development",
+      "url": "http://localhost:3337/rpc"
+    },
+    {
+      "name": "Docker",
+      "url": "http://playwright-jsonrpc:3337/rpc"
+    }
+  ],
+  "methods": [
+    {
+      "name": "session.create",
+      "summary": "Create a new browser session",
+      "description": "Creates a new isolated browser session with its own context. Each session has independent cookies, storage, and cache. Sessions automatically expire after the configured TTL (default 120 seconds). Always close sessions explicitly when done to free resources.",
+      "tags": [{"name": "Session Management"}],
+      "params": [
+        {
+          "name": "params",
+          "description": "Session creation parameters (all optional)",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "headless": {
+                "type": "boolean",
+                "description": "Run browser in headless mode (no UI). Set to false for debugging with visible browser.",
+                "default": true
+              },
+              "viewport": {
+                "type": "object",
+                "description": "Browser viewport dimensions in pixels. Affects page rendering and responsive design.",
+                "properties": {
+                  "width": {
+                    "type": "integer",
+                    "minimum": 320,
+                    "maximum": 3840,
+                    "default": 1280,
+                    "description": "Viewport width in pixels"
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 240,
+                    "maximum": 2160,
+                    "default": 800,
+                    "description": "Viewport height in pixels"
+                  }
+                }
+              },
+              "userAgent": {
+                "type": "string",
+                "description": "Custom user agent string. Useful for mobile emulation or specific browser identification.",
+                "examples": ["Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15"]
+              },
+              "proxy": {
+                "type": "object",
+                "description": "Proxy server configuration for routing browser traffic",
+                "required": ["server"],
+                "properties": {
+                  "server": {
+                    "type": "string",
+                    "description": "Proxy server URL (e.g., http://proxy.example.com:8080)"
+                  },
+                  "username": {
+                    "type": "string",
+                    "description": "Proxy authentication username"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Proxy authentication password"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Created session information",
+        "schema": {
+          "type": "object",
+          "required": ["session_id"],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "pattern": "^s_[a-f0-9-]+$",
+              "description": "Unique session identifier starting with 's_' prefix. Use this ID for all subsequent operations.",
+              "examples": ["s_123e4567-e89b-12d3-a456-426614174000"]
+            }
+          }
+        }
+      },
+      "examples": [
+        {
+          "name": "Create default session",
+          "description": "Creates a headless session with default viewport",
+          "params": [{}],
+          "result": {
+            "name": "result",
+            "value": {
+              "session_id": "s_123e4567-e89b-12d3-a456-426614174000"
+            }
+          }
+        },
+        {
+          "name": "Create mobile session",
+          "description": "Creates a session emulating an iPhone",
+          "params": [{
+            "headless": true,
+            "viewport": {"width": 375, "height": 667},
+            "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15"
+          }],
+          "result": {
+            "name": "result",
+            "value": {
+              "session_id": "s_234e5678-e89b-12d3-a456-426614174001"
+            }
+          }
+        }
+      ],
+      "errors": [
+        {
+          "code": -32003,
+          "message": "Maximum number of concurrent sessions (8) exceeded",
+          "data": {"max": 8, "current": 8}
+        }
+      ]
+    },
+    {
+      "name": "session.close",
+      "summary": "Close an existing session",
+      "description": "Closes a browser session and releases all associated resources including browser context, pages, and event buffers. Always call this method when done to prevent resource leaks and ensure proper cleanup.",
+      "tags": [{"name": "Session Management"}],
+      "params": [
+        {
+          "name": "session_id",
+          "description": "Session ID to close (returned from session.create)",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "pattern": "^s_[a-f0-9-]+$",
+            "examples": ["s_123e4567-e89b-12d3-a456-426614174000"]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Confirmation of session closure",
+        "schema": {
+          "type": "object",
+          "required": ["ok"],
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "description": "Always true on successful closure",
+              "enum": [true]
+            }
+          }
+        }
+      },
+      "examples": [
+        {
+          "name": "Close session",
+          "params": [{"session_id": "s_123e4567-e89b-12d3-a456-426614174000"}],
+          "result": {
+            "name": "result",
+            "value": {"ok": true}
+          }
+        }
+      ],
+      "errors": [
+        {
+          "code": -32001,
+          "message": "Session not found: s_invalid-id"
+        }
+      ]
+    },
+    {
+      "name": "page.goto",
+      "description": "Navigate to a URL",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "url",
+          "required": true,
+          "schema": { "type": "string", "format": "uri" }
+        },
+        {
+          "name": "waitUntil",
+          "schema": {
+            "type": "string",
+            "enum": ["load", "domcontentloaded", "networkidle", "commit"],
+            "default": "networkidle"
+          }
+        },
+        {
+          "name": "timeout",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 45000
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string" },
+            "title": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "name": "page.reload",
+      "description": "Reload the current page",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "waitUntil",
+          "schema": {
+            "type": "string",
+            "enum": ["load", "domcontentloaded", "networkidle", "commit"],
+            "default": "networkidle"
+          }
+        },
+        {
+          "name": "timeout",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 45000
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string" },
+            "title": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "name": "page.waitFor",
+      "description": "Wait for a specific page state",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "state",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": ["load", "domcontentloaded", "networkidle", "idleFor"]
+          }
+        },
+        {
+          "name": "ms",
+          "description": "Milliseconds to wait (for idleFor state)",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 1000
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "state": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "name": "page.text",
+      "description": "Extract visible text from the page",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "selector",
+          "schema": {
+            "type": "string",
+            "default": "body"
+          }
+        },
+        {
+          "name": "maxChars",
+          "schema": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 90000
+          }
+        },
+        {
+          "name": "normalize",
+          "schema": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "name": "page.content",
+      "description": "Get the full HTML content",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "html": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "name": "page.evaluate",
+      "description": "Execute JavaScript in the page context",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "expression",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "arg",
+          "description": "Argument to pass to the expression",
+          "schema": {}
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "result": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "page.click",
+      "description": "Click an element",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "selector",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "button",
+          "schema": {
+            "type": "string",
+            "enum": ["left", "right", "middle"],
+            "default": "left"
+          }
+        },
+        {
+          "name": "modifiers",
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["Alt", "Control", "Meta", "Shift"]
+            }
+          }
+        },
+        {
+          "name": "timeout",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 15000
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    {
+      "name": "page.fill",
+      "description": "Fill an input field",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "selector",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "value",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "timeout",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 15000
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    {
+      "name": "page.press",
+      "description": "Press a keyboard key",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "selector",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "key",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "timeout",
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 15000
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    {
+      "name": "logs.pull",
+      "description": "Retrieve and clear console logs",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "console": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string" },
+                  "text": { "type": "string" }
+                }
+              }
+            },
+            "pageErrors": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string" },
+                  "text": { "type": "string" },
+                  "stack": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "network.pull",
+      "description": "Retrieve and clear network events",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "onlyErrors",
+          "schema": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "requests": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "url": { "type": "string" },
+                  "status": { "type": "integer" },
+                  "method": { "type": "string" },
+                  "timestamp": { "type": "integer" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "screenshot",
+      "description": "Capture a screenshot",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "fullPage",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        {
+          "name": "mime",
+          "schema": {
+            "type": "string",
+            "enum": ["image/png", "image/jpeg"],
+            "default": "image/png"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "base64": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "name": "find.byRole",
+      "description": "Find element by ARIA role",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "role",
+          "required": true,
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "name",
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "exact",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "selector": { "type": "string" }
+          }
+        }
+      }
+    }
+  ],
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "description": "JSON-RPC error code (see error codes section below)"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error message describing what went wrong"
+          },
+          "data": {
+            "description": "Additional error information and context for debugging"
+          }
+        }
+      },
+      "SessionId": {
+        "type": "string",
+        "pattern": "^s_[a-f0-9-]+$",
+        "description": "Unique session identifier with 's_' prefix",
+        "examples": ["s_123e4567-e89b-12d3-a456-426614174000"]
+      },
+      "Selector": {
+        "type": "string",
+        "description": "CSS selector, XPath, or Playwright locator string",
+        "examples": ["button.submit", "//div[@id='main']", "text=Click me", "role=button[name='Submit']"]
+      },
+      "ConsoleEvent": {
+        "type": "object",
+        "required": ["type", "text"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Console message type or 'pageerror' for page errors",
+            "enum": ["log", "info", "warn", "error", "debug", "pageerror"]
+          },
+          "text": {
+            "type": "string",
+            "description": "Console message text content"
+          },
+          "stack": {
+            "type": "string",
+            "description": "Stack trace for page errors"
+          }
+        }
+      },
+      "NetworkEvent": {
+        "type": "object",
+        "required": ["url", "status"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Full URL of the request"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "HTTP status code (0 for network failures)"
+          },
+          "method": {
+            "type": "string",
+            "description": "HTTP method (GET, POST, etc.)",
+            "examples": ["GET", "POST", "PUT", "DELETE"]
+          },
+          "timestamp": {
+            "type": "integer",
+            "description": "Unix timestamp in milliseconds"
+          }
+        }
+      }
+    },
+    "errors": {
+      "ParseError": {
+        "code": -32700,
+        "message": "Parse error - Invalid JSON was received by the server"
+      },
+      "InvalidRequest": {
+        "code": -32600,
+        "message": "Invalid Request - The JSON sent is not a valid Request object"
+      },
+      "MethodNotFound": {
+        "code": -32601,
+        "message": "Method not found - The method does not exist or is not available"
+      },
+      "InvalidParams": {
+        "code": -32602,
+        "message": "Invalid params - Invalid method parameter(s)"
+      },
+      "InternalError": {
+        "code": -32603,
+        "message": "Internal error - Internal JSON-RPC error"
+      },
+      "SessionNotFound": {
+        "code": -32001,
+        "message": "Session not found - The specified session_id does not exist or has expired",
+        "description": "This error occurs when: 1) Session was never created, 2) Session expired due to TTL, 3) Session was already closed, or 4) Invalid session ID format"
+      },
+      "URLNotAllowed": {
+        "code": -32002,
+        "message": "URL not allowed by policy - The URL does not match the ALLOW_HOST_REGEX pattern",
+        "description": "Configure ALLOW_HOST_REGEX environment variable to allow specific hosts. Default only allows localhost."
+      },
+      "MaxSessionsExceeded": {
+        "code": -32003,
+        "message": "Maximum number of concurrent sessions exceeded",
+        "description": "The server has reached MAX_CONCURRENT_SESSIONS limit. Close existing sessions or wait for sessions to expire."
+      },
+      "TimeoutError": {
+        "code": -32004,
+        "message": "Operation timed out",
+        "description": "The operation exceeded the specified timeout. Increase timeout parameter or optimize page performance."
+      },
+      "SelectorNotFound": {
+        "code": -32005,
+        "message": "Selector not found - Element matching selector could not be found",
+        "description": "The element may not exist, may not be visible yet, or the selector syntax is incorrect. Try waiting for page load or using a different selector."
+      },
+      "NavigationError": {
+        "code": -32006,
+        "message": "Navigation failed",
+        "description": "Page navigation failed due to network error, DNS resolution, invalid URL, or page crash."
+      }
+    }
+  },
+  "externalDocs": {
+    "description": "Full API documentation with examples and deployment guides",
+    "url": "https://github.com/your-org/playwright-jsonrpc/blob/main/README.md"
+  }
+}

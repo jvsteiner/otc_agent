@@ -1,0 +1,91 @@
+# Dependencies
+node_modules
+npm-debug.log
+yarn-error.log
+package-lock.json
+yarn.lock
+
+# Build artifacts
+dist
+build
+*.tsbuildinfo
+
+# Testing
+coverage
+.nyc_output
+test
+*.test.ts
+*.spec.ts
+vitest.config.ts
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE and editors
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.travis.yml
+.circleci
+
+# Documentation
+README.md
+CHANGELOG.md
+LICENSE
+docs
+*.md
+
+# Logs
+logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Temporary files
+tmp
+temp
+*.tmp
+
+# Playwright
+playwright-report
+test-results
+traces
+
+# Client examples
+client
+
+# Docker files (don't copy into image)
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+.dockerignore
+
+# Kubernetes
+k8s
+*.yaml
+*.yml
+!package.json
+!tsconfig.json
+
+# Miscellaneous
+*.orig
+.eslintcache
+.prettierignore

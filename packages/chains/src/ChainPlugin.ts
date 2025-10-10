@@ -86,6 +86,8 @@ export interface SubmittedTx {
   nonceOrInputs?: string;
   // For Unicity multi-UTXO transactions, store additional transaction IDs
   additionalTxids?: string[];
+  // Gas price used for the transaction (in gwei for EVM chains)
+  gasPrice?: string;
 }
 
 /**
@@ -151,9 +153,16 @@ export interface ChainPlugin {
    * @param from - The escrow account to send from
    * @param to - The destination address
    * @param amount - The amount to send (as a decimal string)
+   * @param options - Optional parameters for transaction submission (nonce, gas price for EVM chains)
    * @returns Transaction submission details
    */
-  send(asset: AssetCode, from: EscrowAccountRef, to: string, amount: string): Promise<SubmittedTx>;
+  send(
+    asset: AssetCode,
+    from: EscrowAccountRef,
+    to: string,
+    amount: string,
+    options?: any  // Chain-specific options (e.g., nonce for EVM)
+  ): Promise<SubmittedTx>;
 
   /**
    * Ensure an escrow account has sufficient native currency for transaction fees.

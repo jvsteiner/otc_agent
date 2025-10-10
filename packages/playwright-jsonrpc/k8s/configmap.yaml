@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: playwright-jsonrpc-config
+  namespace: playwright-jsonrpc
+data:
+  # Server configuration
+  PORT: "3337"
+  NODE_ENV: "production"
+
+  # Session management
+  SESSION_TTL_MS: "120000"
+  MAX_CONCURRENT_SESSIONS: "8"
+
+  # Rate limiting
+  RATE_LIMIT_WINDOW_MS: "60000"
+  RATE_LIMIT_MAX: "120"
+
+  # Browser configuration
+  HEADLESS: "true"
+  BROWSER_ARGS: "--disable-dev-shm-usage,--no-sandbox"
+
+  # Logging
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+
+  # Resource limits
+  MAX_SCREENSHOT_SIZE_MB: "10"
+  MAX_TEXT_CHARS: "90000"
+  MAX_HTML_SIZE_MB: "5"
+
+  # Security
+  ALLOW_HOST_REGEX: "^https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?/"
+
+  # Network configuration
+  IGNORE_HTTPS_ERRORS: "true"
+  BYPASS_CSP: "false"

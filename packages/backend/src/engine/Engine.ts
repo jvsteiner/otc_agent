@@ -63,7 +63,7 @@ export class Engine {
     this.depositRepo = new DepositRepository(db);
     this.queueRepo = new QueueRepository(db);
     this.payoutRepo = new PayoutRepository(db);
-    this.accountRepo = new AccountRepository(db.getDatabase());
+    this.accountRepo = new AccountRepository(db);
     this.engineId = crypto.randomBytes(8).toString('hex');
     this.resolutionWorker = new ResolutionWorker(db, pluginManager);
     this.gasReimbursementCalculator = new GasReimbursementCalculator();
@@ -2338,22 +2338,86 @@ export class Engine {
       // Check if this is an EVM chain (has getCurrentNonce method)
       const isEvmChain = item.chainId === 'ETH' || item.chainId === 'POLYGON';
       if (isEvmChain && 'getCurrentNonce' in plugin) {
-        // Get or initialize nonce for this address
-        let nonce = this.accountRepo.getNextNonce(item.chainId, item.from.address);
+        // PRE-VALIDATION: Check queue integrity before reserving nonce
+        const validation = this.queueRepo.validateNonceSequence(item.chainId, item.from.address);
 
-        if (nonce === null) {
-          // First transaction for this address - fetch from network
-          console.log(`[QueueProcessor] Fetching initial nonce from network for ${item.from.address}`);
-          nonce = await (plugin as any).getCurrentNonce(item.from.address);
-          console.log(`[QueueProcessor] Got initial nonce from network: ${nonce}`);
-        } else {
-          console.log(`[QueueProcessor] Using tracked nonce: ${nonce}`);
+        if (!validation.isValid) {
+          console.warn(`[QueueProcessor] Queue integrity check FAILED for ${item.from.address}:`, validation);
+          console.warn(`[QueueProcessor] Gaps: ${validation.gaps.join(', ')}, Duplicates: ${validation.duplicates.join(', ')}`);
+
+          // Don't throw - log and skip this item, it will be retried next cycle
+          this.dealRepo.addEvent(deal.id, `Queue integrity issue detected - gaps: ${validation.gaps.length}, duplicates: ${validation.duplicates.length}`);
+
+          // Reset nonce tracking to recover
+          this.accountRepo.resetNonce(item.chainId, item.from.address);
+          console.log(`[QueueProcessor] Reset nonce tracking for ${item.from.address} - will retry next cycle`);
+
+          return; // Skip this item for now
         }
 
-        txOptions = { nonce };
+        // ATOMIC nonce reservation with retry logic
+        let nonce: number;
+        let attempt = 0;
+        const maxAttempts = 3;
 
-        // Update the last used nonce atomically with transaction submission
-        // We'll do this after successful submission
+        while (attempt < maxAttempts) {
+          try {
+            // Check if we need to fetch initial nonce from network
+            const trackedNonce = this.accountRepo.getNextNonce(item.chainId, item.from.address);
+
+            if (trackedNonce === null) {
+              // First transaction for this address - fetch from network
+              console.log(`[QueueProcessor] Fetching initial nonce from network for ${item.from.address}`);
+              const networkNonce = await (plugin as any).getCurrentNonce(item.from.address);
+              console.log(`[QueueProcessor] Got initial nonce from network: ${networkNonce}`);
+
+              // Reserve nonce atomically with network nonce
+              nonce = this.db.runInTransaction(() => {
+                return this.accountRepo.reserveNextNonce(item.chainId, item.from.address, networkNonce);
+              });
+            } else {
+              // Validate expected sequence: next nonce should be highest queued + 1
+              const highestQueued = this.queueRepo.getHighestQueuedNonce(item.chainId, item.from.address);
+              const expectedNonce = highestQueued !== null ? highestQueued + 1 : trackedNonce;
+
+              console.log(`[QueueProcessor] Expected nonce: ${expectedNonce} (highest queued: ${highestQueued}, tracked: ${trackedNonce})`);
+
+              // Reserve next nonce atomically
+              nonce = this.db.runInTransaction(() => {
+                return this.accountRepo.reserveNextNonce(item.chainId, item.from.address);
+              });
+
+              // VALIDATION: Verify we got the expected nonce
+              if (nonce !== expectedNonce) {
+                console.warn(`[QueueProcessor] Nonce mismatch! Expected ${expectedNonce}, got ${nonce}`);
+                throw new Error(`Nonce sequence violation: expected ${expectedNonce}, got ${nonce}`);
+              }
+            }
+
+            console.log(`[QueueProcessor] ✓ ATOMICALLY reserved nonce ${nonce} for ${item.from.address} (attempt ${attempt + 1})`);
+            txOptions = { nonce };
+            break; // Success!
+
+          } catch (error: any) {
+            attempt++;
+            console.error(`[QueueProcessor] Nonce reservation attempt ${attempt} failed:`, error.message);
+
+            if (attempt < maxAttempts) {
+              // Exponential backoff: 100ms, 500ms, 2000ms
+              const delay = Math.pow(5, attempt) * 100;
+              console.log(`[QueueProcessor] Retrying in ${delay}ms...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+
+              // Reset nonce tracking before retry
+              this.accountRepo.resetNonce(item.chainId, item.from.address);
+            } else {
+              // Max retries exceeded
+              console.error(`[QueueProcessor] Max retry attempts exceeded for ${item.from.address}`);
+              this.dealRepo.addEvent(deal.id, `Failed to reserve nonce after ${maxAttempts} attempts`);
+              throw error; // Re-throw to trigger error handling
+            }
+          }
+        }
       }
 
       // Submit the transaction with explicit nonce if EVM
@@ -2365,10 +2429,54 @@ export class Engine {
         txOptions
       );
 
-      // Update nonce tracking for EVM chains after successful submission
-      if (isEvmChain && txOptions?.nonce !== undefined) {
-        this.accountRepo.updateLastUsedNonce(item.chainId, item.from.address, txOptions.nonce);
-        console.log(`[QueueProcessor] Updated last used nonce to ${txOptions.nonce} for ${item.from.address}`);
+      // SANITY CHECK: Verify nonce is not already used by another queue item
+      if (isEvmChain && tx.nonceOrInputs) {
+        const conflictingItem = this.queueRepo.findNonceConflict(
+          item.chainId,
+          item.from.address,
+          tx.nonceOrInputs,
+          item.id
+        );
+
+        if (conflictingItem) {
+          const error = `CRITICAL: Nonce collision detected! Nonce ${tx.nonceOrInputs} already used by queue item ${conflictingItem.id} (${conflictingItem.purpose}, status: ${conflictingItem.status})`;
+          console.error(`[QueueProcessor] ${error}`);
+          console.error(`[QueueProcessor] Current item: ${item.id} (${item.purpose})`);
+          console.error(`[QueueProcessor] Conflicting item: ${conflictingItem.id} (${conflictingItem.purpose})`);
+          console.error(`[QueueProcessor] Account nonce state:`, this.accountRepo.getOrCreate(item.chainId, item.from.address));
+
+          this.dealRepo.addEvent(deal.id, `COLLISION: Nonce ${tx.nonceOrInputs} conflict between ${item.purpose} and ${conflictingItem.purpose}`);
+
+          // GRACEFUL RECOVERY: Don't throw, instead reset and retry next cycle
+          console.log(`[QueueProcessor] Initiating collision recovery for ${item.from.address}...`);
+
+          // Reset nonce tracking to re-sync with network
+          this.accountRepo.resetNonce(item.chainId, item.from.address);
+
+          // Log full queue state for debugging
+          const queueValidation = this.queueRepo.validateNonceSequence(item.chainId, item.from.address);
+          console.error(`[QueueProcessor] Queue state after collision:`, queueValidation);
+
+          // Return without throwing - this will be retried in next engine cycle
+          console.log(`[QueueProcessor] Skipping ${item.id} - will retry in next cycle after nonce reset`);
+          return;
+        }
+
+        console.log(`[QueueProcessor] ✓ Nonce ${tx.nonceOrInputs} validation passed - no duplicates found`);
+
+        // FINAL VALIDATION: Verify sequential ordering
+        const highestQueued = this.queueRepo.getHighestQueuedNonce(item.chainId, item.from.address);
+        const submittedNonce = parseInt(tx.nonceOrInputs);
+
+        if (highestQueued !== null && submittedNonce !== highestQueued + 1) {
+          console.warn(`[QueueProcessor] Nonce sequence warning: submitted nonce ${submittedNonce}, but highest queued is ${highestQueued}`);
+          console.warn(`[QueueProcessor] Expected: ${highestQueued + 1}, Got: ${submittedNonce}`);
+
+          // Log but don't block - this might be legitimate (e.g., first transaction for address)
+          this.dealRepo.addEvent(deal.id, `Nonce sequence warning: gap between ${highestQueued} and ${submittedNonce}`);
+        }
+
+        console.log(`[QueueProcessor] ✓ Sequential ordering validated (highest queued: ${highestQueued}, new nonce: ${submittedNonce})`);
       }
 
       // Update queue item with tx info
@@ -2379,6 +2487,7 @@ export class Engine {
         submittedAt: tx.submittedAt,
         confirms: 0,  // Initial confirms
         status: 'SUBMITTED',
+        nonceOrInputs: tx.nonceOrInputs,  // Store nonce for EVM chains
         additionalTxids: tx.additionalTxids
       };
 

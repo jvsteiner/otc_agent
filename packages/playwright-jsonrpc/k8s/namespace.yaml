@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: playwright-jsonrpc
+  labels:
+    app: playwright-jsonrpc
+    environment: production

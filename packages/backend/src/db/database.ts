@@ -65,6 +65,13 @@ export class DB {
   }
 
   /**
+   * Get the underlying database instance for direct access
+   */
+  getDatabase(): Database.Database {
+    return this.db;
+  }
+
+  /**
    * Closes the database connection.
    */
   close(): void {

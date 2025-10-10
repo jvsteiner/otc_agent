@@ -1,1497 +1,8 @@
-/**
- * @fileoverview JSON-RPC 2.0 API server for the OTC Broker Engine.
- * Provides endpoints for deal creation, party management, status queries,
- * and administrative functions. Also serves web interface pages.
- */
 
-import express from 'express';
-import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, getAssetRegistry, formatAssetCode, parseAssetCode, generateDealName, validateDealName } from '@otc-broker/core';
-import { DealRepository, QueueRepository, PayoutRepository } from '../db/repositories';
-import { DB } from '../db/database';
-import { PluginManager } from '@otc-broker/chains';
-import * as crypto from 'crypto';
-import { EmailService } from '../services/email';
-
-interface CreateDealParams {
-  alice: DealAssetSpec;
-  bob: DealAssetSpec;
-  timeoutSeconds: number;
-  name?: string;  // Optional custom name for the deal
-}
-
-interface FillPartyDetailsParams {
-  dealId: string;
-  party: 'ALICE' | 'BOB';
-  paybackAddress: string;
-  recipientAddress: string;
-  email?: string;
-  token: string;
-}
-
-interface StatusParams {
-  dealId: string;
-}
-
-interface SetPriceParams {
-  chainId: string;
-  pair: string;
-  price: string;
-}
-
-interface SendInviteParams {
-  dealId: string;
-  party: 'ALICE' | 'BOB';
-  email: string;
-  link: string;
-}
-
-/**
- * JSON-RPC server that exposes OTC broker functionality via HTTP.
- * Handles deal creation, party management, status queries, and serves web pages.
- */
-export class RpcServer {
-  private app: express.Application;
-  private dealRepo: DealRepository;
-  private queueRepo: QueueRepository;
-  private payoutRepo: PayoutRepository;
-  private pluginManager: PluginManager;
-  private emailService: EmailService;
-
-  constructor(private db: DB, pluginManager: PluginManager) {
-    this.app = express();
-    this.app.use(express.json());
-    this.dealRepo = new DealRepository(db);
-    this.queueRepo = new QueueRepository(db);
-    this.payoutRepo = new PayoutRepository(db);
-    this.pluginManager = pluginManager;
-    this.emailService = new EmailService(db);
-    
-    this.setupRoutes();
-  }
-
-  /**
-   * Sets up all HTTP routes for the server.
-   *
-   * Routes include:
-   * - POST /rpc - Main JSON-RPC 2.0 endpoint for API calls
-   * - GET / - Deal creation page (public)
-   * - GET /d/:dealId/a/:token - Party A (Alice) personal page
-   * - GET /d/:dealId/b/:token - Party B (Bob) personal page
-   *
-   * The web pages are served as server-rendered HTML with embedded JavaScript
-   * that communicates back to the /rpc endpoint for all data operations.
-   */
-  private setupRoutes() {
-    // JSON-RPC endpoint
-    this.app.post('/rpc', async (req, res) => {
-      const { method, params, id } = req.body;
-      
-      try {
-        let result;
-        
-        switch (method) {
-          case 'otc.createDeal':
-            result = await this.createDeal(params as CreateDealParams);
-            break;
-          case 'otc.fillPartyDetails':
-            result = await this.fillPartyDetails(params as FillPartyDetailsParams);
-            break;
-          case 'otc.status':
-            result = await this.getStatus(params as StatusParams);
-            break;
-          case 'admin.setPrice':
-            result = await this.setPrice(params as SetPriceParams);
-            break;
-          case 'otc.sendInvite':
-            result = await this.sendInvite(params as SendInviteParams);
-            break;
-          case 'otc.cancelDeal':
-            result = await this.cancelDeal(params as { dealId: string; token: string });
-            break;
-          case 'otc.getChainConfig':
-            result = await this.getChainConfig(params as { chainId?: string });
-            break;
-          default:
-            throw new Error(`Method ${method} not found`);
-        }
-        
-        res.json({ jsonrpc: '2.0', result, id });
-      } catch (error: any) {
-        res.json({
-          jsonrpc: '2.0',
-          error: { code: -32603, message: error.message },
-          id,
-        });
-      }
-    });
-
-    // Static pages
-    this.app.get('/', (req, res) => {
-      res.send(this.renderCreateDealPage());
-    });
-
-    this.app.get('/d/:dealId/a/:token', (req, res) => {
-      const { dealId, token } = req.params;
-      res.send(this.renderPartyPage(dealId, token, 'ALICE'));
-    });
-
-    this.app.get('/d/:dealId/b/:token', (req, res) => {
-      const { dealId, token } = req.params;
-      res.send(this.renderPartyPage(dealId, token, 'BOB'));
-    });
-  }
-
-  private async createDeal(params: CreateDealParams) {
-    // Validate assets using the asset registry
-    const aliceAsset = parseAssetCode(params.alice.asset, params.alice.chainId);
-    const bobAsset = parseAssetCode(params.bob.asset, params.bob.chainId);
-    
-    if (!aliceAsset) {
-      throw new Error(`Invalid or unsupported asset: ${params.alice.asset} on chain ${params.alice.chainId}`);
-    }
-    
-    if (!bobAsset) {
-      throw new Error(`Invalid or unsupported asset: ${params.bob.asset} on chain ${params.bob.chainId}`);
-    }
-    
-    // Handle deal name - use provided name or generate one
-    let dealName: string;
-    if (params.name) {
-      // Validate custom name
-      if (!validateDealName(params.name)) {
-        throw new Error('Invalid deal name. Must be 3-100 characters and not contain special characters.');
-      }
-      dealName = params.name;
-    } else {
-      // Generate memorable name with date/time
-      dealName = generateDealName();
-    }
-    
-    // Generate tokens for personal links
-    const tokenA = crypto.randomBytes(16).toString('hex');
-    const tokenB = crypto.randomBytes(16).toString('hex');
-    
-    // Determine commission requirements based on chain config
-    const alicePlugin = this.pluginManager.getPlugin(params.alice.chainId);
-    const bobPlugin = this.pluginManager.getPlugin(params.bob.chainId);
-    
-    const commissionPlan = {
-      sideA: this.getCommissionRequirement(params.alice),
-      sideB: this.getCommissionRequirement(params.bob),
-    };
-    
-    const deal = this.dealRepo.create({
-      name: dealName,
-      stage: 'CREATED',
-      timeoutSeconds: params.timeoutSeconds,
-      alice: params.alice,
-      bob: params.bob,
-      commissionPlan,
-    });
-    
-    // Store tokens in database for persistence
-    console.log('Storing tokens for deal:', deal.id);
-    console.log('Token A (ALICE):', tokenA);
-    console.log('Token B (BOB):', tokenB);
-    
-    try {
-      // Check if tokens table exists
-      const checkTable = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tokens'");
-      const tableExists = checkTable.get();
-      
-      if (!tableExists) {
-        console.log('Warning: tokens table does not exist, tokens will not persist across restarts');
-      } else {
-        const stmt = this.db.prepare(`
-          INSERT INTO tokens (token, dealId, party, createdAt) 
-          VALUES (?, ?, ?, ?)
-        `);
-        
-        const now = new Date().toISOString();
-        stmt.run(tokenA, deal.id, 'ALICE', now);
-        stmt.run(tokenB, deal.id, 'BOB', now);
-        console.log('Tokens stored in database');
-      }
-    } catch (error) {
-      console.error('Failed to store tokens in database:', error);
-      console.log('Tokens will work for this session only');
-    }
-    
-    const baseUrl = process.env.BASE_URL || 'http://localhost:8080';
-    
-    return {
-      dealId: deal.id,
-      dealName: deal.name,
-      linkA: `${baseUrl}/d/${deal.id}/a/${tokenA}`,
-      linkB: `${baseUrl}/d/${deal.id}/b/${tokenB}`,
-    };
-  }
-
-  private getCommissionRequirement(spec: DealAssetSpec): CommissionRequirement {
-    // ALL assets use the same 0.3% commission from surplus
-    // This ensures fairness across all asset types
-    return {
-      mode: 'PERCENT_BPS',
-      currency: 'ASSET',
-      percentBps: 30, // 0.3% for all assets
-      coveredBySurplus: true,
-    };
-  }
-
-  private async fillPartyDetails(params: FillPartyDetailsParams) {
-    console.log('fillPartyDetails called with:', params);
-    
-    // First check if tokens table exists
-    try {
-      const checkTable = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tokens'");
-      const tableExists = checkTable.get();
-      
-      if (!tableExists) {
-        console.log('Tokens table does not exist, checking in-memory map as fallback');
-        // Fallback to checking if we have any data about this deal
-        const deal = this.dealRepo.get(params.dealId);
-        if (!deal) {
-          throw new Error('Deal not found');
-        }
-        // For now, just allow the request to proceed if the deal exists
-        console.log('Deal found, allowing token for backward compatibility');
-      } else {
-        // Verify token from database
-        const stmt = this.db.prepare(`
-          SELECT dealId, party FROM tokens 
-          WHERE token = ? AND dealId = ? AND party = ?
-        `);
-        const tokenInfo = stmt.get(params.token, params.dealId, params.party) as { dealId: string; party: string } | undefined;
-        
-        if (!tokenInfo) {
-          // Check if token exists at all
-          const anyToken = this.db.prepare('SELECT * FROM tokens WHERE token = ?').get(params.token);
-          console.log('Token lookup failed. Token exists?', !!anyToken, 'Expected:', { dealId: params.dealId, party: params.party });
-          
-          if (anyToken) {
-            console.log('Token found but with different params:', anyToken);
-          }
-          
-          throw new Error('Invalid token');
-        }
-        
-        // Mark token as used
-        const updateStmt = this.db.prepare(`
-          UPDATE tokens SET usedAt = ? WHERE token = ?
-        `);
-        updateStmt.run(new Date().toISOString(), params.token);
-      }
-    } catch (error: any) {
-      console.error('Token verification error:', error);
-      if (error.message === 'Invalid token' || error.message === 'Deal not found') {
-        throw error;
-      }
-      // For any database errors, fall back to just checking the deal exists
-      const deal = this.dealRepo.get(params.dealId);
-      if (!deal) {
-        throw new Error('Deal not found');
-      }
-      console.log('Database error, but deal exists, allowing request');
-    }
-    
-    const deal = this.dealRepo.get(params.dealId);
-    if (!deal) {
-      throw new Error('Deal not found');
-    }
-    
-    // CRUCIAL: Check if party details already exist and are locked
-    const existingDetails = params.party === 'ALICE' ? deal.aliceDetails : deal.bobDetails;
-    if (existingDetails && existingDetails.locked) {
-      // Log the attempt for security auditing
-      console.warn(`[SECURITY] Attempt to modify locked party details for ${params.party} in deal ${params.dealId}`);
-      this.dealRepo.addEvent(params.dealId, `Blocked attempt to modify locked ${params.party} details`);
-      throw new Error('Party details are already locked and cannot be changed. This is a security feature to prevent address tampering.');
-    }
-    
-    // Additional check: if deal is beyond CREATED stage, don't allow any changes
-    if (deal.stage !== 'CREATED') {
-      console.warn(`[SECURITY] Attempt to modify party details in ${deal.stage} stage for ${params.party} in deal ${params.dealId}`);
-      throw new Error(`Cannot modify party details - deal is already in ${deal.stage} stage`);
-    }
-    
-    // Validate addresses
-    const sendChain = params.party === 'ALICE' ? deal.alice.chainId : deal.bob.chainId;
-    const receiveChain = params.party === 'ALICE' ? deal.bob.chainId : deal.alice.chainId;
-    
-    const sendPlugin = this.pluginManager.getPlugin(sendChain);
-    const receivePlugin = this.pluginManager.getPlugin(receiveChain);
-    
-    if (!sendPlugin.validateAddress(params.paybackAddress)) {
-      throw new Error('Invalid payback address');
-    }
-    
-    if (!receivePlugin.validateAddress(params.recipientAddress)) {
-      throw new Error('Invalid recipient address');
-    }
-    
-    // Update deal
-    const details: PartyDetails = {
-      paybackAddress: params.paybackAddress,
-      recipientAddress: params.recipientAddress,
-      email: params.email,
-      filledAt: new Date().toISOString(),
-      locked: true,
-    };
-    
-    let escrowRef: EscrowAccountRef | undefined;
-    
-    if (params.party === 'ALICE') {
-      deal.aliceDetails = details;
-      // Generate escrow for Alice's send chain with dealId for uniqueness
-      deal.escrowA = await sendPlugin.generateEscrowAccount(deal.alice.asset, deal.id, 'ALICE');
-      escrowRef = deal.escrowA;
-
-      // Initialize gas reimbursement tracking if this is an ERC-20 deal on EVM chain
-      this.initializeGasReimbursement(deal, 'ALICE');
-    } else {
-      deal.bobDetails = details;
-      // Generate escrow for Bob's send chain with dealId for uniqueness
-      deal.escrowB = await sendPlugin.generateEscrowAccount(deal.bob.asset, deal.id, 'BOB');
-      escrowRef = deal.escrowB;
-
-      // Initialize gas reimbursement tracking if this is an ERC-20 deal on EVM chain
-      this.initializeGasReimbursement(deal, 'BOB');
-    }
-    
-    // Save party details to database
-    try {
-      const checkTable = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='party_details'");
-      const tableExists = checkTable.get();
-      
-      if (!tableExists) {
-        console.log('Warning: party_details table does not exist, party details will not persist across restarts');
-      } else {
-        // Use INSERT to prevent updates - if it fails, details already exist
-        const stmt = this.db.prepare(`
-          INSERT INTO party_details (
-            dealId, party, paybackAddress, recipientAddress, email, 
-            filledAt, locked, escrowAddress, escrowKeyRef
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-        
-        stmt.run(
-          params.dealId,
-          params.party,
-          params.paybackAddress,
-          params.recipientAddress,
-          params.email || null,
-          details.filledAt,
-          1, // locked = true
-          escrowRef?.address || null,
-          escrowRef?.keyRef || null
-        );
-        
-        console.log(`Party details saved to database for ${params.party} in deal ${params.dealId}`);
-      }
-    } catch (error) {
-      console.error('Failed to save party details to database:', error);
-      // Continue execution even if database save fails
-    }
-    
-    // Check if both parties have filled and we need to transition to COLLECTION
-    if (deal.aliceDetails && deal.bobDetails && deal.stage === 'CREATED') {
-      // Start COUNTDOWN only if we're transitioning from CREATED to COLLECTION
-      deal.expiresAt = new Date(Date.now() + deal.timeoutSeconds * 1000).toISOString();
-      deal.stage = 'COLLECTION';
-      
-      // Freeze commission amounts for FIXED_USD_NATIVE
-      if (deal.commissionPlan.sideA.mode === 'FIXED_USD_NATIVE') {
-        const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
-        const quote = await plugin.quoteNativeForUSD(deal.commissionPlan.sideA.usdFixed!);
-        deal.commissionPlan.sideA.nativeFixed = quote.nativeAmount;
-        deal.commissionPlan.sideA.oracle = quote.quote;
-      }
-      
-      if (deal.commissionPlan.sideB.mode === 'FIXED_USD_NATIVE') {
-        const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
-        const quote = await plugin.quoteNativeForUSD(deal.commissionPlan.sideB.usdFixed!);
-        deal.commissionPlan.sideB.nativeFixed = quote.nativeAmount;
-        deal.commissionPlan.sideB.oracle = quote.quote;
-      }
-      
-      console.log(`Deal ${deal.id} transitioning from CREATED to COLLECTION stage`);
-      this.dealRepo.addEvent(deal.id, 'Both parties ready, starting collection phase');
-    } else if (deal.aliceDetails && deal.bobDetails && deal.stage !== 'CREATED') {
-      // If both parties have details but we're not in CREATED stage, don't reset
-      console.log(`Deal ${deal.id} already in stage ${deal.stage}, not resetting to COLLECTION`);
-    }
-    
-    this.dealRepo.update(deal);
-    
-    return { ok: true };
-  }
-
-  private async getStatus(params: StatusParams) {
-    const deal = this.dealRepo.get(params.dealId);
-    if (!deal) {
-      throw new Error('Deal not found');
-    }
-    
-    // Get all queue items (transactions) for this deal
-    const queueItems = this.queueRepo.getByDeal(params.dealId);
-    
-    // Get payouts for this deal
-    const payouts = this.payoutRepo.getPayoutsByDealId(params.dealId);
-    
-    // Build instructions
-    const instructions = {
-      sideA: [] as any[],
-      sideB: [] as any[],
-    };
-    
-    if (deal.escrowA) {
-      // Use fully qualified asset name to match collectedByAsset keys
-      const assetCode = deal.alice.asset.includes('@') ? 
-        deal.alice.asset : 
-        `${deal.alice.asset}@${deal.alice.chainId}`;
-      instructions.sideA.push({
-        assetCode: assetCode,
-        amount: deal.alice.amount,
-        to: deal.escrowA.address,
-      });
-      
-      // Add commission instruction if different currency
-      if (deal.commissionPlan.sideA.currency === 'NATIVE' && 
-          deal.commissionPlan.sideA.mode === 'FIXED_USD_NATIVE') {
-        // Determine the native asset for this chain
-        const nativeAsset = deal.alice.chainId === 'UNICITY' ? 'ALPHA@UNICITY' :
-                           deal.alice.chainId === 'POLYGON' ? 'MATIC@POLYGON' :
-                           deal.alice.chainId === 'ETH' ? 'ETH@ETH' :
-                           deal.alice.chainId === 'BASE' ? 'ETH@BASE' : 'ETH';
-        instructions.sideA.push({
-          assetCode: nativeAsset,
-          amount: deal.commissionPlan.sideA.nativeFixed,
-          to: deal.escrowA.address,
-        });
-      }
-    }
-    
-    if (deal.escrowB) {
-      // Use fully qualified asset name to match collectedByAsset keys
-      const assetCodeB = deal.bob.asset.includes('@') ? 
-        deal.bob.asset : 
-        `${deal.bob.asset}@${deal.bob.chainId}`;
-      instructions.sideB.push({
-        assetCode: assetCodeB,
-        amount: deal.bob.amount,
-        to: deal.escrowB.address,
-      });
-      
-      // Add commission instruction if different currency
-      if (deal.commissionPlan.sideB.currency === 'NATIVE' && 
-          deal.commissionPlan.sideB.mode === 'FIXED_USD_NATIVE') {
-        // Determine the native asset for this chain
-        const nativeAsset = deal.bob.chainId === 'UNICITY' ? 'ALPHA@UNICITY' :
-                           deal.bob.chainId === 'POLYGON' ? 'MATIC@POLYGON' :
-                           deal.bob.chainId === 'ETH' ? 'ETH@ETH' :
-                           deal.bob.chainId === 'BASE' ? 'ETH@BASE' : 'ETH';
-        instructions.sideB.push({
-          assetCode: nativeAsset,
-          amount: deal.commissionPlan.sideB.nativeFixed,
-          to: deal.escrowB.address,
-        });
-      }
-    }
-    
-    // Get RPC endpoints for chains
-    const rpcEndpoints: Record<string, string> = {};
-    const chains = new Set([deal.alice.chainId, deal.bob.chainId]);
-    
-    for (const chainId of chains) {
-      switch (chainId) {
-        case 'ETH':
-          rpcEndpoints[chainId] = 'https://ethereum-rpc.publicnode.com';
-          break;
-        case 'POLYGON':
-          rpcEndpoints[chainId] = 'https://polygon-rpc.com';
-          break;
-        case 'BASE':
-          rpcEndpoints[chainId] = 'https://base-rpc.publicnode.com';
-          break;
-        case 'UNICITY':
-          rpcEndpoints[chainId] = 'wss://fulcrum.unicity.network:50004'; // Electrum endpoint
-          break;
-      }
-    }
-    
-    // Tag transactions properly and associate with payouts
-    const taggedTransactions = queueItems.map(item => {
-      // Find associated payout if exists
-      const associatedPayout = payouts.find(p => {
-        const payoutQueueItems = this.payoutRepo.getQueueItemsByPayoutId(p.payoutId);
-        return payoutQueueItems.some(qi => qi.id === item.id);
-      });
-      
-      return {
-        ...item,
-        tag: item.purpose === 'SWAP_PAYOUT' ? 'swap' :
-             item.purpose === 'OP_COMMISSION' ? 'commission' :
-             item.purpose === 'TIMEOUT_REFUND' ? 'refund' :
-             item.purpose === 'SURPLUS_REFUND' ? 'return' : 'unknown',
-        blockTime: item.submittedTx?.submittedAt || item.createdAt,
-        payoutId: associatedPayout?.payoutId,
-        payoutInfo: associatedPayout ? {
-          payoutId: associatedPayout.payoutId,
-          totalAmount: associatedPayout.totalAmount,
-          toAddr: associatedPayout.toAddr,
-          purpose: associatedPayout.purpose,
-          status: associatedPayout.status,
-          minConfirmations: associatedPayout.minConfirmations
-        } : undefined
-      };
-    });
-    
-    // Enrich deposits with resolution status
-    const enrichDepositsWithResolution = (deposits: any[] = []) => {
-      if (!deposits || deposits.length === 0) return deposits;
-
-      return deposits.map((dep: any) => {
-        // Query resolution status from database if txid is synthetic
-        if (dep.txid && dep.txid.startsWith('erc20-balance-')) {
-          const resolutionInfo = this.db.prepare(`
-            SELECT
-              is_synthetic,
-              original_txid,
-              resolution_status,
-              resolved_at,
-              resolution_metadata
-            FROM escrow_deposits
-            WHERE dealId = ? AND (txid = ? OR original_txid = ?)
-            LIMIT 1
-          `).get(params.dealId, dep.txid, dep.txid) as any;
-
-          if (resolutionInfo) {
-            return {
-              ...dep,
-              isSynthetic: resolutionInfo.is_synthetic === 1,
-              originalTxid: resolutionInfo.original_txid,
-              resolutionStatus: resolutionInfo.resolution_status,
-              resolvedAt: resolutionInfo.resolved_at,
-              resolutionMetadata: resolutionInfo.resolution_metadata ?
-                JSON.parse(resolutionInfo.resolution_metadata) : undefined
-            };
-          }
-        }
-        return dep;
-      });
-    };
-
-    // Enrich collection deposits
-    const enrichedSideA = deal.sideAState ? {
-      ...deal.sideAState,
-      deposits: enrichDepositsWithResolution(deal.sideAState.deposits)
-    } : {};
-
-    const enrichedSideB = deal.sideBState ? {
-      ...deal.sideBState,
-      deposits: enrichDepositsWithResolution(deal.sideBState.deposits)
-    } : {};
-
-    return {
-      stage: deal.stage,
-      timeoutSeconds: deal.timeoutSeconds,
-      expiresAt: deal.expiresAt,
-      instructions,
-      collection: {
-        sideA: enrichedSideA,
-        sideB: enrichedSideB,
-      },
-      events: deal.events,
-      aliceDetails: deal.aliceDetails,
-      bobDetails: deal.bobDetails,
-      alice: deal.alice,
-      bob: deal.bob,
-      commissionPlan: deal.commissionPlan,
-      escrowA: deal.escrowA,
-      escrowB: deal.escrowB,
-      transactions: taggedTransactions,
-      payouts: payouts.map(p => ({
-        ...p,
-        transactions: this.payoutRepo.getQueueItemsByPayoutId(p.payoutId)
-      })),
-      rpcEndpoints,
-    };
-  }
-
-  private async setPrice(params: SetPriceParams) {
-    // Store manual price in oracle_quotes table
-    const stmt = this.db.prepare(`
-      INSERT INTO oracle_quotes (chainId, pair, price, asOf, source)
-      VALUES (?, ?, ?, ?, 'MANUAL')
-    `);
-    
-    const asOf = new Date().toISOString();
-    stmt.run(params.chainId, params.pair, params.price, asOf);
-    
-    return { ok: true, asOf };
-  }
-
-  private async cancelDeal(params: { dealId: string; token: string }) {
-    // Verify token
-    const deal = this.dealRepo.get(params.dealId);
-    if (!deal) {
-      throw new Error('Deal not found');
-    }
-    
-    // Check if assets are already locked
-    const hasDeposits = (deal.sideAState?.deposits?.length ?? 0) > 0 || (deal.sideBState?.deposits?.length ?? 0) > 0;
-    if (hasDeposits) {
-      throw new Error('Cannot cancel deal - assets have already been locked');
-    }
-    
-    // Check if deal is already closed or reverted
-    if (deal.stage === 'CLOSED' || deal.stage === 'REVERTED') {
-      throw new Error('Deal has already been finalized');
-    }
-    
-    // Update deal stage to REVERTED
-    deal.stage = 'REVERTED';
-    this.dealRepo.update(deal);
-    this.dealRepo.addEvent(deal.id, 'Deal cancelled by party');
-    
-    return { ok: true };
-  }
-  
-  private async sendInvite(params: SendInviteParams) {
-    // Delegate to email service
-    return await this.emailService.sendInvite(params);
-  }
-
-  private async getChainConfig(params: { chainId?: string }) {
-    // Return chain configuration including RPC endpoints
-    const configs: Record<string, any> = {};
-    
-    if (params.chainId) {
-      // Get config for specific chain
-      const plugin = this.pluginManager.getPlugin(params.chainId as any);
-      const config: any = {
-        chainId: params.chainId,
-        operator: plugin.getOperatorAddress()
-      };
-      
-      // Add chain-specific endpoints
-      switch (params.chainId) {
-        case 'UNICITY':
-          config.electrumUrl = process.env.UNICITY_ELECTRUM || 'wss://fulcrum.unicity.network:50004';
-          break;
-        case 'ETH':
-          config.rpcUrl = process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com';
-          break;
-        case 'POLYGON':
-          config.rpcUrl = process.env.POLYGON_RPC || 'https://polygon-rpc.com';
-          break;
-        case 'SOLANA':
-          config.rpcUrl = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
-          break;
-      }
-      
-      configs[params.chainId] = config;
-    } else {
-      // Get config for all chains
-      const chains = ['UNICITY', 'ETH', 'POLYGON', 'SOLANA'];
-      for (const chainId of chains) {
-        try {
-          const plugin = this.pluginManager.getPlugin(chainId as any);
-          const config: any = {
-            chainId,
-            operator: plugin.getOperatorAddress()
-          };
-          
-          // Add chain-specific endpoints
-          switch (chainId) {
-            case 'UNICITY':
-              config.electrumUrl = process.env.UNICITY_ELECTRUM || 'wss://fulcrum.unicity.network:50004';
-              break;
-            case 'ETH':
-              config.rpcUrl = process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com';
-              break;
-            case 'POLYGON':
-              config.rpcUrl = process.env.POLYGON_RPC || 'https://polygon-mainnet.g.alchemy.com/v2/9LkJ1e22_qxEBFxOQ4pD3';
-              break;
-            case 'SOLANA':
-              config.rpcUrl = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
-              break;
-          }
-          
-          configs[chainId] = config;
-        } catch (e) {
-          // Chain plugin not available
-          console.log(`Chain ${chainId} plugin not available`);
-        }
-      }
-    }
-    
-    return configs;
-  }
-
-  private async sendInviteOld(params: SendInviteParams) {
-    // Check if email is enabled in environment
-    const emailEnabled = process.env.EMAIL_ENABLED === 'true';
-    
-    if (!emailEnabled) {
-      // For now, just log the invitation and return success
-      console.log(`
-        ========================================
-        EMAIL INVITATION (Email service not configured)
-        ========================================
-        To: ${params.email}
-        Party: ${params.party === 'ALICE' ? 'Asset A Seller' : 'Asset B Seller'}
-        Deal ID: ${params.dealId}
-        Link: ${params.link}
-        ========================================
-      `);
-      
-      // In production, you would integrate with an email service like:
-      // - SendGrid
-      // - Mailgun  
-      // - AWS SES
-      // - SMTP server
-      
-      return { 
-        sent: true, 
-        message: 'Invitation logged (email service not configured)',
-        email: params.email 
-      };
-    }
-    
-    // If email service is configured, send actual email
-    try {
-      // TODO: Integrate with actual email service
-      // Example with nodemailer:
-      // const transporter = nodemailer.createTransport({...});
-      // await transporter.sendMail({
-      //   from: process.env.EMAIL_FROM,
-      //   to: params.email,
-      //   subject: `OTC Asset Swap - ${params.party === 'ALICE' ? 'Asset A' : 'Asset B'} Seller Invitation`,
-      //   html: `...`,
-      // });
-      
-      return { 
-        sent: true, 
-        email: params.email 
-      };
-    } catch (error: any) {
-      throw new Error(`Failed to send email: ${error.message}`);
-    }
-  }
-
-  /**
-   * Renders the main deal creation page.
-   * This page allows users to create new OTC swap deals by selecting:
-   * - Source and destination chains
-   * - Assets to swap on each chain
-   * - Amounts for each asset
-   * - Deal timeout period
-   *
-   * The page includes client-side JavaScript for:
-   * - Dynamic asset dropdown population based on chain selection
-   * - Form validation
-   * - Deal creation via RPC call
-   * - Modal display of generated party links
-   *
-   * @returns {string} Complete HTML page with embedded CSS and JavaScript
-   */
-  private renderCreateDealPage(): string {
-    const registry = getAssetRegistry();
-    const chains = registry.supportedChains;
-    const assets = registry.assets;
-    
-    // Group assets by chain for easier access in JavaScript
-    const assetsByChain: Record<string, any[]> = {};
-    chains.forEach((chain: any) => {
-      assetsByChain[chain.chainId] = assets.filter((a: any) => a.chainId === chain.chainId);
-    });
-
-    return `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Create OTC asset swap deal</title>
-        <style>
-          body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
-            font-size: 13px;
-            max-width: 500px; 
-            margin: 10px auto;
-            padding: 10px;
-            background: #f5f5f5;
-          }
-          .container {
-            background: white;
-            border-radius: 6px;
-            padding: 15px;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
-          }
-          h1 {
-            color: #333;
-            font-size: 18px;
-            border-bottom: 1px solid #667eea;
-            padding-bottom: 6px;
-            margin: 0 0 10px 0;
-          }
-          h3 {
-            font-size: 14px;
-            margin: 0 0 8px 0;
-          }
-          .two-column {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-          }
-          .asset-section {
-            background: #f9f9f9;
-            border-radius: 5px;
-            padding: 10px;
-          }
-          .form-group {
-            margin: 8px 0;
-          }
-          label {
-            display: block;
-            margin-bottom: 2px;
-            font-weight: 600;
-            color: #555;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-          }
-          input, select { 
-            width: 100%; 
-            padding: 6px 8px; 
-            margin: 2px 0; 
-            border: 1px solid #ddd;
-            border-radius: 3px;
-            font-size: 12px;
-          }
-          select:focus, input:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
-          }
-          button { 
-            background: #667eea; 
-            color: white; 
-            padding: 8px 20px; 
-            border: none; 
-            cursor: pointer;
-            border-radius: 3px;
-            font-size: 13px;
-            font-weight: 600;
-            width: 100%;
-            margin-top: 10px;
-          }
-          button:hover {
-            background: #5a67d8;
-          }
-          .asset-display {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 6px;
-            background: white;
-            border-radius: 3px;
-            margin-top: 4px;
-            text-decoration: none;
-            transition: all 0.2s ease;
-            font-size: 11px;
-          }
-          .asset-display:hover {
-            background: #f0f4ff;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-          }
-          .asset-icon {
-            font-size: 16px;
-          }
-          .asset-info {
-            flex: 1;
-          }
-          .asset-name {
-            font-weight: 600;
-            color: #333;
-            font-size: 11px;
-          }
-          .asset-details {
-            font-size: 10px;
-            color: #888;
-          }
-          .external-link {
-            color: #667eea;
-            font-size: 10px;
-            opacity: 0;
-            transition: opacity 0.2s;
-          }
-          .asset-display:hover .external-link {
-            opacity: 1;
-          }
-          .timeout-group {
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid #e0e0e0;
-          }
-          small {
-            font-size: 10px;
-          }
-          .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 1000;
-          }
-          .modal-content {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            padding: 25px;
-            border-radius: 8px;
-            max-width: 500px;
-            width: 90%;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-          }
-          .modal h2 {
-            color: #333;
-            margin: 0 0 20px 0;
-            font-size: 20px;
-          }
-          .link-section {
-            margin: 15px 0;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 6px;
-          }
-          .link-section h4 {
-            margin: 0 0 10px 0;
-            color: #667eea;
-            font-size: 14px;
-          }
-          .link-input {
-            display: flex;
-            gap: 8px;
-            margin: 8px 0;
-          }
-          .link-input input {
-            flex: 1;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 12px;
-            background: white;
-          }
-          .copy-btn, .email-btn {
-            padding: 8px 12px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            white-space: nowrap;
-          }
-          .copy-btn:hover, .email-btn:hover {
-            background: #5a67d8;
-          }
-          .success-message {
-            color: #10b981;
-            font-size: 12px;
-            margin-top: 5px;
-            display: none;
-          }
-          .close-modal {
-            margin-top: 20px;
-            width: 100%;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>Create OTC Asset Swap Deal</h1>
-          
-          <!-- Modal for showing deal links -->
-          <div id="dealModal" class="modal">
-            <div class="modal-content">
-              <h2>✅ Deal Created Successfully!</h2>
-              <p style="color: #333; font-size: 14px; font-weight: bold;">Deal: <span id="dealNameDisplay"></span></p>
-              <p style="color: #666; font-size: 12px;">Deal ID: <span id="dealIdDisplay"></span></p>
-              
-              <div class="link-section">
-                <h4>🅰️ Asset A Seller Link</h4>
-                <div style="margin: 10px 0;">
-                  <a id="linkADisplay" href="#" target="_blank" style="color: #667eea; word-break: break-all; font-size: 12px;"></a>
-                </div>
-                <div class="link-input">
-                  <input type="text" id="linkA" readonly style="display:none;">
-                  <button class="copy-btn" onclick="copyLink('A')">📋 Copy Link</button>
-                </div>
-                <div style="margin-top: 10px;">
-                  <input type="email" id="emailA" placeholder="Enter recipient email" style="flex: 1;">
-                  <button class="email-btn" onclick="sendInvite('A')" style="margin-top: 5px;">📧 Send Invitation</button>
-                </div>
-                <div id="successA" class="success-message">✓ Action completed!</div>
-              </div>
-              
-              <div class="link-section">
-                <h4>🅱️ Asset B Seller Link</h4>
-                <div style="margin: 10px 0;">
-                  <a id="linkBDisplay" href="#" target="_blank" style="color: #667eea; word-break: break-all; font-size: 12px;"></a>
-                </div>
-                <div class="link-input">
-                  <input type="text" id="linkB" readonly style="display:none;">
-                  <button class="copy-btn" onclick="copyLink('B')">📋 Copy Link</button>
-                </div>
-                <div style="margin-top: 10px;">
-                  <input type="email" id="emailB" placeholder="Enter recipient email" style="flex: 1;">
-                  <button class="email-btn" onclick="sendInvite('B')" style="margin-top: 5px;">📧 Send Invitation</button>
-                </div>
-                <div id="successB" class="success-message">✓ Action completed!</div>
-              </div>
-              
-              <button class="button close-modal" onclick="closeModal()">Close</button>
-            </div>
-          </div>
-          
-          <form id="dealForm">
-            <div class="form-group">
-              <label for="dealName">Deal Name</label>
-              <input name="dealName" id="dealName" type="text" placeholder="Leave empty for auto-generated name" maxlength="100">
-              <small style="color: #888;">Optional: Give your deal a memorable name</small>
-            </div>
-            
-            <div class="two-column">
-              <div class="asset-section">
-                <h3>🅰️ Asset A</h3>
-                
-                <div class="form-group">
-                  <label for="chainA">Network</label>
-                  <select name="chainA" id="chainA" onchange="updateAssetDropdown('A')">
-                    ${chains.map((chain: any) => 
-                      `<option value="${chain.chainId}">${chain.icon} ${chain.name}</option>`
-                    ).join('')}
-                  </select>
-                </div>
-                
-                <div class="form-group">
-                  <label for="assetA">Asset</label>
-                  <select name="assetA" id="assetA" onchange="updateAssetDisplay('A')">
-                    <!-- Will be populated by JavaScript -->
-                  </select>
-                </div>
-                
-                <a id="assetDisplayA" class="asset-display" href="#" target="_blank" style="display:none;">
-                  <span class="asset-icon"></span>
-                  <div class="asset-info">
-                    <div class="asset-name"></div>
-                    <div class="asset-details"></div>
-                  </div>
-                  <span class="external-link">🔗</span>
-                </a>
-                
-                <div class="form-group">
-                  <label for="amountA">Amount</label>
-                  <input name="amountA" id="amountA" type="number" step="0.00000001" placeholder="0.00" required>
-                </div>
-              </div>
-              
-              <div class="asset-section">
-                <h3>🅱️ Asset B</h3>
-                
-                <div class="form-group">
-                  <label for="chainB">Network</label>
-                  <select name="chainB" id="chainB" onchange="updateAssetDropdown('B')">
-                    ${chains.map((chain: any) => 
-                      `<option value="${chain.chainId}">${chain.icon} ${chain.name}</option>`
-                    ).join('')}
-                  </select>
-                </div>
-                
-                <div class="form-group">
-                  <label for="assetB">Asset</label>
-                  <select name="assetB" id="assetB" onchange="updateAssetDisplay('B')">
-                    <!-- Will be populated by JavaScript -->
-                  </select>
-                </div>
-                
-                <a id="assetDisplayB" class="asset-display" href="#" target="_blank" style="display:none;">
-                  <span class="asset-icon"></span>
-                  <div class="asset-info">
-                    <div class="asset-name"></div>
-                    <div class="asset-details"></div>
-                  </div>
-                  <span class="external-link">🔗</span>
-                </a>
-                
-                <div class="form-group">
-                  <label for="amountB">Amount</label>
-                  <input name="amountB" id="amountB" type="number" step="0.00000001" placeholder="0.00" required>
-                </div>
-              </div>
-            </div>
-            
-            <div class="timeout-group">
-              <div class="form-group">
-                <label for="timeout">Timeout (seconds)</label>
-                <input name="timeout" id="timeout" type="number" value="3600" min="300" max="86400" required>
-                <small style="color: #888;">Default: 1 hour</small>
-              </div>
-            </div>
-            
-            <button type="submit">Create Swap Deal</button>
-          </form>
-        </div>
-        
-        <script>
-          // Asset registry data
-          const assetsByChain = ${JSON.stringify(assetsByChain)};
-          const chains = ${JSON.stringify(chains)};
-          
-          function updateAssetDropdown(side) {
-            const chainSelect = document.getElementById('chain' + side);
-            const assetSelect = document.getElementById('asset' + side);
-            const chainId = chainSelect.value;
-            const assets = assetsByChain[chainId] || [];
-            
-            // Clear and repopulate asset dropdown
-            assetSelect.innerHTML = '';
-            assets.forEach(asset => {
-              const option = document.createElement('option');
-              option.value = formatAssetCode(asset);
-              option.textContent = asset.icon + ' ' + asset.assetName + ' (' + asset.assetSymbol + ')';
-              option.dataset.asset = JSON.stringify(asset);
-              assetSelect.appendChild(option);
-            });
-            
-            // Update display for first asset
-            if (assets.length > 0) {
-              updateAssetDisplay(side);
-            }
-          }
-          
-          function formatAssetCode(asset) {
-            if (asset.native) {
-              return asset.assetSymbol;
-            }
-            if (asset.type === 'ERC20' || asset.type === 'SPL') {
-              return asset.type + ':' + asset.contractAddress;
-            }
-            return asset.assetSymbol;
-          }
-          
-          function getAssetUrl(asset) {
-            // Generate blockchain explorer URLs
-            switch (asset.chainId) {
-              case 'UNICITY':
-                return 'https://www.unicity.network/';
-              
-              case 'ETH':
-                if (asset.native) {
-                  return 'https://etherscan.io/';
-                } else if (asset.contractAddress) {
-                  return 'https://etherscan.io/token/' + asset.contractAddress;
-                }
-                break;
-              
-              case 'POLYGON':
-                if (asset.native) {
-                  return 'https://polygonscan.com/';
-                } else if (asset.contractAddress) {
-                  return 'https://polygonscan.com/token/' + asset.contractAddress;
-                }
-                break;
-              
-              case 'SOLANA':
-                if (asset.native) {
-                  return 'https://solscan.io/';
-                } else if (asset.contractAddress) {
-                  return 'https://solscan.io/token/' + asset.contractAddress;
-                }
-                break;
-            }
-            
-            return '#';
-          }
-          
-          function updateAssetDisplay(side) {
-            const assetSelect = document.getElementById('asset' + side);
-            const displayLink = document.getElementById('assetDisplay' + side);
-            const selectedOption = assetSelect.options[assetSelect.selectedIndex];
-            
-            if (selectedOption && selectedOption.dataset.asset) {
-              const asset = JSON.parse(selectedOption.dataset.asset);
-              
-              displayLink.querySelector('.asset-icon').textContent = asset.icon;
-              displayLink.querySelector('.asset-name').textContent = asset.assetName;
-              
-              let details = asset.assetSymbol + ' • ';
-              if (asset.native) {
-                details += 'Native Asset';
-              } else {
-                details += asset.type;
-                if (asset.contractAddress) {
-                  details += ' • ' + asset.contractAddress.substring(0, 6) + '...' + 
-                            asset.contractAddress.substring(asset.contractAddress.length - 4);
-                }
-              }
-              displayLink.querySelector('.asset-details').textContent = details;
-              displayLink.href = getAssetUrl(asset);
-              displayLink.style.display = 'flex';
-            }
-          }
-          
-          // Initialize dropdowns on page load
-          window.addEventListener('DOMContentLoaded', function() {
-            updateAssetDropdown('A');
-            updateAssetDropdown('B');
-            
-            // Set different default chains for A and B
-            document.getElementById('chainB').selectedIndex = 1; // Select second chain
-            updateAssetDropdown('B');
-          });
-          
-          // Modal functions
-          function showDealCreatedModal(dealResult) {
-            // Store deal ID and name
-            document.getElementById('dealIdDisplay').textContent = dealResult.dealId;
-            document.getElementById('dealNameDisplay').textContent = dealResult.dealName || 'Unnamed Deal';
-            
-            // Set hidden inputs
-            document.getElementById('linkA').value = dealResult.linkA;
-            document.getElementById('linkB').value = dealResult.linkB;
-            
-            // Set visible clickable links
-            document.getElementById('linkADisplay').href = dealResult.linkA;
-            document.getElementById('linkADisplay').textContent = dealResult.linkA;
-            document.getElementById('linkBDisplay').href = dealResult.linkB;
-            document.getElementById('linkBDisplay').textContent = dealResult.linkB;
-            
-            // Store deal result globally for invite function
-            window.currentDealResult = dealResult;
-            
-            document.getElementById('dealModal').style.display = 'block';
-          }
-          
-          function closeModal() {
-            document.getElementById('dealModal').style.display = 'none';
-            // Reset form for next deal
-            document.getElementById('dealForm').reset();
-            updateAssetDropdown('A');
-            updateAssetDropdown('B');
-            // Clear email inputs
-            document.getElementById('emailA').value = '';
-            document.getElementById('emailB').value = '';
-          }
-          
-          function copyLink(side) {
-            const link = document.getElementById('link' + side).value;
-            
-            navigator.clipboard.writeText(link).then(() => {
-              showSuccess(side, 'Link copied to clipboard!');
-            }).catch(() => {
-              // Fallback for older browsers
-              const textArea = document.createElement('textarea');
-              textArea.value = link;
-              document.body.appendChild(textArea);
-              textArea.select();
-              document.execCommand('copy');
-              document.body.removeChild(textArea);
-              showSuccess(side, 'Link copied to clipboard!');
-            });
-          }
-          
-          async function sendInvite(side) {
-            const email = document.getElementById('email' + side).value;
-            if (!email) {
-              alert('Please enter an email address');
-              return;
-            }
-            
-            const link = document.getElementById('link' + side).value;
-            const dealId = window.currentDealResult.dealId;
-            
-            try {
-              const response = await fetch('/rpc', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  jsonrpc: '2.0',
-                  method: 'otc.sendInvite',
-                  params: {
-                    dealId: dealId,
-                    party: side === 'A' ? 'ALICE' : 'BOB',
-                    email: email,
-                    link: link
-                  },
-                  id: 1
-                })
-              });
-              
-              const result = await response.json();
-              if (result.result && result.result.sent) {
-                showSuccess(side, 'Invitation sent to ' + email);
-                document.getElementById('email' + side).value = '';
-              } else {
-                alert('Failed to send invitation: ' + (result.error?.message || 'Unknown error'));
-              }
-            } catch (error) {
-              alert('Failed to send invitation: ' + error.message);
-            }
-          }
-          
-          function showSuccess(side, message) {
-            const successMsg = document.getElementById('success' + side);
-            successMsg.textContent = '✓ ' + message;
-            successMsg.style.display = 'block';
-            setTimeout(() => {
-              successMsg.style.display = 'none';
-            }, 3000);
-          }
-          
-          // Make functions global
-          window.showDealCreatedModal = showDealCreatedModal;
-          window.closeModal = closeModal;
-          window.copyLink = copyLink;
-          window.sendInvite = sendInvite;
-          window.showSuccess = showSuccess;
-          
-          // Handle form submission
-          document.getElementById('dealForm').onsubmit = async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            
-            const response = await fetch('/rpc', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                jsonrpc: '2.0',
-                method: 'otc.createDeal',
-                params: {
-                  alice: {
-                    chainId: formData.get('chainA'),
-                    asset: formData.get('assetA'),
-                    amount: formData.get('amountA')
-                  },
-                  bob: {
-                    chainId: formData.get('chainB'),
-                    asset: formData.get('assetB'),
-                    amount: formData.get('amountB')
-                  },
-                  timeoutSeconds: parseInt(formData.get('timeout')),
-                  name: formData.get('dealName') || undefined
-                },
-                id: 1
-              })
-            });
-            
-            const result = await response.json();
-            if (result.result) {
-              // Create a modal to show the links with copy/email functionality
-              showDealCreatedModal(result.result);
-            } else {
-              alert('❌ Error: ' + (result.error?.message || 'Unknown error'));
-            }
-          };
-        </script>
-      </body>
-      </html>
-    `;
-  }
-
-  /**
-   * Renders the personal page for a deal party (Alice or Bob).
-   * This secure page is accessed via a unique token and provides:
-   * - Deal summary and current status
-   * - Wallet address collection form (payback and recipient)
-   * - Real-time escrow balance monitoring
-   * - Transaction history log
-   * - Countdown timer for deal expiration
-   * - Deal cancellation option (if no assets locked)
-   *
-   * The page includes sophisticated client-side features:
-   * - Polling for real-time status updates (30-second intervals)
-   * - Direct blockchain balance queries via ethers.js
-   * - Progressive status indicators with visual feedback
-   * - Responsive design for mobile devices
-   *
-   * @param {string} dealId - Unique identifier for the deal
-   * @param {string} token - Security token for party authentication
-   * @param {'ALICE' | 'BOB'} party - Which party's page to render
-   * @returns {string} Complete HTML page with embedded monitoring scripts
-   */
-  private renderPartyPage(dealId: string, token: string, party: 'ALICE' | 'BOB'): string {
-  const partyLabel = party === 'ALICE' ? 'Asset A Seller' : 'Asset B Seller';
-  const partyIcon = party === 'ALICE' ? '🅰️' : '🅱️';
-  
-  // Get deal information to show correct chains and assets
-  const deal = this.dealRepo.get(dealId);
-  let dealInfo = { 
-    sendChain: '', 
-    sendAsset: '', 
-    sendAmount: '',
-    sendChainIcon: '',
-    receiveChain: '', 
-    receiveAsset: '',
-    receiveAmount: '',
-    receiveChainIcon: ''
-  };
-  
-  const chainIcons: Record<string, string> = {
-    'UNICITY': '🔷',
-    'ETH': 'Ξ',
-    'POLYGON': 'Ⓜ',
-    'BASE': '🔵',
-    'SOLANA': '◎'
-  };
-
-  // Helper function to get display name for chain
-  const getChainDisplayName = (chainId: string): string => {
-    const registry = getAssetRegistry();
-    const chainInfo = registry.supportedChains.find(c => c.chainId === chainId);
-    return chainInfo?.name || chainId;
-  };
-
-  if (deal) {
-    const registry = getAssetRegistry();
-    const assetA = registry.assets.find(a => a.chainId === deal.alice.chainId && formatAssetCode(a) === deal.alice.asset);
-    const assetB = registry.assets.find(a => a.chainId === deal.bob.chainId && formatAssetCode(a) === deal.bob.asset);
-
-    if (party === 'ALICE') {
-      dealInfo = {
-        sendChain: deal.alice.chainId,
-        sendAsset: assetA?.assetSymbol || deal.alice.asset,
-        sendAmount: deal.alice.amount,
-        sendChainIcon: chainIcons[deal.alice.chainId] || '🔗',
-        receiveChain: deal.bob.chainId,
-        receiveAsset: assetB?.assetSymbol || deal.bob.asset,
-        receiveAmount: deal.bob.amount,
-        receiveChainIcon: chainIcons[deal.bob.chainId] || '🔗'
-      };
-    } else {
-      dealInfo = {
-        sendChain: deal.bob.chainId,
-        sendAsset: assetB?.assetSymbol || deal.bob.asset,
-        sendAmount: deal.bob.amount,
-        sendChainIcon: chainIcons[deal.bob.chainId] || '🔗',
-        receiveChain: deal.alice.chainId,
-        receiveAsset: assetA?.assetSymbol || deal.alice.asset,
-        receiveAmount: deal.alice.amount,
-        receiveChainIcon: chainIcons[deal.alice.chainId] || '🔗'
-      };
-    }
-  }
-  
-  return `
     <!DOCTYPE html>
     <html>
     <head>
-      <title>${partyLabel} - OTC Asset Swap</title>
+      <title>Asset B Seller - OTC Asset Swap</title>
       <style>
         body { 
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -1593,67 +104,21 @@ export class RpcServer {
         }
         
         .stage-details {
-          font-size: 13px;
-          font-family: 'Courier New', 'Monaco', 'Consolas', monospace;
-          color: #00ff41;
-          background: #0a0a0a;
-          border: 2px solid #00ff41;
+          font-size: 11px;
+          color: rgba(255, 255, 255, 0.9);
+          background: rgba(0, 0, 0, 0.2);
+          border: 1px solid rgba(255, 255, 255, 0.1);
           border-radius: 8px;
           margin-top: 12px;
-          padding: 15px 18px;
-          line-height: 1.6;
+          padding: 12px 15px;
+          line-height: 1.5;
           text-align: left;
-          box-shadow: 0 0 20px rgba(0, 255, 65, 0.3), inset 0 0 40px rgba(0, 255, 65, 0.05);
-          position: relative;
-          overflow: hidden;
+          backdrop-filter: blur(10px);
         }
-
-        /* CRT scanline effect */
-        .stage-details::before {
-          content: "";
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          background: repeating-linear-gradient(
-            0deg,
-            rgba(0, 0, 0, 0.15),
-            rgba(0, 0, 0, 0.15) 1px,
-            transparent 1px,
-            transparent 2px
-          );
-          pointer-events: none;
-          z-index: 1;
-        }
-
-        /* Text glow effect */
-        .stage-details * {
-          position: relative;
-          z-index: 2;
-          text-shadow: 0 0 5px rgba(0, 255, 65, 0.7), 0 0 10px rgba(0, 255, 65, 0.3);
-        }
-
+        
         .stage-details strong {
-          color: #00ff41;
-          font-weight: 700;
-          text-shadow: 0 0 8px rgba(0, 255, 65, 0.9), 0 0 15px rgba(0, 255, 65, 0.5);
-        }
-
-        /* Blinking cursor */
-        .terminal-cursor {
-          display: inline-block;
-          width: 8px;
-          height: 14px;
-          background-color: #00ff41;
-          margin-left: 2px;
-          animation: blink 0.8s infinite;
-          box-shadow: 0 0 5px rgba(0, 255, 65, 0.8);
-        }
-
-        @keyframes blink {
-          0%, 49% { opacity: 1; }
-          50%, 100% { opacity: 0; }
+          color: #fff;
+          font-weight: 600;
         }
         
         .stage-created { background: rgba(255,255,255,0.2); }
@@ -2211,8 +676,8 @@ export class RpcServer {
     </head>
     <body>
       <div class="container">
-        <h1>${partyIcon} ${partyLabel}</h1>
-        <p style="color: #333; font-size: 16px; font-weight: 600; margin-top: -10px;">Deal: ${deal?.name || 'Unnamed Deal'}</p>
+        <h1>🅱️ Asset B Seller</h1>
+        <p style="color: #333; font-size: 16px; font-weight: 600; margin-top: -10px;">Deal: usdt-test-gas-fees</p>
         
         <!-- Sync Status -->
         <div class="sync-status synced" id="syncStatus">
@@ -2223,8 +688,8 @@ export class RpcServer {
         <!-- Deal Summary (Always Visible) -->
         <div class="deal-summary">
           <h3 style="margin-top: 0; margin-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.3); padding-bottom: 10px;">📊 Deal Summary</h3>
-          <p><strong>You Send:</strong> ${dealInfo.sendAmount} ${dealInfo.sendAsset} <span class="chain-badge">${dealInfo.sendChainIcon} ${dealInfo.sendChain}</span></p>
-          <p><strong>You Receive:</strong> ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} <span class="chain-badge">${dealInfo.receiveChainIcon} ${dealInfo.receiveChain}</span></p>
+          <p><strong>You Send:</strong> 0.1 USDT <span class="chain-badge">Ⓜ POLYGON</span></p>
+          <p><strong>You Receive:</strong> 0.2 ALPHA <span class="chain-badge">🔷 UNICITY</span></p>
         </div>
         
         <!-- Details Form (Always Visible) -->
@@ -2232,21 +697,21 @@ export class RpcServer {
           <h3>📝 Your Wallet Addresses:</h3>
           
           <div class="form-group">
-            <label for="payback">🔙 Payback Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.sendChain}</span></label>
-            <small style="color: #888;">If the deal fails, your ${dealInfo.sendAmount} ${dealInfo.sendAsset} will be returned to this address</small>
+            <label for="payback">🔙 Payback Address on <span style="color: #667eea; font-weight: 600;">POLYGON</span></label>
+            <small style="color: #888;">If the deal fails, your 0.1 USDT will be returned to this address</small>
             <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
-              <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.sendChain} address that can receive ${dealInfo.sendAsset}</small>
+              <small style="color: #856404;">⚠️ Must be a valid POLYGON address that can receive USDT</small>
             </div>
-            <input id="payback" placeholder="Enter your ${dealInfo.sendChain} wallet address" required>
+            <input id="payback" placeholder="Enter your POLYGON wallet address" required>
           </div>
           
           <div class="form-group">
-            <label for="recipient">📥 Recipient Address on <span style="color: #667eea; font-weight: 600;">${dealInfo.receiveChain}</span></label>
-            <small style="color: #888;">When the deal succeeds, you will receive ${dealInfo.receiveAmount} ${dealInfo.receiveAsset} here</small>
+            <label for="recipient">📥 Recipient Address on <span style="color: #667eea; font-weight: 600;">UNICITY</span></label>
+            <small style="color: #888;">When the deal succeeds, you will receive 0.2 ALPHA here</small>
             <div style="background: #fff3cd; padding: 8px; border-radius: 5px; margin: 8px 0; border-left: 4px solid #ffc107;">
-              <small style="color: #856404;">⚠️ Must be a valid ${dealInfo.receiveChain} address that can receive ${dealInfo.receiveAsset}</small>
+              <small style="color: #856404;">⚠️ Must be a valid UNICITY address that can receive ALPHA</small>
             </div>
-            <input id="recipient" placeholder="Enter your ${dealInfo.receiveChain} wallet address" required>
+            <input id="recipient" placeholder="Enter your UNICITY wallet address" required>
           </div>
           
           <div class="form-group">
@@ -2282,7 +747,7 @@ export class RpcServer {
                 <div class="balance-progress-fill" id="yourProgress" style="width: 0%;"></div>
               </div>
               <div class="balance-details" id="yourDetails">
-                <span id="yourAsset">${dealInfo.sendAsset}</span> • 
+                <span id="yourAsset">USDT</span> • 
                 <span id="yourStatus">Waiting for deposits...</span>
               </div>
             </div>
@@ -2295,7 +760,7 @@ export class RpcServer {
                 <div class="balance-progress-fill" id="theirProgress" style="width: 0%;"></div>
               </div>
               <div class="balance-details" id="theirDetails">
-                <span id="theirAsset">${dealInfo.receiveAsset}</span> • 
+                <span id="theirAsset">ALPHA</span> • 
                 <span id="theirStatus">Waiting for deposits...</span>
               </div>
             </div>
@@ -2315,7 +780,7 @@ export class RpcServer {
             <div class="escrow-address" id="escrowAddress">Loading...</div>
             <div style="margin-top: 10px;">
               <span style="font-size: 14px; color: #92400e;">
-                Amount Required: <strong id="escrowAmount">${dealInfo.sendAmount} ${dealInfo.sendAsset} on ${getChainDisplayName(dealInfo.sendChain)}</strong>
+                Amount Required: <strong id="escrowAmount">0.1 USDT</strong>
               </span>
             </div>
             <button class="escrow-copy-btn" onclick="copyEscrowAddress()">
@@ -2452,18 +917,18 @@ export class RpcServer {
       </style>
       
       <script>
-        const dealId = '${dealId}';
-        const token = '${token}';
-        const party = '${party}';
+        const dealId = '04612e1576253ce5a61438c1a0064840';
+        const token = 'ed395ae3861eb4b6c3ef854a2b4d83d0';
+        const party = 'BOB';
         
         // Store deal info for use in JavaScript
         const dealInfo = {
-          sendChain: '${dealInfo.sendChain}',
-          sendAsset: '${dealInfo.sendAsset}',
-          sendAmount: '${dealInfo.sendAmount}',
-          receiveChain: '${dealInfo.receiveChain}',
-          receiveAsset: '${dealInfo.receiveAsset}',
-          receiveAmount: '${dealInfo.receiveAmount}'
+          sendChain: 'POLYGON',
+          sendAsset: 'USDT',
+          sendAmount: '0.1',
+          receiveChain: 'UNICITY',
+          receiveAsset: 'ALPHA',
+          receiveAmount: '0.2'
         };
         
         let refreshInterval = null;
@@ -2472,11 +937,7 @@ export class RpcServer {
         let blockchainProviders = {};
         let blockchainQueryCache = {};
         let lastSyncTime = Date.now();
-
-        // Typing animation state
-        let currentTypingAnimation = null;
-        let lastTypedText = '';
-
+        
         // RPC endpoints will be populated from backend
         let RPC_ENDPOINTS = {};
         
@@ -2848,7 +1309,7 @@ export class RpcServer {
               // Check if it's native asset or ERC20
               const nativeAsset = chainId === 'POLYGON' ? 'MATIC' : 'ETH';
               
-              if (asset === nativeAsset || asset === \`\${nativeAsset}@\${chainId}\`) {
+              if (asset === nativeAsset || asset === `${nativeAsset}@${chainId}`) {
                 // Get native balance
                 const balance = await provider.getBalance(address);
                 return ethers.formatEther(balance);
@@ -3137,12 +1598,12 @@ export class RpcServer {
           }
           
           // Show confirmation dialog with address details
-          const confirmMsg = '⚠️ IMPORTANT: Please double-check your addresses!\\n\\n' +
-            'Once submitted, these addresses CANNOT be changed.\\n\\n' +
-            '🔙 PAYBACK Address (' + dealInfo.sendChain + '):\\n' + payback + '\\n\\n' +
-            '📥 RECIPIENT Address (' + dealInfo.receiveChain + '):\\n' + recipient + '\\n\\n' +
-            'If the deal fails, ' + dealInfo.sendAmount + ' ' + dealInfo.sendAsset + ' will be returned to the PAYBACK address.\\n' +
-            'If the deal succeeds, you will receive ' + dealInfo.receiveAmount + ' ' + dealInfo.receiveAsset + ' at the RECIPIENT address.\\n\\n' +
+          const confirmMsg = '⚠️ IMPORTANT: Please double-check your addresses!\n\n' +
+            'Once submitted, these addresses CANNOT be changed.\n\n' +
+            '🔙 PAYBACK Address (' + dealInfo.sendChain + '):\n' + payback + '\n\n' +
+            '📥 RECIPIENT Address (' + dealInfo.receiveChain + '):\n' + recipient + '\n\n' +
+            'If the deal fails, ' + dealInfo.sendAmount + ' ' + dealInfo.sendAsset + ' will be returned to the PAYBACK address.\n' +
+            'If the deal succeeds, you will receive ' + dealInfo.receiveAmount + ' ' + dealInfo.receiveAsset + ' at the RECIPIENT address.\n\n' +
             'Are you absolutely sure these addresses are correct?';
           
           if (!confirm(confirmMsg)) {
@@ -3366,10 +1827,10 @@ export class RpcServer {
                 
                 // Note: Some networks may require an API key for V2 endpoints
                 // For now, we'll try without an API key and handle errors gracefully
-                const response = await fetch(\`\${apiUrl}?\${params.toString()}\`);
+                const response = await fetch(`${apiUrl}?${params.toString()}`);
                 const data = await response.json();
                 
-                console.log(\`Fetched \${chainId} transactions for \${address}:\`, data);
+                console.log(`Fetched ${chainId} transactions for ${address}:`, data);
                 
                 // Check for API errors
                 if (data.message && data.message.includes('deprecated V1 endpoint')) {
@@ -3726,66 +2187,7 @@ export class RpcServer {
             syncText.textContent = 'Disconnected';
           }
         }
-
-        // Terminal typing animation effect
-        function typeText(element, htmlText, callback) {
-          // Cancel any ongoing animation
-          if (currentTypingAnimation) {
-            clearTimeout(currentTypingAnimation);
-            currentTypingAnimation = null;
-          }
-
-          // Skip animation if text hasn't changed
-          if (lastTypedText === htmlText) {
-            element.innerHTML = htmlText;
-            if (callback) callback();
-            return;
-          }
-
-          lastTypedText = htmlText;
-
-          // Strip HTML tags to get plain text for character-by-character typing
-          const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = htmlText;
-          const plainText = tempDiv.textContent || tempDiv.innerText || '';
-
-          // Clear element and prepare for typing
-          element.textContent = '';
-
-          // Add cursor
-          const cursor = document.createElement('span');
-          cursor.className = 'terminal-cursor';
-          element.appendChild(cursor);
-
-          let charIndex = 0;
-          const typingSpeed = 15; // Milliseconds per character (fast but readable)
-
-          function typeNextChar() {
-            if (charIndex < plainText.length) {
-              // Remove cursor temporarily
-              cursor.remove();
-
-              // Add next character
-              const currentText = element.textContent;
-              element.textContent = currentText + plainText[charIndex];
-
-              // Re-add cursor
-              element.appendChild(cursor);
-
-              charIndex++;
-              currentTypingAnimation = setTimeout(typeNextChar, typingSpeed);
-            } else {
-              // Typing complete - replace with formatted HTML
-              cursor.remove();
-              element.innerHTML = htmlText;
-              currentTypingAnimation = null;
-              if (callback) callback();
-            }
-          }
-
-          typeNextChar();
-        }
-
+        
         // Update status from server
         async function updateStatus() {
           try {
@@ -3840,10 +2242,9 @@ export class RpcServer {
             stageEl.className = 'stage-badge stage-' + dealData.stage.toLowerCase();
           }
           
-          // Update detailed status explanation with typing animation
+          // Update detailed status explanation
           if (detailsEl) {
-            const statusText = getDetailedStatus();
-            typeText(detailsEl, statusText);
+            detailsEl.innerHTML = getDetailedStatus();
           }
           
           // Update countdown
@@ -3918,12 +2319,11 @@ export class RpcServer {
             const escrowAsset = dealData.instructions[yourSide][0].assetCode;
             const escrowChainId = party === 'ALICE' ? dealData.alice.chainId : dealData.bob.chainId;
             let assetName = getCleanAssetName(escrowAsset, escrowChainId);
-            const chainDisplayName = getChainDisplayName(escrowChainId);
-
+            
             document.getElementById('escrowSection').style.display = 'block';
             document.getElementById('escrowAddress').textContent = escrowAddr;
-            document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + assetName + ' on ' + chainDisplayName;
-
+            document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + assetName;
+            
             // Fetch actual token symbol for ERC20 tokens
             let cleanedEscrowAsset = escrowAsset;
             if (escrowAsset && escrowAsset.includes('@')) {
@@ -3932,7 +2332,7 @@ export class RpcServer {
             if (cleanedEscrowAsset && cleanedEscrowAsset.startsWith('ERC20:')) {
               getAssetNameAsync(cleanedEscrowAsset, escrowChainId).then(symbol => {
                 if (symbol && symbol !== assetName) {
-                  document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + symbol + ' on ' + chainDisplayName;
+                  document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + symbol;
                 }
               });
             }
@@ -3970,12 +2370,6 @@ export class RpcServer {
           const bobCollected = Object.values(dealData.collection?.sideB?.collectedByAsset || {}).reduce((sum, val) => sum + parseFloat(val), 0);
           const aliceExpected = parseFloat(dealData.alice.amount);
           const bobExpected = parseFloat(dealData.bob.amount);
-
-          // Get asset names and chain names for display
-          const aliceAsset = getCleanAssetName(dealData.alice.asset, dealData.alice.chainId);
-          const bobAsset = getCleanAssetName(dealData.bob.asset, dealData.bob.chainId);
-          const aliceChain = getChainDisplayName(dealData.alice.chainId);
-          const bobChain = getChainDisplayName(dealData.bob.chainId);
           
           switch(dealData.stage) {
             case 'CREATED':
@@ -3983,39 +2377,33 @@ export class RpcServer {
                 return '<strong>Deal initialized - Setup Phase</strong><br>' +
                   '<br><strong>Current Status:</strong> Waiting for both parties to provide wallet addresses<br>' +
                   '<br><strong>Next Steps:</strong><br>' +
-                  '1. Alice (Asset Seller) needs to submit ' + aliceChain + ' wallet addresses<br>' +
-                  '2. Bob (Asset Buyer) needs to submit ' + bobChain + ' wallet addresses<br>' +
+                  '1. Alice (Asset Seller) needs to submit Unicity wallet addresses<br>' +
+                  '2. Bob (Asset Buyer) needs to submit Polygon wallet addresses<br>' +
                   '3. Once both submit, timer will start and collection phase begins<br>' +
                   '4. Both parties will then deposit assets to their escrow addresses';
               } else if (hasAliceDetails && !hasBobDetails) {
                 return '<strong>Partially Ready - Waiting for Party B</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
                   '✅ Alice (Party A) has submitted wallet addresses<br>' +
-                  '⏳ Waiting for Bob (Party B) to provide wallet addresses<br>' +
-                  '<br><strong>Bob needs to submit:</strong><br>' +
-                  '• Payback address on ' + bobChain + ' (for refunds if deal fails)<br>' +
-                  '• Recipient address on ' + aliceChain + ' (to receive ' + aliceAsset + ')<br>' +
+                  '⏳ Waiting for Bob (Party B) to provide Polygon wallet addresses<br>' +
                   '<br><strong>What happens next:</strong><br>' +
                   '1. Bob needs to open their party link and submit details<br>' +
                   '2. Once Bob submits, the 1-hour countdown timer will start<br>' +
                   '3. Both parties must then deposit their assets:<br>' +
-                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' to ' + aliceChain + ' escrow<br>' +
-                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' to ' + bobChain + ' escrow<br>' +
+                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ALPHA to Unicity escrow<br>' +
+                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' MATIC to Polygon escrow<br>' +
                   '4. After both fully fund, automatic swap will execute';
               } else if (!hasAliceDetails && hasBobDetails) {
                 return '<strong>Partially Ready - Waiting for Party A</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
                   '✅ Bob (Party B) has submitted wallet addresses<br>' +
-                  '⏳ Waiting for Alice (Party A) to provide wallet addresses<br>' +
-                  '<br><strong>Alice needs to submit:</strong><br>' +
-                  '• Payback address on ' + aliceChain + ' (for refunds if deal fails)<br>' +
-                  '• Recipient address on ' + bobChain + ' (to receive ' + bobAsset + ')<br>' +
+                  '⏳ Waiting for Alice (Party A) to provide Unicity wallet addresses<br>' +
                   '<br><strong>What happens next:</strong><br>' +
                   '1. Alice needs to open their party link and submit details<br>' +
                   '2. Once Alice submits, the 1-hour countdown timer will start<br>' +
                   '3. Both parties must then deposit their assets:<br>' +
-                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' to ' + aliceChain + ' escrow<br>' +
-                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' to ' + bobChain + ' escrow<br>' +
+                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ALPHA to Unicity escrow<br>' +
+                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' MATIC to Polygon escrow<br>' +
                   '4. After both fully fund, automatic swap will execute';
               }
               return '<strong>Both parties ready!</strong><br>Transitioning to collection phase...';
@@ -4023,12 +2411,12 @@ export class RpcServer {
             case 'COLLECTION':
               const alicePercent = Math.min(100, (aliceCollected / aliceExpected) * 100).toFixed(1);
               const bobPercent = Math.min(100, (bobCollected / bobExpected) * 100).toFixed(1);
-
+              
               if (aliceCollected < aliceExpected && bobCollected < bobExpected) {
                 return '<strong>Collection Phase Active - Both Parties Need to Deposit</strong><br>' +
                   '<br><strong>Current Funding Status:</strong><br>' +
-                  '• Alice: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' (' + alicePercent + '%) on ' + aliceChain + '<br>' +
-                  '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' ' + bobAsset + ' (' + bobPercent + '%) on ' + bobChain + '<br>' +
+                  '• Alice: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ALPHA (' + alicePercent + '%) on Unicity<br>' +
+                  '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%) on Polygon<br>' +
                   '<br><strong>⚠️ Action Required:</strong><br>' +
                   'Both parties must deposit their full amounts to escrow addresses<br>' +
                   '⏱️ Timer is running - complete deposits before expiry!<br>' +
@@ -4037,29 +2425,29 @@ export class RpcServer {
               } else if (aliceCollected >= aliceExpected && bobCollected < bobExpected) {
                 return '<strong>Waiting for Bob - Alice Fully Funded!</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
-                  '✅ Alice has deposited ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + ' (100%)<br>' +
-                  '⏳ Bob has deposited ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + ' (' + bobPercent + '%)<br>' +
-                  '<br><strong>Bob needs to deposit:</strong> ' + (bobExpected - bobCollected).toFixed(4) + ' more ' + bobAsset + ' on ' + bobChain + '<br>' +
+                  '✅ Alice has deposited ' + aliceExpected.toFixed(4) + ' ALPHA (100%)<br>' +
+                  '⏳ Bob has deposited ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' MATIC (' + bobPercent + '%)<br>' +
+                  '<br><strong>Bob needs to deposit:</strong> ' + (bobExpected - bobCollected).toFixed(4) + ' more MATIC<br>' +
                   '<br>Once Bob completes funding, the swap will execute automatically';
               } else if (aliceCollected < aliceExpected && bobCollected >= bobExpected) {
                 return '<strong>Waiting for Alice - Bob Fully Funded!</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
-                  '⏳ Alice has deposited ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + ' (' + alicePercent + '%)<br>' +
-                  '✅ Bob has deposited ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + ' (100%)<br>' +
-                  '<br><strong>Alice needs to deposit:</strong> ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ' + aliceAsset + ' on ' + aliceChain + '<br>' +
+                  '⏳ Alice has deposited ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ALPHA (' + alicePercent + '%)<br>' +
+                  '✅ Bob has deposited ' + bobExpected.toFixed(4) + ' MATIC (100%)<br>' +
+                  '<br><strong>Alice needs to deposit:</strong> ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ALPHA<br>' +
                   '<br>Once Alice completes funding, the swap will execute automatically';
               } else {
                 // Check if we're waiting for confirmations
                 const sideALocked = dealData.sideAState?.locks?.tradeLockedAt && dealData.sideAState?.locks?.commissionLockedAt;
                 const sideBLocked = dealData.sideBState?.locks?.tradeLockedAt && dealData.sideBState?.locks?.commissionLockedAt;
-
+                
                 if (!sideALocked || !sideBLocked) {
                   return '<strong>🎉 Both Parties Fully Funded!</strong><br>' +
                     '<br><strong>Status:</strong> ⏸️ Timer paused - waiting for confirmations<br>' +
                     '<br><strong>Current State:</strong><br>' +
-                    '✅ Alice has deposited required ' + aliceAsset + ' on ' + aliceChain + '<br>' +
-                    '✅ Bob has deposited required ' + bobAsset + ' on ' + bobChain + '<br>' +
-                    '⏳ Waiting for blockchain confirmations<br>' +
+                    '✅ Alice has deposited required ALPHA<br>' +
+                    '✅ Bob has deposited required MATIC<br>' +
+                    '⏳ Waiting for blockchain confirmations (6 for Unicity, 30 for Polygon)<br>' +
                     '<br><strong>Note:</strong> The countdown timer is paused while funds are secured.<br>' +
                     'If a chain reorganization occurs and funds drop below requirements,<br>' +
                     'the timer will automatically resume.';
@@ -4079,122 +2467,12 @@ export class RpcServer {
                 'The engine is executing the cross-chain swap.<br>' +
                 'Assets are being transferred to recipient addresses.<br>' +
                 'This may take a few minutes for confirmations.';
-
-            case 'SWAP':
-              // Count transactions by status
-              const allQueueItems = dealData.transactions || [];
-              const pendingTxs = allQueueItems.filter(qi => qi.status === 'PENDING').length;
-              const submittedTxs = allQueueItems.filter(qi => qi.status === 'SUBMITTED').length;
-              const completedTxs = allQueueItems.filter(qi => qi.status === 'COMPLETED').length;
-              const totalTxs = allQueueItems.length;
-
-              // Build per-chain breakdown
-              let swapStatus = '<strong>🔄 Swap Execution In Progress</strong><br><br>';
-              swapStatus += '<strong>📊 Transaction Progress:</strong> ' + completedTxs + ' Completed, ' +
-                            submittedTxs + ' In Progress, ' + pendingTxs + ' Queued<br>';
-
-              // Helper function to format transaction hash
-              function formatTxHash(txid) {
-                if (!txid) return '';
-                return txid.substring(0, 8) + '...' + txid.substring(txid.length - 4);
-              }
-
-              // Helper function to get recipient description
-              function getRecipientDescription(qi) {
-                const isAlice = qi.to === dealData.aliceDetails?.paybackAddress;
-                const isBob = qi.to === dealData.bobDetails?.paybackAddress;
-
-                if (qi.purpose === 'SWAP_PAYOUT') {
-                  return (isAlice ? 'Alice' : isBob ? 'Bob' : 'Party') + ' receives';
-                } else if (qi.purpose === 'OP_COMMISSION') {
-                  return 'Operator commission';
-                } else if (qi.purpose === 'GAS_REIMBURSEMENT') {
-                  return 'Gas reimbursement to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
-                } else if (qi.purpose === 'SURPLUS_REFUND') {
-                  return 'Surplus refund to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
-                } else if (qi.purpose === 'TIMEOUT_REFUND') {
-                  return 'Timeout refund to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
-                } else if (qi.purpose === 'GAS_REFUND_TO_TANK') {
-                  return 'Gas tank refund';
-                }
-                return 'Transfer';
-              }
-
-              // Group transactions by chain
-              const txsByChain = {};
-              for (const qi of allQueueItems) {
-                if (!txsByChain[qi.chainId]) {
-                  txsByChain[qi.chainId] = [];
-                }
-                txsByChain[qi.chainId].push(qi);
-              }
-
-              // Display each chain's transactions
-              const chainIds = Object.keys(txsByChain).sort();
-              for (const chainId of chainIds) {
-                const chainTxs = txsByChain[chainId];
-                const chainName = getChainDisplayName(chainId);
-
-                swapStatus += '<br><div style="border-top: 2px solid #e5e7eb; margin: 10px 0; padding-top: 10px;">';
-                swapStatus += '<strong>🔹 ' + chainName + ' Network:</strong><br>';
-
-                // Show each transaction on this chain
-                for (const qi of chainTxs) {
-                  const statusIcon = qi.status === 'COMPLETED' ? '✅' :
-                                   qi.status === 'SUBMITTED' ? '⏳' : '⏸️';
-                  const asset = getCleanAssetName(qi.asset, qi.chainId);
-                  const description = getRecipientDescription(qi);
-
-                  swapStatus += '<div style="margin: 8px 0 8px 15px;">';
-                  swapStatus += statusIcon + ' <strong>' + description + ' ' + parseFloat(qi.amount).toFixed(4) + ' ' + asset + '</strong>';
-
-                  // Show confirmation status or pending state
-                  if (qi.status === 'SUBMITTED' && qi.submittedTx) {
-                    swapStatus += ' (Confirming ' + qi.submittedTx.confirms + '/' + qi.submittedTx.requiredConfirms + ')';
-                  } else if (qi.status === 'COMPLETED' && qi.submittedTx) {
-                    swapStatus += ' (Confirmed ' + qi.submittedTx.confirms + '/' + qi.submittedTx.requiredConfirms + ')';
-                  }
-                  swapStatus += '<br>';
-
-                  // Show transaction hash if available
-                  if (qi.submittedTx && qi.submittedTx.txid) {
-                    swapStatus += '<span style="color: #6b7280; font-size: 11px; margin-left: 15px;">TX: ' +
-                                 formatTxHash(qi.submittedTx.txid) + '</span><br>';
-                  }
-
-                  swapStatus += '</div>';
-                }
-
-                swapStatus += '</div>';
-              }
-
-              swapStatus += '<br><div style="margin-top: 15px; padding: 10px; background: rgba(0, 255, 65, 0.08); border-left: 3px solid #00ff41;">' +
-                '<strong>⚡ Important Information:</strong><br>' +
-                '• All transactions are being processed automatically<br>' +
-                '• Timer permanently removed - no timeout risk<br>' +
-                '• You can safely close this page<br>' +
-                '</div>';
-
-              return swapStatus;
-
+              
             case 'CLOSED':
-              // Check if this was actually a successful swap or a refund
-              const allTransactions = dealData.transactions || [];
-              const hasSwapPayouts = allTransactions.some(tx => tx.purpose === 'SWAP_PAYOUT');
-              const hasTimeoutRefunds = allTransactions.some(tx => tx.purpose === 'TIMEOUT_REFUND');
-
-              // If there are no swap payouts but there are timeout refunds, this is actually a REVERTED deal
-              if (!hasSwapPayouts && hasTimeoutRefunds) {
-                return '<strong>Deal cancelled/expired.</strong><br>' +
-                  'The deal timed out before both parties could fund their escrows.<br>' +
-                  'Any deposited assets have been returned to payback addresses.';
-              }
-
-              // Otherwise it's a successful swap
               return '<strong>Deal completed successfully!</strong><br>' +
                 'All assets have been swapped and delivered.<br>' +
-                'Alice received ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + '.<br>' +
-                'Bob received ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + '.';
+                'Alice received ' + bobExpected.toFixed(4) + ' MATIC on Polygon.<br>' +
+                'Bob received ' + aliceExpected.toFixed(4) + ' ALPHA on Unicity.';
               
             case 'REVERTED':
               return '<strong>Deal cancelled/expired.</strong><br>' +
@@ -4272,10 +2550,10 @@ export class RpcServer {
         // Get clean asset name from asset code
         function getCleanAssetName(assetCode, chainId) {
           if (!assetCode) return '';
-
+          
           // Remove chain suffix if present
           let asset = assetCode.includes('@') ? assetCode.split('@')[0] : assetCode;
-
+          
           // Check for ERC20/SPL token addresses
           if (assetCode.startsWith('ERC20:') || assetCode.startsWith('SPL:')) {
             const address = assetCode.split(':')[1];
@@ -4285,20 +2563,8 @@ export class RpcServer {
             }
             return 'TOKEN';
           }
-
+          
           return asset;
-        }
-
-        // Get display name for chain
-        function getChainDisplayName(chainId) {
-          const chainNames = {
-            'UNICITY': 'Unicity',
-            'ETH': 'Ethereum',
-            'POLYGON': 'Polygon',
-            'BASE': 'Base',
-            'SOLANA': 'Solana'
-          };
-          return chainNames[chainId] || chainId;
         }
         
         // Get asset name with async ERC20 symbol fetch
@@ -4514,12 +2780,11 @@ export class RpcServer {
                 displayAssetName = symbol;
                 
                 // Update balance text
-                const chainName = getChainDisplayName(chainId);
                 if (isClosedDeal) {
-                  const newBalanceText = collected.toFixed(4) + ' ' + symbol + ' on ' + chainName;
+                  const newBalanceText = collected.toFixed(4) + ' ' + symbol;
                   balanceEl.textContent = newBalanceText;
                 } else {
-                  const newBalanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + symbol + ' on ' + chainName;
+                  const newBalanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + symbol;
                   balanceEl.textContent = newBalanceText;
                 }
                 
@@ -4536,8 +2801,7 @@ export class RpcServer {
 
           if (isClosedDeal) {
             // Show only current balance for closed deals
-            const chainName = getChainDisplayName(chainId);
-            const balanceText = collected.toFixed(4) + ' ' + displayAssetName + ' on ' + chainName;
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
             if (balanceEl.firstChild?.nodeType === Node.TEXT_NODE) {
               balanceEl.firstChild.textContent = balanceText;
             } else {
@@ -4556,8 +2820,7 @@ export class RpcServer {
             }
           } else if (isWaitingStage) {
             // WAITING stage - show balance without progress bar
-            const chainName = getChainDisplayName(chainId);
-            const balanceText = collected.toFixed(4) + ' ' + displayAssetName + ' on ' + chainName;
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
             balanceEl.textContent = balanceText;
             balanceEl.style.color = '#333';
 
@@ -4574,8 +2837,7 @@ export class RpcServer {
             // CREATED or COLLECTION stage - show progress bar
             const percentage = Math.min(100, (collected / required) * 100);
 
-            const chainName = getChainDisplayName(chainId);
-            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + displayAssetName + ' on ' + chainName;
+            const balanceText = collected.toFixed(4) + ' / ' + required.toFixed(4) + ' ' + displayAssetName;
             balanceEl.textContent = balanceText;
             balanceEl.style.color = '#333';
 
@@ -4598,8 +2860,7 @@ export class RpcServer {
             }
           } else {
             // Other stages - show balance only, no progress bar
-            const chainName = getChainDisplayName(chainId);
-            const balanceText = collected.toFixed(4) + ' ' + displayAssetName + ' on ' + chainName;
+            const balanceText = collected.toFixed(4) + ' ' + displayAssetName;
             balanceEl.textContent = balanceText;
             balanceEl.style.color = '#333';
 
@@ -4751,19 +3012,19 @@ export class RpcServer {
           explanationDiv.id = 'automatic-return-notice';
           explanationDiv.className = 'automatic-return-notice';
           explanationDiv.style.cssText = 'background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 10px; margin: 12px 0;';
-          explanationDiv.innerHTML = \`
+          explanationDiv.innerHTML = `
             <h4 style="color: #92400e; margin: 0 0 6px 0; font-size: 12px;">
               ⚠️ Automatic Return Policy
             </h4>
             <p style="color: #78350f; margin: 0; font-size: 10px; line-height: 1.4;">
-              This deal has been <strong>\${dealData.stage === 'CLOSED' ? 'successfully completed' : 'cancelled'}</strong>.
+              This deal has been <strong>${dealData.stage === 'CLOSED' ? 'successfully completed' : 'cancelled'}</strong>.
               Any funds sent to the escrow addresses will be automatically returned to the respective payback addresses.
               Automatic monitoring and returns will continue until:
             </p>
             <p style="color: #92400e; margin: 6px 0 0 0; font-size: 11px; font-weight: 600;">
-              📅 \${monitoringEndTime.toLocaleString()}
+              📅 ${monitoringEndTime.toLocaleString()}
             </p>
-          \`;
+          `;
           
           // Insert after deal info section
           const dealInfoSection = document.querySelector('.deal-info');
@@ -5097,13 +3358,13 @@ export class RpcServer {
           }
           
           if (transactions.length === 0) {
-            listEl.innerHTML = \`
+            listEl.innerHTML = `
               <div class="empty-state">
                 <div class="empty-state-icon">📭</div>
                 <p>No transactions yet</p>
                 <small>Transactions will appear here once you start depositing funds</small>
               </div>
-            \`;
+            `;
             return;
           }
           
@@ -5128,44 +3389,44 @@ export class RpcServer {
                 '✅ Payout confirmed' : 
                 'Payout: ' + (tx.minConfirmations || 0) + ' confirmations (min)';
               
-              return \`
+              return `
                 <div class="transaction-item payout-header">
                   <div class="tx-left">
                     <div class="tx-header">
                       <span class="tx-out">📦</span>
                       <span class="tx-tag tag-payout">Payout</span>
                       <span class="tx-chain-badge chain-unicity">UNICITY</span>
-                      <span class="tx-amount">\${tx.amount} \${cleanAssetDisplay(tx.asset)}</span>
+                      <span class="tx-amount">${tx.amount} ${cleanAssetDisplay(tx.asset)}</span>
                     </div>
                     <div class="tx-addresses">
                       <span class="tx-addr-label">Destination:</span>
-                      <a href="\${getExplorerUrl(tx.chainId, 'address', tx.to)}" target="_blank" class="tx-hash-link">
-                        \${formatAddress(tx.to)}
+                      <a href="${getExplorerUrl(tx.chainId, 'address', tx.to)}" target="_blank" class="tx-hash-link">
+                        ${formatAddress(tx.to)}
                       </a>
                     </div>
                     <div class="tx-purpose">
-                      <span class="tx-addr-label">Purpose:</span> \${tx.purpose}
+                      <span class="tx-addr-label">Purpose:</span> ${tx.purpose}
                     </div>
                   </div>
                   <div class="tx-right">
-                    <span class="tx-status \${statusClass}">\${statusText}</span>
+                    <span class="tx-status ${statusClass}">${statusText}</span>
                   </div>
                 </div>
-              \`;
+              `;
             } else if (tx.type === 'event') {
-              return \`
+              return `
                 <div class="transaction-item">
                   <div class="tx-left">
                     <div class="tx-header">
                       <span>📝</span>
-                      <span>\${tx.message}</span>
+                      <span>${tx.message}</span>
                     </div>
                   </div>
                   <div class="tx-right">
-                    <div class="tx-time">\${new Date(tx.time).toLocaleString()}</div>
+                    <div class="tx-time">${new Date(tx.time).toLocaleString()}</div>
                   </div>
                 </div>
-              \`;
+              `;
             } else {
               // Determine chain and escrow
               const chainId = tx.chainId || (tx.escrow === 'Your escrow' ? 
@@ -5183,14 +3444,14 @@ export class RpcServer {
               if (tx.type === 'in') {
                 // Deposit - from external to escrow
                 fromAddr = tx.from || 'External';
-                toAddr = tx.escrow === 'Your escrow' ?
-                  (party === 'ALICE' ? dealData?.escrowA?.address : dealData?.escrowB?.address) :
-                  (party === 'ALICE' ? dealData?.escrowB?.address : dealData?.escrowA?.address);
+                toAddr = tx.escrow === 'Your escrow' ? 
+                  (dealData?.escrowA?.address || dealData?.escrowB?.address) : 
+                  (dealData?.escrowB?.address || dealData?.escrowA?.address);
               } else {
                 // Transfer - from escrow to recipient
-                fromAddr = tx.escrow === 'Your escrow' ?
-                  (party === 'ALICE' ? dealData?.escrowA?.address : dealData?.escrowB?.address) :
-                  (party === 'ALICE' ? dealData?.escrowB?.address : dealData?.escrowA?.address);
+                fromAddr = tx.escrow === 'Your escrow' ? 
+                  (dealData?.escrowA?.address || dealData?.escrowB?.address) : 
+                  (dealData?.escrowB?.address || dealData?.escrowA?.address);
                 toAddr = tx.to || '';
               }
               
@@ -5517,43 +3778,4 @@ export class RpcServer {
       </script>
     </body>
     </html>
-  `;
-}
-
-  /**
-   * Initialize gas reimbursement tracking for a party when escrow is generated
-   */
-  private initializeGasReimbursement(deal: Deal, party: 'ALICE' | 'BOB'): void {
-    // Check if gas reimbursement already initialized
-    if (deal.gasReimbursement?.enabled !== undefined) {
-      return;
-    }
-
-    const spec = party === 'ALICE' ? deal.alice : deal.bob;
-
-    // Check if this is an ERC-20 deal on an EVM chain
-    const evmChains = ['ETH', 'POLYGON', 'BASE'];
-    const isEVM = evmChains.includes(spec.chainId);
-    const isERC20 = spec.asset.startsWith('ERC20:');
-
-    if (isEVM && isERC20) {
-      console.log(`[GasReimbursement] Initializing for ${party} in deal ${deal.id}`);
-
-      // Initialize gas reimbursement tracking
-      deal.gasReimbursement = {
-        enabled: true,
-        escrowSide: party === 'ALICE' ? 'A' : 'B',
-        status: 'PENDING_CALCULATION'
-      };
-
-      this.dealRepo.addEvent(deal.id, `Gas reimbursement enabled for ${party} escrow`);
-      console.log(`[GasReimbursement] Enabled for ${party}, will reimburse tank wallet`);
-    }
-  }
-
-  start(port: number) {
-    this.app.listen(port, () => {
-      console.log(`RPC server listening on port ${port}`);
-    });
-  }
-}
+  

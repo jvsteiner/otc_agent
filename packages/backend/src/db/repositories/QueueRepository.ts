@@ -301,4 +301,115 @@ export class QueueRepository {
 
     return item;
   }
+
+  /**
+   * Check if a nonce is already in use by another queue item for the same address.
+   * Used for sanity checking before submitting transactions.
+   *
+   * @param chainId - Chain ID
+   * @param address - Sender address
+   * @param nonce - Nonce to check
+   * @param excludeItemId - Optional queue item ID to exclude from check (for updating existing item)
+   * @returns The conflicting queue item if found, undefined otherwise
+   */
+  findNonceConflict(
+    chainId: ChainId,
+    address: string,
+    nonce: string,
+    excludeItemId?: string
+  ): QueueItem | undefined {
+    const allItems = this.getAll();
+
+    return allItems.find(q =>
+      q.chainId === chainId &&
+      q.from.address.toLowerCase() === address.toLowerCase() &&
+      q.status !== 'COMPLETED' &&
+      q.id !== excludeItemId &&
+      q.submittedTx?.nonceOrInputs === nonce
+    );
+  }
+
+  /**
+   * Get the highest nonce currently queued for an address (PENDING or SUBMITTED).
+   * Returns null if no items queued.
+   *
+   * @param chainId - Chain ID
+   * @param address - Sender address
+   * @returns Highest nonce or null
+   */
+  getHighestQueuedNonce(chainId: ChainId, address: string): number | null {
+    const allItems = this.getAll();
+
+    const relevantItems = allItems.filter(q =>
+      q.chainId === chainId &&
+      q.from.address.toLowerCase() === address.toLowerCase() &&
+      (q.status === 'PENDING' || q.status === 'SUBMITTED') &&
+      q.submittedTx?.nonceOrInputs
+    );
+
+    if (relevantItems.length === 0) {
+      return null;
+    }
+
+    const nonces = relevantItems.map(q => parseInt(q.submittedTx!.nonceOrInputs!));
+    return Math.max(...nonces);
+  }
+
+  /**
+   * Validate that all queued nonces for an address are sequential with no gaps.
+   * Returns validation result with any gaps or duplicates found.
+   *
+   * @param chainId - Chain ID
+   * @param address - Sender address
+   * @returns Validation result
+   */
+  validateNonceSequence(chainId: ChainId, address: string): {
+    isValid: boolean;
+    gaps: number[];
+    duplicates: number[];
+    nonces: number[];
+  } {
+    const allItems = this.getAll();
+
+    const relevantItems = allItems.filter(q =>
+      q.chainId === chainId &&
+      q.from.address.toLowerCase() === address.toLowerCase() &&
+      (q.status === 'PENDING' || q.status === 'SUBMITTED') &&
+      q.submittedTx?.nonceOrInputs
+    );
+
+    if (relevantItems.length === 0) {
+      return { isValid: true, gaps: [], duplicates: [], nonces: [] };
+    }
+
+    const nonces = relevantItems.map(q => parseInt(q.submittedTx!.nonceOrInputs!)).sort((a, b) => a - b);
+
+    // Check for duplicates
+    const duplicates: number[] = [];
+    const seen = new Set<number>();
+    for (const nonce of nonces) {
+      if (seen.has(nonce)) {
+        duplicates.push(nonce);
+      }
+      seen.add(nonce);
+    }
+
+    // Check for gaps
+    const gaps: number[] = [];
+    const minNonce = Math.min(...nonces);
+    const maxNonce = Math.max(...nonces);
+
+    for (let i = minNonce; i <= maxNonce; i++) {
+      if (!nonces.includes(i)) {
+        gaps.push(i);
+      }
+    }
+
+    return {
+      isValid: gaps.length === 0 && duplicates.length === 0,
+      gaps,
+      duplicates,
+      nonces
+    };
+  }
 }
