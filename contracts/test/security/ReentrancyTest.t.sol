@@ -46,14 +46,16 @@ contract ReentrancyTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function test_ReentrancyAttack_Swap_ShouldFail() public {
-        // Create a new escrow where attacker is recipient
-        attacker = new ReentrancyAttacker(address(escrow), 3);
+        // Create attacker with placeholder escrow (will update later)
+        attacker = new ReentrancyAttacker(address(0x1), 3);
 
+        // Create escrow where attacker is both operator AND recipient
+        // This allows the attack to proceed past authorization checks
         escrow = new UnicitySwapEscrow(
-            address(this), // This contract as operator
+            address(attacker), // Attacker as operator - can call swap()
             keccak256("ATTACK_SWAP"),
             payable(address(this)),
-            payable(address(attacker)), // Attacker as recipient
+            payable(address(attacker)), // Attacker as recipient - receives callback
             feeRecipient,
             gasTank,
             address(0),
@@ -61,28 +63,31 @@ contract ReentrancyTest is Test {
             FEE_VALUE
         );
 
-        // Update attacker's target
-        attacker = new ReentrancyAttacker(address(escrow), 3);
+        // Update attacker's escrow reference to the real escrow
+        attacker.setEscrow(address(escrow));
 
         // Fund escrow
         vm.deal(address(escrow), SWAP_VALUE + FEE_VALUE);
 
-        // Attempt attack - should not be able to reenter
+        // Attempt attack - reentrancy guard should prevent multiple swaps
         attacker.attack();
 
-        // Verify swap completed only once
+        // Verify swap completed only once (reentrancy guard worked)
         assertEq(uint8(escrow.state()), uint8(UnicitySwapEscrow.State.COMPLETED));
         assertTrue(escrow.isSwapExecuted());
 
-        // Attacker should have received funds only once
+        // Attacker should have received funds only once (not 3 times despite 3 attempts)
         assertEq(address(attacker).balance, SWAP_VALUE);
+
+        // Verify attacker tried to reenter but failed
+        assertEq(attacker.attackCount(), 1); // Only 1 attempt made (reentrancy blocked subsequent ones)
     }
 
     function test_ReentrancyAttack_Refund_ShouldFail() public {
-        // Create attacker
-        attacker = new ReentrancyAttacker(address(escrow), 3);
+        // Create attacker with placeholder escrow (will update later)
+        attacker = new ReentrancyAttacker(address(0x1), 3);
 
-        // Create escrow with attacker as payback
+        // Deploy escrow with attacker as payback
         escrow = new UnicitySwapEscrow(
             address(this),
             keccak256("ATTACK_REFUND"),
@@ -95,25 +100,35 @@ contract ReentrancyTest is Test {
             FEE_VALUE
         );
 
-        // Update attacker
-        attacker = new ReentrancyAttacker(address(escrow), 3);
+        // Update attacker's escrow reference to the real escrow
+        attacker.setEscrow(address(escrow));
 
-        // Fund and revert
+        // Fund and revert to transition to REVERTED state
         uint256 amount = 500 ether;
         vm.deal(address(escrow), amount);
         escrow.revertEscrow();
 
-        // Attempt to call refund via attacker - should not reenter
-        uint256 attackerBalanceBefore = address(attacker).balance;
+        // Verify initial refund was sent (500 - 10 fee = 490 ether)
+        assertEq(address(attacker).balance, 490 ether);
 
-        // Add more funds
+        // Add more funds to escrow for second refund attempt
         vm.deal(address(escrow), 100 ether);
 
-        // Attacker tries to refund
+        // Record balance before second refund
+        uint256 attackerBalanceBefore = address(attacker).balance;
+
+        // Attacker tries to refund - reentrancy guard should allow this
+        // (refund() is designed to be callable multiple times in REVERTED state)
         attacker.attackRefund();
 
-        // Should have received refund only once
+        // Should have received the new refund (100 ether)
         assertEq(address(attacker).balance, attackerBalanceBefore + 100 ether);
+
+        // Note: The attacker's receive() tries to call swap() (not refund)
+        // This will fail because state is REVERTED, not COLLECTION
+        // So attackCount will be 1 from the first receive callback
+        // The fallback() which tries refund() won't be called because receive() exists
+        assertEq(attacker.attackCount(), 1);
     }
 
     function test_DirectReentrancy_Swap() public {
@@ -161,7 +176,7 @@ contract ReentrancyTest is Test {
         escrow = new UnicitySwapEscrow(
             address(this),
             keccak256("CROSS_ATTACK"),
-            payable(address(this)),
+            payable(address(this)), // Test contract as payback
             payable(address(crossAttacker)),
             feeRecipient,
             gasTank,
@@ -172,18 +187,23 @@ contract ReentrancyTest is Test {
 
         crossAttacker.setEscrow(address(escrow));
 
-        // Fund escrow
+        // Fund escrow with extra for refund
         vm.deal(address(escrow), SWAP_VALUE + FEE_VALUE + 100 ether);
 
-        // Execute swap - attacker will try to call refund
+        // Execute swap - attacker will try to call refund during callback
         escrow.swap();
 
         // Verify state is correct
         assertEq(uint8(escrow.state()), uint8(UnicitySwapEscrow.State.COMPLETED));
 
         // Attacker should have failed to call refund during swap
+        // Either due to reentrancy guard OR invalid state (SWAP vs COMPLETED/REVERTED)
         assertFalse(crossAttacker.refundSucceeded());
     }
+
+    // Make test contract able to receive ETH for refunds
+    receive() external payable {}
+    fallback() external payable {}
 
     /*//////////////////////////////////////////////////////////////
                     READ-ONLY REENTRANCY

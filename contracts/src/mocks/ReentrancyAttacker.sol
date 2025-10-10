@@ -20,6 +20,13 @@ contract ReentrancyAttacker {
     }
 
     /**
+     * @notice Update escrow address (for testing circular dependencies)
+     */
+    function setEscrow(address _escrow) external {
+        escrow = UnicitySwapEscrow(payable(_escrow));
+    }
+
+    /**
      * @notice Attempt to reenter swap() during callback
      */
     function attack() external {
