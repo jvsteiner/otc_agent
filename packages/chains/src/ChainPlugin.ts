@@ -183,6 +183,24 @@ export interface ChainPlugin {
   getTxConfirmations(txid: string): Promise<number>;
 
   /**
+   * Check if a transfer has already been executed on-chain.
+   * Used to prevent double-submission of deterministic transactions (SWAP_PAYOUT, OP_COMMISSION).
+   * Queries the blockchain directly to detect if a specific transfer already occurred.
+   *
+   * @param from - Source address (escrow address)
+   * @param to - Destination address (recipient)
+   * @param asset - Asset code (e.g., 'USDT@ETH', 'ETH')
+   * @param amount - Exact amount to check (as decimal string)
+   * @returns Transaction details if matching transfer found, null otherwise
+   */
+  checkExistingTransfer(
+    from: string,
+    to: string,
+    asset: AssetCode,
+    amount: string
+  ): Promise<{ txid: string; blockNumber: number } | null>;
+
+  /**
    * Validate if an address is valid for this blockchain.
    * @param address - The address to validate
    * @returns True if valid, false otherwise

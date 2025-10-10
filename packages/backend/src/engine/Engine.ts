@@ -1623,6 +1623,48 @@ export class Engine {
       }
     }
 
+    // BLOCKCHAIN VERIFICATION: Check if deterministic transaction already exists on-chain
+    // This prevents double-submission of SWAP_PAYOUT and OP_COMMISSION transactions
+    if (item.purpose === 'SWAP_PAYOUT' || item.purpose === 'OP_COMMISSION') {
+      console.log(`[AtomicSubmit] Checking blockchain for existing ${item.purpose} transfer...`);
+
+      try {
+        const existingTx = await plugin.checkExistingTransfer(
+          item.from.address,
+          item.to,
+          item.asset,
+          item.amount
+        );
+
+        if (existingTx) {
+          console.log(`[AtomicSubmit] ✓ IDEMPOTENCY CHECK: ${item.purpose} already executed on-chain!`);
+          console.log(`[AtomicSubmit] Found existing tx: ${existingTx.txid} at block ${existingTx.blockNumber}`);
+
+          // Mark as COMPLETED without submitting
+          const txRef: any = {
+            txid: existingTx.txid,
+            chainId: item.chainId,
+            requiredConfirms: getConfirmationThreshold(item.chainId),
+            submittedAt: new Date().toISOString(),
+            confirms: 999, // High number to indicate it's already confirmed
+            status: 'COMPLETED',
+            nonceOrInputs: txOptions?.nonce?.toString()
+          };
+
+          this.queueRepo.updateStatus(item.id, 'COMPLETED', txRef);
+          this.dealRepo.addEvent(deal.id, `${item.purpose} already executed (detected via blockchain): ${existingTx.txid.slice(0, 10)}...`);
+
+          console.log(`[AtomicSubmit] Queue item ${item.id} marked COMPLETED (idempotent - already on-chain)`);
+          return;
+        } else {
+          console.log(`[AtomicSubmit] ✓ No existing transfer found - safe to submit`);
+        }
+      } catch (error: any) {
+        console.warn(`[AtomicSubmit] Blockchain verification failed, proceeding with submission:`, error.message);
+        // On error, proceed with submission (fail-safe: better to potentially double-submit than block)
+      }
+    }
+
     // Submit the transaction with explicit nonce if EVM
     const tx = await plugin.send(
       item.asset,

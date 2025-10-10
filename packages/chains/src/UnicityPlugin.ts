@@ -664,16 +664,31 @@ export class UnicityPlugin implements ChainPlugin {
   async getTxConfirmations(txid: string): Promise<number> {
     try {
       const tx = await this.electrumRequest('blockchain.transaction.get', [txid, true]);
-      
+
       if (!tx || !tx.confirmations) {
         return 0;
       }
-      
+
       return tx.confirmations;
     } catch (error) {
       console.error(`Failed to get confirmations for ${txid}:`, error);
       return 0;
     }
+  }
+
+  /**
+   * Check if a transfer has already been executed on-chain.
+   * Not implemented for UTXO-based chains (Unicity) - returns null.
+   * UTXO chains use different transaction model that makes this check less critical.
+   */
+  async checkExistingTransfer(
+    from: string,
+    to: string,
+    asset: AssetCode,
+    amount: string
+  ): Promise<{ txid: string; blockNumber: number } | null> {
+    console.log(`[${this.chainId}] checkExistingTransfer not implemented for UTXO-based chain`);
+    return null;
   }
 
   validateAddress(address: string): boolean {

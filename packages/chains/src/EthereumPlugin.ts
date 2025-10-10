@@ -722,20 +722,138 @@ export class EthereumPlugin implements ChainPlugin {
         // Transaction exists but not mined yet
         return 0;
       }
-      
+
       const currentBlock = await this.provider.getBlockNumber();
       const confirmations = currentBlock - receipt.blockNumber + 1;
-      
+
       // Additional check: if receipt exists but confirmations are negative, it's a reorg
       if (confirmations < 0) {
         return -1;
       }
-      
+
       return confirmations;
     } catch (error) {
       console.error(`Failed to get confirmations for ${txid}:`, error);
       // On error, assume transaction doesn't exist
       return -1;
+    }
+  }
+
+  /**
+   * Check if a transfer has already been executed on-chain.
+   * Queries blockchain directly to detect duplicate submissions of deterministic transactions.
+   * Scans last 1000 blocks for matching transfers.
+   */
+  async checkExistingTransfer(
+    from: string,
+    to: string,
+    asset: AssetCode,
+    amount: string
+  ): Promise<{ txid: string; blockNumber: number } | null> {
+    console.log(`[${this.chainId}] Checking blockchain for existing transfer:`, { from, to, asset, amount });
+
+    try {
+      const currentBlock = await this.provider.getBlockNumber();
+      const blocksToScan = 1000; // Scan last 1000 blocks
+      const fromBlock = Math.max(0, currentBlock - blocksToScan);
+
+      const isNative = asset === 'ETH' || asset === 'MATIC' ||
+                      asset === `${this.chainId}@${this.chainId}`;
+
+      if (isNative) {
+        // For native currency, use Etherscan API if available
+        if (this.etherscanAPI) {
+          try {
+            const txs = await this.etherscanAPI.getOutgoingTransactions(from, ethers.parseEther(amount), fromBlock);
+
+            // Find transaction matching recipient and amount
+            for (const tx of txs) {
+              if (tx.to?.toLowerCase() === to.toLowerCase() && tx.amount === amount) {
+                console.log(`[${this.chainId}] Found existing native transfer: ${tx.txid}`);
+                return { txid: tx.txid, blockNumber: tx.blockHeight };
+              }
+            }
+          } catch (err) {
+            console.warn(`[${this.chainId}] Etherscan API failed for transfer check, fallback to RPC:`, err);
+          }
+        }
+
+        // Fallback: scan blocks directly (expensive but reliable)
+        for (let blockNum = fromBlock; blockNum <= currentBlock; blockNum++) {
+          try {
+            const block = await this.provider.getBlock(blockNum, true);
+            if (block && block.prefetchedTransactions) {
+              for (const tx of block.prefetchedTransactions) {
+                if (
+                  tx.from.toLowerCase() === from.toLowerCase() &&
+                  tx.to?.toLowerCase() === to.toLowerCase() &&
+                  ethers.formatEther(tx.value) === amount
+                ) {
+                  console.log(`[${this.chainId}] Found existing native transfer in block scan: ${tx.hash}`);
+                  return { txid: tx.hash, blockNumber: blockNum };
+                }
+              }
+            }
+          } catch (err) {
+            // Skip block on error
+            continue;
+          }
+        }
+      } else {
+        // ERC-20 token transfer - use event logs
+        let tokenAddress: string;
+
+        if (asset.startsWith('0x')) {
+          tokenAddress = asset.split('@')[0];
+        } else {
+          const baseAsset = asset.split('@')[0];
+          const knownTokens: Record<string, string> = {
+            'USDT': this.chainId === 'ETH'
+              ? '0xdac17f958d2ee523a2206206994597c13d831ec7'
+              : '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
+            'USDC': this.chainId === 'ETH'
+              ? '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+              : '0x2791bca1f2de4661ed88a30c99a7a9449aa84174',
+            'DAI': this.chainId === 'ETH'
+              ? '0x6b175474e89094c44da98b954eedeac495271d0f'
+              : '0x8f3cf7ad23cd3cadbd9735aff958023239c6a063',
+          };
+
+          tokenAddress = knownTokens[baseAsset];
+          if (!tokenAddress) {
+            console.warn(`[${this.chainId}] Unknown token ${baseAsset}, cannot verify transfer`);
+            return null;
+          }
+        }
+
+        const contract = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
+        const decimals = await contract.decimals();
+        const expectedValue = ethers.parseUnits(amount, decimals);
+
+        // Query Transfer events: from escrow -> to recipient
+        const filter = contract.filters.Transfer(from, to);
+        const events = await contract.queryFilter(filter, fromBlock, currentBlock);
+
+        for (const event of events) {
+          if (event.blockNumber) {
+            const eventLog = event as ethers.EventLog;
+            const value = eventLog.args?.[2]; // Transfer(from, to, value)
+
+            // Check if amount matches exactly
+            if (value && value.toString() === expectedValue.toString()) {
+              console.log(`[${this.chainId}] Found existing ERC-20 transfer: ${event.transactionHash}`);
+              return { txid: event.transactionHash, blockNumber: event.blockNumber };
+            }
+          }
+        }
+      }
+
+      console.log(`[${this.chainId}] No existing transfer found on blockchain`);
+      return null;
+    } catch (error) {
+      console.error(`[${this.chainId}] Error checking existing transfer:`, error);
+      // On error, return null (assume no existing transfer to be safe)
+      return null;
     }
   }
 

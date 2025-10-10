@@ -130,12 +130,12 @@ export class EtherscanAPI {
     from: string;
   }>> {
     const transactions = await this.getTransactionsByAddress(address, startBlock);
-    
+
     const incoming = transactions
       .filter(tx => {
         // Filter for incoming transactions
         if (tx.to?.toLowerCase() !== address.toLowerCase()) return false;
-        
+
         // Filter by minimum value
         const value = BigInt(tx.value);
         return value >= minValue;
@@ -150,6 +150,41 @@ export class EtherscanAPI {
       }));
 
     return incoming;
+  }
+
+  async getOutgoingTransactions(
+    address: string,
+    minValue: bigint = 0n,
+    startBlock: number = 0
+  ): Promise<Array<{
+    txid: string;
+    to: string | null;
+    amount: string;
+    blockHeight: number;
+    blockTime: string;
+    confirmations: number;
+  }>> {
+    const transactions = await this.getTransactionsByAddress(address, startBlock);
+
+    const outgoing = transactions
+      .filter(tx => {
+        // Filter for outgoing transactions
+        if (tx.from?.toLowerCase() !== address.toLowerCase()) return false;
+
+        // Filter by minimum value
+        const value = BigInt(tx.value);
+        return value >= minValue;
+      })
+      .map(tx => ({
+        txid: tx.hash,
+        to: tx.to || null,
+        amount: ethers.formatEther(tx.value),
+        blockHeight: parseInt(tx.blockNumber),
+        blockTime: new Date(parseInt(tx.timeStamp) * 1000).toISOString(),
+        confirmations: parseInt(tx.confirmations)
+      }));
+
+    return outgoing;
   }
 
   async getERC20Transfers(

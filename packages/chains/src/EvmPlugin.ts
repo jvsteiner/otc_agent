@@ -358,6 +358,21 @@ export class EvmPlugin implements ChainPlugin {
     }
   }
 
+  /**
+   * Check if a transfer has already been executed on-chain.
+   * Stub implementation - returns null (not implemented for generic EVM plugin).
+   * Override this in chain-specific plugins like EthereumPlugin.
+   */
+  async checkExistingTransfer(
+    from: string,
+    to: string,
+    asset: AssetCode,
+    amount: string
+  ): Promise<{ txid: string; blockNumber: number } | null> {
+    console.warn(`[${this.chainId}] checkExistingTransfer not implemented for generic EVM plugin`);
+    return null;
+  }
+
   validateAddress(address: string): boolean {
     return ethers.isAddress(address);
   }
