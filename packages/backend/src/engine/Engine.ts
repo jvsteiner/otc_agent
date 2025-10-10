@@ -1724,10 +1724,62 @@ export class Engine {
         );
 
         if (alreadyQueued) {
-          // There's already a PENDING/SUBMITTED queue item, but we need to check if it has gas
-          console.log(`[ESCROW MONITOR] Found existing queue item for ${aliceAsset} - checking gas`);
+          // There's already a PENDING/SUBMITTED queue item
+          console.log(`[ESCROW MONITOR] Found existing queue item for ${aliceAsset}`);
 
-          // Ensure gas for ERC-20 refund if needed
+          // Check if any of these items are STUCK (submitted > 10 minutes with 0 confirms)
+          const now = Date.now();
+          const STUCK_THRESHOLD = 10 * 60 * 1000; // 10 minutes
+
+          for (const existingItem of existingQueues) {
+            if (existingItem.status === 'SUBMITTED' && existingItem.submittedTx) {
+              const submittedAt = new Date(existingItem.submittedTx.submittedAt).getTime();
+              const age = now - submittedAt;
+
+              if (age > STUCK_THRESHOLD && existingItem.submittedTx.confirms === 0) {
+                console.warn(`[ESCROW MONITOR] Found STUCK transaction ${existingItem.id}:`);
+                console.warn(`  TX: ${existingItem.submittedTx.txid}`);
+                console.warn(`  Age: ${Math.floor(age / 60000)} minutes`);
+                console.warn(`  Confirms: 0`);
+                console.warn(`  Nonce: ${existingItem.submittedTx.nonceOrInputs}`);
+
+                // Mark as COMPLETED so a new one can be created
+                this.queueRepo.updateStatus(existingItem.id, 'COMPLETED');
+                this.dealRepo.addEvent(deal.id, `Marked stuck ${existingItem.purpose} transaction as COMPLETED (nonce ${existingItem.submittedTx.nonceOrInputs}, age: ${Math.floor(age / 60000)}min)`);
+
+                console.log(`[ESCROW MONITOR] Marked ${existingItem.id} as COMPLETED - will create new refund`);
+
+                // Exit the alreadyQueued block to create a new queue item
+                // by falling through to the else block logic
+                const funded = await this.ensureGasForRefund(
+                  escrowAddress,
+                  deal.alice.chainId,
+                  deal.id,
+                  aliceAsset
+                );
+
+                if (!funded) {
+                  console.log(`[ESCROW MONITOR] Proceeding with refund despite gas funding issue for ${aliceAsset}`);
+                }
+
+                this.queueRepo.enqueue({
+                  dealId: deal.id,
+                  chainId: deal.alice.chainId,
+                  from: deal.escrowA,
+                  to: deal.aliceDetails.paybackAddress,
+                  asset: aliceAsset,
+                  amount: currentBalance,
+                  purpose: 'TIMEOUT_REFUND',
+                });
+                this.dealRepo.addEvent(deal.id, `Creating new refund for ${currentBalance} ${aliceAsset} after stuck transaction`);
+
+                return; // Exit early after creating new item
+              }
+            }
+          }
+
+          // If we reach here, existing items are not stuck - just ensure gas
+          console.log(`[ESCROW MONITOR] Existing queue items not stuck - checking gas`);
           await this.ensureGasForRefund(
             escrowAddress,
             deal.alice.chainId,
@@ -1765,6 +1817,8 @@ export class Engine {
       // Also check for native currency if the deal asset wasn't native
       const nativeAsset = getNativeAsset(deal.alice.chainId);
       if (aliceAsset !== nativeAsset) {
+        // CRITICAL: If deal asset is not native (ERC-20/SPL), ALL native currency MUST go to tank
+        // because parties never send native currency in token deals - it only comes from tank for gas
         // Get the ACTUAL current native balance
         const currentNativeBalance = await this.getActualBalance(
           plugin,
@@ -1772,28 +1826,69 @@ export class Engine {
           escrowAddress,
           nativeAsset
         );
-        
+
         const nativeBalance = parseFloat(currentNativeBalance);
         if (nativeBalance > 0.000001) {
           const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
-            .filter(q => q.from.address === escrowAddress && 
+            .filter(q => q.from.address === escrowAddress &&
                         q.asset === nativeAsset &&
                         (q.status === 'PENDING' || q.status === 'SUBMITTED'));
-          
-          const alreadyQueued = existingNativeQueues.some(q => 
+
+          // Check if any existing native currency items are STUCK
+          const now = Date.now();
+          const STUCK_THRESHOLD = 10 * 60 * 1000; // 10 minutes
+
+          for (const existingItem of existingNativeQueues) {
+            if (existingItem.status === 'SUBMITTED' && existingItem.submittedTx) {
+              const submittedAt = new Date(existingItem.submittedTx.submittedAt).getTime();
+              const age = now - submittedAt;
+
+              if (age > STUCK_THRESHOLD && existingItem.submittedTx.confirms === 0) {
+                console.warn(`[ESCROW MONITOR] Found STUCK native currency transaction ${existingItem.id}:`);
+                console.warn(`  TX: ${existingItem.submittedTx.txid}`);
+                console.warn(`  Age: ${Math.floor(age / 60000)} minutes`);
+                console.warn(`  Asset: ${nativeAsset}, Amount: ${existingItem.amount}`);
+                console.warn(`  Nonce: ${existingItem.submittedTx.nonceOrInputs}`);
+
+                // Mark as COMPLETED so a new one can be created
+                this.queueRepo.updateStatus(existingItem.id, 'COMPLETED');
+                this.dealRepo.addEvent(deal.id, `Marked stuck Alice's ${nativeAsset} gas refund as COMPLETED (nonce ${existingItem.submittedTx.nonceOrInputs})`);
+
+                console.log(`[ESCROW MONITOR] Stuck native currency transaction marked COMPLETED - will create fresh refund`);
+
+                // Create new gas refund with fresh nonce
+                // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
+                const returnAddress = this.getTankAddress() || deal.aliceDetails.paybackAddress;
+                const purpose = 'GAS_REFUND_TO_TANK';
+
+                this.queueRepo.enqueue({
+                  dealId: deal.id,
+                  chainId: deal.alice.chainId,
+                  from: deal.escrowA,
+                  to: returnAddress,
+                  asset: nativeAsset,
+                  amount: currentNativeBalance,
+                  purpose: purpose,
+                });
+                this.dealRepo.addEvent(deal.id, `Created fresh ${currentNativeBalance} ${nativeAsset} gas refund after unstucking`);
+
+                return; // Exit early after creating new item
+              }
+            }
+          }
+
+          const alreadyQueued = existingNativeQueues.some(q =>
             Math.abs(parseFloat(q.amount) - nativeBalance) < 0.01
           );
-          
+
           if (!alreadyQueued) {
-            // If escrow was gas-funded by tank, return native currency to tank, otherwise to payback address
-            const returnAddress = aliceEscrowGasFunded && this.getTankAddress() 
-              ? this.getTankAddress() 
-              : deal.aliceDetails.paybackAddress;
-            
-            const purpose = aliceEscrowGasFunded ? 'GAS_REFUND_TO_TANK' : 'TIMEOUT_REFUND';
-            
+            // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
+            // because parties never send native currency in token deals - it only comes from tank for gas
+            const returnAddress = this.getTankAddress() || deal.aliceDetails.paybackAddress;
+            const purpose = 'GAS_REFUND_TO_TANK';
+
             console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Alice's escrow ${escrowAddress}`);
-            console.log(`[ESCROW MONITOR] Returning to: ${aliceEscrowGasFunded ? 'tank wallet' : 'payback address'} (${returnAddress})`);
+            console.log(`[ESCROW MONITOR] Returning to tank wallet (${returnAddress})`);
             
             this.queueRepo.enqueue({
               dealId: deal.id,
@@ -1804,7 +1899,7 @@ export class Engine {
               amount: currentNativeBalance, // Use actual current balance
               purpose: purpose,
             });
-            this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} from Alice's escrow to ${aliceEscrowGasFunded ? 'tank wallet' : 'payback address'}`);
+            this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} gas from Alice's escrow to tank wallet`);
           }
         }
       }
@@ -1836,10 +1931,62 @@ export class Engine {
                       Math.abs(parseFloat(q.amount) - remainingBalance) < 0.01);
 
         if (existingQueues.length > 0) {
-          // There's already a PENDING/SUBMITTED queue item, but we need to check if it has gas
-          console.log(`[ESCROW MONITOR] Found existing queue item for ${bobAsset} - checking gas`);
+          // There's already a PENDING/SUBMITTED queue item, but we need to check if it's stuck
+          console.log(`[ESCROW MONITOR] Found existing queue item for ${bobAsset} - checking if stuck`);
 
-          // Ensure gas for ERC-20 refund if needed
+          // Check if any of these items are STUCK (submitted > 10 minutes with 0 confirms)
+          const now = Date.now();
+          const STUCK_THRESHOLD = 10 * 60 * 1000; // 10 minutes
+
+          for (const existingItem of existingQueues) {
+            if (existingItem.status === 'SUBMITTED' && existingItem.submittedTx) {
+              const submittedAt = new Date(existingItem.submittedTx.submittedAt).getTime();
+              const age = now - submittedAt;
+
+              if (age > STUCK_THRESHOLD && existingItem.submittedTx.confirms === 0) {
+                console.warn(`[ESCROW MONITOR] Found STUCK transaction ${existingItem.id}:`);
+                console.warn(`  TX: ${existingItem.submittedTx.txid}`);
+                console.warn(`  Age: ${Math.floor(age / 60000)} minutes`);
+                console.warn(`  Asset: ${bobAsset}, Amount: ${existingItem.amount}`);
+                console.warn(`  Nonce: ${existingItem.submittedTx.nonceOrInputs}`);
+
+                // Mark as COMPLETED so a new one can be created
+                this.queueRepo.updateStatus(existingItem.id, 'COMPLETED');
+                this.dealRepo.addEvent(deal.id, `Marked stuck Bob's ${bobAsset} refund as COMPLETED (nonce ${existingItem.submittedTx.nonceOrInputs})`);
+
+                console.log(`[ESCROW MONITOR] Stuck transaction marked COMPLETED - will create fresh refund`);
+
+                // Ensure gas for ERC-20 refund if needed
+                const funded = await this.ensureGasForRefund(
+                  escrowAddress,
+                  deal.bob.chainId,
+                  deal.id,
+                  bobAsset
+                );
+
+                if (!funded) {
+                  console.log(`[ESCROW MONITOR] Proceeding with refund despite gas funding issue for ${bobAsset}`);
+                }
+
+                // Create new refund with fresh nonce
+                this.queueRepo.enqueue({
+                  dealId: deal.id,
+                  chainId: deal.bob.chainId,
+                  from: deal.escrowB,
+                  to: deal.bobDetails.paybackAddress,
+                  asset: bobAsset,
+                  amount: currentBalance,
+                  purpose: 'TIMEOUT_REFUND',
+                });
+                this.dealRepo.addEvent(deal.id, `Created fresh ${currentBalance} ${bobAsset} refund to Bob's payback address after unstucking`);
+
+                return; // Exit early after creating new item
+              }
+            }
+          }
+
+          // Not stuck - just ensure it has gas
+          console.log(`[ESCROW MONITOR] Existing queue item not stuck - checking gas`);
           await this.ensureGasForRefund(
             escrowAddress,
             deal.bob.chainId,
@@ -1885,6 +2032,8 @@ export class Engine {
       // Also check for native currency if the deal asset wasn't native
       const nativeAsset = getNativeAsset(deal.bob.chainId);
       if (bobAsset !== nativeAsset) {
+        // CRITICAL: If deal asset is not native (ERC-20/SPL), ALL native currency MUST go to tank
+        // because parties never send native currency in token deals - it only comes from tank for gas
         // Get the ACTUAL current native balance
         const currentNativeBalance = await this.getActualBalance(
           plugin,
@@ -1892,28 +2041,69 @@ export class Engine {
           escrowAddress,
           nativeAsset
         );
-        
+
         const nativeBalance = parseFloat(currentNativeBalance);
         if (nativeBalance > 0.000001) {
           const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
-            .filter(q => q.from.address === escrowAddress && 
+            .filter(q => q.from.address === escrowAddress &&
                         q.asset === nativeAsset &&
                         (q.status === 'PENDING' || q.status === 'SUBMITTED'));
-          
-          const alreadyQueued = existingNativeQueues.some(q => 
+
+          // Check if any existing native currency items are STUCK
+          const now = Date.now();
+          const STUCK_THRESHOLD = 10 * 60 * 1000; // 10 minutes
+
+          for (const existingItem of existingNativeQueues) {
+            if (existingItem.status === 'SUBMITTED' && existingItem.submittedTx) {
+              const submittedAt = new Date(existingItem.submittedTx.submittedAt).getTime();
+              const age = now - submittedAt;
+
+              if (age > STUCK_THRESHOLD && existingItem.submittedTx.confirms === 0) {
+                console.warn(`[ESCROW MONITOR] Found STUCK native currency transaction ${existingItem.id}:`);
+                console.warn(`  TX: ${existingItem.submittedTx.txid}`);
+                console.warn(`  Age: ${Math.floor(age / 60000)} minutes`);
+                console.warn(`  Asset: ${nativeAsset}, Amount: ${existingItem.amount}`);
+                console.warn(`  Nonce: ${existingItem.submittedTx.nonceOrInputs}`);
+
+                // Mark as COMPLETED so a new one can be created
+                this.queueRepo.updateStatus(existingItem.id, 'COMPLETED');
+                this.dealRepo.addEvent(deal.id, `Marked stuck Bob's ${nativeAsset} gas refund as COMPLETED (nonce ${existingItem.submittedTx.nonceOrInputs})`);
+
+                console.log(`[ESCROW MONITOR] Stuck native currency transaction marked COMPLETED - will create fresh refund`);
+
+                // Create new gas refund with fresh nonce
+                // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
+                const returnAddress = this.getTankAddress() || deal.bobDetails.paybackAddress;
+                const purpose = 'GAS_REFUND_TO_TANK';
+
+                this.queueRepo.enqueue({
+                  dealId: deal.id,
+                  chainId: deal.bob.chainId,
+                  from: deal.escrowB,
+                  to: returnAddress,
+                  asset: nativeAsset,
+                  amount: currentNativeBalance,
+                  purpose: purpose,
+                });
+                this.dealRepo.addEvent(deal.id, `Created fresh ${currentNativeBalance} ${nativeAsset} gas refund after unstucking`);
+
+                return; // Exit early after creating new item
+              }
+            }
+          }
+
+          const alreadyQueued = existingNativeQueues.some(q =>
             Math.abs(parseFloat(q.amount) - nativeBalance) < 0.01
           );
-          
+
           if (!alreadyQueued) {
-            // If escrow was gas-funded by tank, return native currency to tank, otherwise to payback address
-            const returnAddress = bobEscrowGasFunded && this.getTankAddress() 
-              ? this.getTankAddress() 
-              : deal.bobDetails.paybackAddress;
-            
-            const purpose = bobEscrowGasFunded ? 'GAS_REFUND_TO_TANK' : 'TIMEOUT_REFUND';
-            
+            // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
+            // because parties never send native currency in token deals - it only comes from tank for gas
+            const returnAddress = this.getTankAddress() || deal.bobDetails.paybackAddress;
+            const purpose = 'GAS_REFUND_TO_TANK';
+
             console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Bob's escrow ${escrowAddress}`);
-            console.log(`[ESCROW MONITOR] Returning to: ${bobEscrowGasFunded ? 'tank wallet' : 'payback address'} (${returnAddress})`);
+            console.log(`[ESCROW MONITOR] Returning to tank wallet (${returnAddress})`);
             
             this.queueRepo.enqueue({
               dealId: deal.id,
@@ -1924,7 +2114,7 @@ export class Engine {
               amount: currentNativeBalance,
               purpose: purpose,
             });
-            this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} from Bob's escrow to ${bobEscrowGasFunded ? 'tank wallet' : 'payback address'}`);
+            this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} gas from Bob's escrow to tank wallet`);
           }
         }
       }
