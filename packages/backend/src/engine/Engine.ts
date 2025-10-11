@@ -1294,8 +1294,17 @@ export class Engine {
       return false;
     }
 
+    // CRITICAL: Check if broker is actually configured (not just methods exist)
+    if (typeof (plugin as any).isBrokerAvailable === 'function') {
+      const isBrokerConfigured = (plugin as any).isBrokerAvailable();
+      if (!isBrokerConfigured) {
+        console.log(`[Engine] Broker methods exist for ${chainId} but broker contract not configured - using fallback flow`);
+        return false;
+      }
+    }
+
     // For now, we only support broker on EVM chains
-    const evmChains = ['ETH', 'POLYGON', 'BASE', 'SEPOLIA'];
+    const evmChains = ['ETH', 'POLYGON', 'BASE', 'BSC', 'SEPOLIA'];
     return evmChains.includes(chainId);
   }
 

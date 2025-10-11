@@ -95,6 +95,21 @@ async function main() {
     console.log('Sepolia testnet enabled');
   }
 
+  // Register BSC plugin (if configured)
+  if (process.env.BSC_RPC) {
+    await pluginManager.registerPlugin({
+      chainId: 'BSC',
+      rpcUrl: process.env.BSC_RPC,
+      confirmations: parseInt(process.env.BSC_CONFIRMATIONS || '12'),
+      collectConfirms: parseInt(process.env.BSC_COLLECT_CONFIRMS || '12'),
+      operator: { address: process.env.BSC_OPERATOR_ADDRESS || process.env.ETH_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
+      operatorPrivateKey: process.env.BSC_OPERATOR_PRIVATE_KEY,
+      hotWalletSeed: process.env.HOT_WALLET_SEED,
+      brokerAddress: process.env.BSC_BROKER_ADDRESS, // UnicitySwapBroker contract
+    });
+    console.log('BSC enabled');
+  }
+
   // Initialize engine
   const engine = new Engine(db, pluginManager);
   

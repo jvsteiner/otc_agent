@@ -186,6 +186,28 @@
       "tokenId": null,
       "decimals": 6,
       "icon": "₮"
+    },
+    {
+      "assetName": "BNB",
+      "assetSymbol": "BNB",
+      "chainId": "BSC",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 18,
+      "icon": "💎"
+    },
+    {
+      "assetName": "Tether USD (BSC)",
+      "assetSymbol": "USDT",
+      "chainId": "BSC",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0x55d398326f99059fF775485246999027B3197955",
+      "tokenId": null,
+      "decimals": 18,
+      "icon": "₮"
     }
   ],
   "supportedChains": [
@@ -218,6 +240,11 @@
       "chainId": "SEPOLIA",
       "name": "Sepolia Testnet",
       "icon": "🧪"
+    },
+    {
+      "chainId": "BSC",
+      "name": "BNB Smart Chain",
+      "icon": "💎"
     }
   ]
 }

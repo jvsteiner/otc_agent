@@ -5,7 +5,7 @@
  */
 
 import express from 'express';
-import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, AssetCode, ChainId, getAssetRegistry, formatAssetCode, parseAssetCode, generateDealName, validateDealName } from '@otc-broker/core';
+import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, AssetCode, ChainId, getAssetRegistry, formatAssetCode, parseAssetCode, generateDealName, validateDealName, calculateCommission, getAssetMetadata, sumAmounts } from '@otc-broker/core';
 import { DealRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { DB } from '../db/database';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
@@ -452,23 +452,41 @@ export class RpcServer {
     
     if (deal.escrowA) {
       // Use fully qualified asset name to match collectedByAsset keys
-      const assetCode = deal.alice.asset.includes('@') ? 
-        deal.alice.asset : 
+      const assetCode = deal.alice.asset.includes('@') ?
+        deal.alice.asset :
         `${deal.alice.asset}@${deal.alice.chainId}`;
+
+      // Calculate commission amount
+      let commissionAmount = '0';
+      if (deal.commissionPlan.sideA.mode === 'PERCENT_BPS') {
+        const metadata = getAssetMetadata(deal.alice.asset, deal.alice.chainId);
+        const decimals = metadata?.decimals || 18;
+        commissionAmount = calculateCommission(deal.alice.amount, deal.commissionPlan.sideA.percentBps!, decimals);
+      } else if (deal.commissionPlan.sideA.mode === 'FIXED_USD_NATIVE' && deal.commissionPlan.sideA.currency === 'ASSET') {
+        commissionAmount = deal.commissionPlan.sideA.usdFixed || '0';
+      }
+
+      // For PERCENT_BPS or same-asset commission, include commission in the trade amount
+      const totalRequired = deal.commissionPlan.sideA.currency === 'ASSET'
+        ? sumAmounts([deal.alice.amount, commissionAmount])
+        : deal.alice.amount;
+
       instructions.sideA.push({
         assetCode: assetCode,
-        amount: deal.alice.amount,
+        amount: totalRequired,  // Include commission if same asset
         to: deal.escrowA.address,
       });
-      
-      // Add commission instruction if different currency
-      if (deal.commissionPlan.sideA.currency === 'NATIVE' && 
+
+      // Add separate commission instruction ONLY if different currency (NATIVE)
+      if (deal.commissionPlan.sideA.currency === 'NATIVE' &&
           deal.commissionPlan.sideA.mode === 'FIXED_USD_NATIVE') {
         // Determine the native asset for this chain
         const nativeAsset = deal.alice.chainId === 'UNICITY' ? 'ALPHA@UNICITY' :
                            deal.alice.chainId === 'POLYGON' ? 'MATIC@POLYGON' :
                            deal.alice.chainId === 'ETH' ? 'ETH@ETH' :
-                           deal.alice.chainId === 'BASE' ? 'ETH@BASE' : 'ETH';
+                           deal.alice.chainId === 'BASE' ? 'ETH@BASE' :
+                           deal.alice.chainId === 'SEPOLIA' ? 'ETH@SEPOLIA' :
+                           deal.alice.chainId === 'BSC' ? 'BNB@BSC' : 'ETH';
         instructions.sideA.push({
           assetCode: nativeAsset,
           amount: deal.commissionPlan.sideA.nativeFixed,
@@ -479,23 +497,41 @@ export class RpcServer {
     
     if (deal.escrowB) {
       // Use fully qualified asset name to match collectedByAsset keys
-      const assetCodeB = deal.bob.asset.includes('@') ? 
-        deal.bob.asset : 
+      const assetCodeB = deal.bob.asset.includes('@') ?
+        deal.bob.asset :
         `${deal.bob.asset}@${deal.bob.chainId}`;
+
+      // Calculate commission amount
+      let commissionAmountB = '0';
+      if (deal.commissionPlan.sideB.mode === 'PERCENT_BPS') {
+        const metadata = getAssetMetadata(deal.bob.asset, deal.bob.chainId);
+        const decimals = metadata?.decimals || 18;
+        commissionAmountB = calculateCommission(deal.bob.amount, deal.commissionPlan.sideB.percentBps!, decimals);
+      } else if (deal.commissionPlan.sideB.mode === 'FIXED_USD_NATIVE' && deal.commissionPlan.sideB.currency === 'ASSET') {
+        commissionAmountB = deal.commissionPlan.sideB.usdFixed || '0';
+      }
+
+      // For PERCENT_BPS or same-asset commission, include commission in the trade amount
+      const totalRequiredB = deal.commissionPlan.sideB.currency === 'ASSET'
+        ? sumAmounts([deal.bob.amount, commissionAmountB])
+        : deal.bob.amount;
+
       instructions.sideB.push({
         assetCode: assetCodeB,
-        amount: deal.bob.amount,
+        amount: totalRequiredB,  // Include commission if same asset
         to: deal.escrowB.address,
       });
-      
-      // Add commission instruction if different currency
-      if (deal.commissionPlan.sideB.currency === 'NATIVE' && 
+
+      // Add separate commission instruction ONLY if different currency (NATIVE)
+      if (deal.commissionPlan.sideB.currency === 'NATIVE' &&
           deal.commissionPlan.sideB.mode === 'FIXED_USD_NATIVE') {
         // Determine the native asset for this chain
         const nativeAsset = deal.bob.chainId === 'UNICITY' ? 'ALPHA@UNICITY' :
                            deal.bob.chainId === 'POLYGON' ? 'MATIC@POLYGON' :
                            deal.bob.chainId === 'ETH' ? 'ETH@ETH' :
-                           deal.bob.chainId === 'BASE' ? 'ETH@BASE' : 'ETH';
+                           deal.bob.chainId === 'BASE' ? 'ETH@BASE' :
+                           deal.bob.chainId === 'SEPOLIA' ? 'ETH@SEPOLIA' :
+                           deal.bob.chainId === 'BSC' ? 'BNB@BSC' : 'ETH';
         instructions.sideB.push({
           assetCode: nativeAsset,
           amount: deal.commissionPlan.sideB.nativeFixed,
@@ -518,6 +554,9 @@ export class RpcServer {
           break;
         case 'BASE':
           rpcEndpoints[chainId] = 'https://base-rpc.publicnode.com';
+          break;
+        case 'BSC':
+          rpcEndpoints[chainId] = 'https://bsc-dataseed.binance.org';
           break;
         case 'UNICITY':
           rpcEndpoints[chainId] = 'wss://fulcrum.unicity.network:50004'; // Electrum endpoint
@@ -691,6 +730,9 @@ export class RpcServer {
         case 'POLYGON':
           config.rpcUrl = process.env.POLYGON_RPC || 'https://polygon-rpc.com';
           break;
+        case 'BSC':
+          config.rpcUrl = process.env.BSC_RPC || 'https://bsc-dataseed.binance.org';
+          break;
         case 'SOLANA':
           config.rpcUrl = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
           break;
@@ -718,6 +760,9 @@ export class RpcServer {
               break;
             case 'POLYGON':
               config.rpcUrl = process.env.POLYGON_RPC || 'https://polygon-mainnet.g.alchemy.com/v2/9LkJ1e22_qxEBFxOQ4pD3';
+              break;
+            case 'BSC':
+              config.rpcUrl = process.env.BSC_RPC || 'https://bnb-mainnet.g.alchemy.com/v2/9LkJ1e22_qxEBFxOQ4pD3';
               break;
             case 'SOLANA':
               config.rpcUrl = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
@@ -1212,7 +1257,23 @@ export class RpcServer {
                   return 'https://polygonscan.com/token/' + asset.contractAddress;
                 }
                 break;
-              
+
+              case 'BSC':
+                if (asset.native) {
+                  return 'https://bscscan.com/';
+                } else if (asset.contractAddress) {
+                  return 'https://bscscan.com/token/' + asset.contractAddress;
+                }
+                break;
+
+              case 'SEPOLIA':
+                if (asset.native) {
+                  return 'https://sepolia.etherscan.io/';
+                } else if (asset.contractAddress) {
+                  return 'https://sepolia.etherscan.io/token/' + asset.contractAddress;
+                }
+                break;
+
               case 'SOLANA':
                 if (asset.native) {
                   return 'https://solscan.io/';
@@ -3974,8 +4035,14 @@ export class RpcServer {
           const bobDeposits = dealData.collection?.sideB?.deposits?.length || 0;
           const aliceCollected = Object.values(dealData.collection?.sideA?.collectedByAsset || {}).reduce((sum, val) => sum + parseFloat(val), 0);
           const bobCollected = Object.values(dealData.collection?.sideB?.collectedByAsset || {}).reduce((sum, val) => sum + parseFloat(val), 0);
-          const aliceExpected = parseFloat(dealData.alice.amount);
-          const bobExpected = parseFloat(dealData.bob.amount);
+
+          // Use instruction amounts which include commission, not just trade amounts
+          const aliceExpected = dealData.instructions?.sideA?.[0]?.amount
+            ? parseFloat(dealData.instructions.sideA[0].amount)
+            : parseFloat(dealData.alice.amount);
+          const bobExpected = dealData.instructions?.sideB?.[0]?.amount
+            ? parseFloat(dealData.instructions.sideB[0].amount)
+            : parseFloat(dealData.bob.amount);
 
           // Get asset names and chain names for display
           const aliceAsset = getCleanAssetName(dealData.alice.asset, dealData.alice.chainId);
@@ -4371,8 +4438,8 @@ export class RpcServer {
               assetEl.textContent = cleanAsset;
             }
           } else {
-            // Find the main trade instruction (not commission)
-            // The trade instruction should match the expected asset from the deal
+            // Calculate TOTAL required amount across ALL instructions for this asset
+            // (includes both trade amount AND commission if applicable)
             let tradeInstruction = instructions[0];
             if (expectedDeal) {
               // Look for instruction that matches the expected trade asset
@@ -4390,9 +4457,17 @@ export class RpcServer {
               }
             }
 
-            required = parseFloat(tradeInstruction.amount);
+            // Use the first instruction for asset/escrow details
             assetCode = tradeInstruction.assetCode;
             escrowAddress = tradeInstruction.to;
+
+            // Sum ALL instruction amounts for this asset (trade + commission)
+            required = instructions.reduce((sum, inst) => {
+              if (inst.assetCode === assetCode) {
+                return sum + parseFloat(inst.amount || '0');
+              }
+              return sum;
+            }, 0);
 
             // Determine chainId from asset code
             if (type === 'your') {
@@ -4623,50 +4698,31 @@ export class RpcServer {
         // Check if a side has sufficient funds collected (regardless of confirmations)
         function checkSufficientFunds(side) {
           if (!dealData) return false;
-          
+
           // The backend sends collection.sideA/sideB, not sideAState/sideBState
-          const sideData = side === 'A' ? 
-            (dealData.collection?.sideA || dealData.sideAState) : 
+          const sideData = side === 'A' ?
+            (dealData.collection?.sideA || dealData.sideAState) :
             (dealData.collection?.sideB || dealData.sideBState);
           if (!sideData || !sideData.collectedByAsset) return false;
-          
-          const tradeSpec = side === 'A' ? dealData.alice : dealData.bob;
-          const commissionReq = side === 'A' ? dealData.commissionPlan?.sideA : dealData.commissionPlan?.sideB;
-          
-          if (!tradeSpec || !commissionReq) return false;
-          
-          // Check trade amount collected
-          const tradeAsset = tradeSpec.asset;
-          const tradeAmount = parseFloat(tradeSpec.amount || '0');
-          const tradeCollected = parseFloat(sideData.collectedByAsset[tradeAsset] || '0');
-          
-          // Calculate commission amount
-          let commissionAmount = 0;
-          if (commissionReq.mode === 'PERCENT_BPS' && commissionReq.percentBps) {
-            // Commission as percentage of trade amount
-            commissionAmount = tradeAmount * (commissionReq.percentBps / 10000);
-          } else if (commissionReq.mode === 'FIXED_USD_NATIVE' && commissionReq.nativeFixed) {
-            commissionAmount = parseFloat(commissionReq.nativeFixed);
+
+          // Get instructions for this side - these contain the authoritative required amounts
+          const instructions = dealData.instructions?.[side === 'A' ? 'sideA' : 'sideB'];
+          if (!instructions || instructions.length === 0) return false;
+
+          // Check each instruction (may have separate trade and commission requirements)
+          for (const instruction of instructions) {
+            const assetCode = instruction.assetCode;
+            const requiredAmount = parseFloat(instruction.amount || '0');
+            const collectedAmount = parseFloat(sideData.collectedByAsset[assetCode] || '0');
+
+            // If any required asset is not sufficiently collected, return false
+            if (collectedAmount < requiredAmount) {
+              return false;
+            }
           }
-          
-          // Check commission collected based on currency type
-          if (commissionReq.currency === 'ASSET') {
-            // Commission from same asset as trade - need trade + commission total
-            const totalNeeded = tradeAmount + commissionAmount;
-            return tradeCollected >= totalNeeded;
-          } else if (commissionReq.currency === 'NATIVE') {
-            // Commission from native asset - check separately
-            const nativeAsset = tradeSpec.chainId === 'UNICITY' ? 'ALPHA@UNICITY' :
-                               tradeSpec.chainId === 'POLYGON' ? 'POL@POLYGON' :
-                               tradeSpec.chainId === 'ETH' ? 'ETH@ETH' :
-                               tradeSpec.chainId === 'BASE' ? 'ETH@BASE' : 'NATIVE';
-            const nativeCollected = parseFloat(sideData.collectedByAsset[nativeAsset] || '0');
-            
-            // Need both trade amount in trade asset AND commission in native asset
-            return tradeCollected >= tradeAmount && nativeCollected >= commissionAmount;
-          }
-          
-          return false;
+
+          // All required amounts are met
+          return true;
         }
         
         // Start countdown timer

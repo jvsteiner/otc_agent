@@ -145,7 +145,17 @@ export function checkLocks(
   // Sum by asset
   const tradeDeposits = eligible.filter(d => d.asset === tradeAsset);
   const commissionDeposits = eligible.filter(d => d.asset === commissionAsset);
-  
+
+  console.log(`[checkLocks] Asset filtering results:`, {
+    tradeAsset,
+    commissionAsset,
+    eligibleAssets: eligible.map(d => d.asset),
+    tradeDepositsCount: tradeDeposits.length,
+    commissionDepositsCount: commissionDeposits.length,
+    tradeDeposits: tradeDeposits.map(d => ({ asset: d.asset, amount: d.amount })),
+    commissionDeposits: commissionDeposits.map(d => ({ asset: d.asset, amount: d.amount }))
+  });
+
   const tradeCollected = sumAmounts(tradeDeposits.map(d => d.amount));
   const commissionCollected = sumAmounts(commissionDeposits.map(d => d.amount));
   
@@ -158,11 +168,30 @@ export function checkLocks(
     // Commission comes from surplus of trade asset
     const totalNeeded = sumAmounts([tradeAmount, commissionAmount]);
     commissionLocked = isAmountGte(tradeCollected, totalNeeded);
+    console.log(`[checkLocks] Same-asset commission check:`, {
+      tradeAmount,
+      commissionAmount,
+      totalNeeded,
+      tradeCollected,
+      commissionLocked
+    });
   } else {
     // Commission is in different asset (native)
     commissionLocked = isAmountGte(commissionCollected, commissionAmount);
+    console.log(`[checkLocks] Different-asset commission check:`, {
+      commissionAmount,
+      commissionCollected,
+      commissionLocked
+    });
   }
-  
+
+  console.log(`[checkLocks] Final result:`, {
+    tradeLocked,
+    commissionLocked,
+    tradeCollected,
+    commissionCollected
+  });
+
   return {
     tradeLocked,
     commissionLocked,

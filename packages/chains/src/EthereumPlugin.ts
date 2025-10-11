@@ -5,7 +5,7 @@
  */
 
 import { ethers } from 'ethers';
-import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit } from '@otc-broker/core';
+import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, parseAssetCode } from '@otc-broker/core';
 import {
   ChainPlugin,
   ChainConfig,
@@ -195,9 +195,9 @@ export class EthereumPlugin implements ChainPlugin {
       
       // For native currency, fetch transaction history
       // Support both simple and fully qualified asset names
-      const isNative = asset === 'ETH' || asset === 'ETH@ETH' || 
-                      asset === 'MATIC' || asset === 'MATIC@POLYGON';
-      
+      const assetConfig = parseAssetCode(asset.split('@')[0] as AssetCode, this.chainId);
+      const isNative = assetConfig?.native === true;
+
       if (isNative) {
         // Get balance for total confirmation
         const balance = await this.provider.getBalance(address);
@@ -541,7 +541,11 @@ export class EthereumPlugin implements ChainPlugin {
         throw new Error(`Wallet not initialized`);
       }
       
-      if (asset === 'ETH' || asset === 'MATIC') {
+      // Check if this is a native currency transfer
+      const assetConfig = parseAssetCode(asset.split('@')[0] as AssetCode, this.chainId);
+      const isNative = assetConfig?.native === true;
+
+      if (isNative) {
         // Native currency transfer
         const value = ethers.parseEther(amount);
 
@@ -757,8 +761,9 @@ export class EthereumPlugin implements ChainPlugin {
       const blocksToScan = 1000; // Scan last 1000 blocks
       const fromBlock = Math.max(0, currentBlock - blocksToScan);
 
-      const isNative = asset === 'ETH' || asset === 'MATIC' ||
-                      asset === `${this.chainId}@${this.chainId}`;
+      // Check if this is a native currency transfer
+      const assetConfig = parseAssetCode(asset.split('@')[0] as AssetCode, this.chainId);
+      const isNative = assetConfig?.native === true;
 
       if (isNative) {
         // For native currency, use Etherscan API if available

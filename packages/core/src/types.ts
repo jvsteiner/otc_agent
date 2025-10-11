@@ -12,7 +12,7 @@
  */
 export type ChainId =
   | 'UNICITY'
-  | 'ETH' | 'POLYGON' | 'BASE' | 'SEPOLIA' | 'SOLANA' | 'BTC'
+  | 'ETH' | 'POLYGON' | 'BASE' | 'BSC' | 'SEPOLIA' | 'SOLANA' | 'BTC'
   | `EVM:${string}`
   | `CUSTOM:${string}`;
 

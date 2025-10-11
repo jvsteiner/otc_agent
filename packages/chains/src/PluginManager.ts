@@ -59,6 +59,9 @@ export class PluginManager {
       case 'BASE':
         plugin = new BasePlugin(config);
         break;
+      case 'BSC':
+        plugin = new EthereumPlugin(config); // Use EthereumPlugin for BSC (EVM-compatible)
+        break;
       default:
         if (config.chainId.startsWith('EVM:')) {
           plugin = new EvmPlugin(config.chainId);
