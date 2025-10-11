@@ -4148,10 +4148,40 @@ export class RpcServer {
               }
               
             case 'WAITING':
-              return '<strong>Processing swap...</strong><br>' +
-                'The engine is executing the cross-chain swap.<br>' +
-                'Assets are being transferred to recipient addresses.<br>' +
-                'This may take a few minutes for confirmations.';
+              // Determine which side(s) are waiting for confirmations
+              const sideALocked = dealData.sideAState?.locks?.tradeLockedAt && dealData.sideAState?.locks?.commissionLockedAt;
+              const sideBLocked = dealData.sideBState?.locks?.tradeLockedAt && dealData.sideBState?.locks?.commissionLockedAt;
+
+              let waitingChains = [];
+              if (!sideALocked) waitingChains.push(aliceChain + ' (' + aliceAsset + ')');
+              if (!sideBLocked) waitingChains.push(bobChain + ' (' + bobAsset + ')');
+
+              if (waitingChains.length === 0) {
+                // Both locked, transitioning to SWAP
+                return '<strong>✅ All Confirmations Received!</strong><br>' +
+                  '<br><strong>Status:</strong> Preparing atomic swap execution<br>' +
+                  '<br>Both chains have reached required confirmations.<br>' +
+                  'The engine will now execute the cross-chain atomic swap.';
+              } else if (waitingChains.length === 2) {
+                // Both waiting
+                return '<strong>⏳ Waiting for Blockchain Confirmations</strong><br>' +
+                  '<br><strong>Status:</strong> Funds deposited, waiting for finality<br>' +
+                  '<br><strong>Waiting on:</strong><br>' +
+                  '• ' + waitingChains[0] + ' - awaiting confirmations<br>' +
+                  '• ' + waitingChains[1] + ' - awaiting confirmations<br>' +
+                  '<br><strong>Why wait?</strong> Each blockchain requires multiple confirmations<br>' +
+                  'to ensure deposits are final and cannot be reversed.<br>' +
+                  'Once both chains confirm, the atomic swap will execute automatically.';
+              } else {
+                // One waiting
+                return '<strong>⏳ Waiting for Blockchain Confirmations</strong><br>' +
+                  '<br><strong>Status:</strong> Partial confirmation received<br>' +
+                  '<br><strong>Confirmed:</strong> ' + (sideALocked ? aliceChain : bobChain) + ' ✅<br>' +
+                  '<strong>Waiting on:</strong> ' + waitingChains[0] + ' - awaiting confirmations<br>' +
+                  '<br><strong>Progress:</strong> One chain confirmed, waiting for the other.<br>' +
+                  'Once ' + waitingChains[0].split(' ')[0] + ' reaches required confirmations,<br>' +
+                  'the atomic swap will execute automatically.';
+              }
 
             case 'SWAP':
               // Count transactions by status
