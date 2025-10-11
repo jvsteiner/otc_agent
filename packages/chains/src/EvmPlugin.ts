@@ -5,8 +5,9 @@
  */
 
 import { ethers } from 'ethers';
-import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx } from './ChainPlugin';
+import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx, BrokerSwapParams, BrokerRevertParams } from './ChainPlugin';
 import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts, parseAssetCode } from '@otc-broker/core';
+import BROKER_ABI from './abi/UnicitySwapBroker.json';
 
 /**
  * Minimal ERC-20 ABI for token interaction.
@@ -15,6 +16,7 @@ import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts, parseA
 const ERC20_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
   'function transfer(address to, uint256 amount) returns (bool)',
+  'function approve(address spender, uint256 amount) returns (bool)',
   'function decimals() view returns (uint8)',
   'event Transfer(address indexed from, address indexed to, uint256 value)'
 ];
@@ -29,6 +31,7 @@ export class EvmPlugin implements ChainPlugin {
   private config!: ChainConfig;
   private provider!: ethers.JsonRpcProvider;
   private wallets = new Map<string, ethers.Wallet>();
+  private brokerContract?: ethers.Contract;
 
   constructor(chainId: ChainId) {
     this.chainId = chainId;
@@ -37,6 +40,12 @@ export class EvmPlugin implements ChainPlugin {
   async init(cfg: ChainConfig): Promise<void> {
     this.config = cfg;
     this.provider = new ethers.JsonRpcProvider(cfg.rpcUrl);
+
+    // Initialize broker contract if address provided
+    if (cfg.brokerAddress) {
+      this.brokerContract = new ethers.Contract(cfg.brokerAddress, BROKER_ABI, this.provider);
+      console.log(`[${this.chainId}] Initialized broker contract at ${cfg.brokerAddress}`);
+    }
   }
 
   async generateEscrowAccount(asset: AssetCode, dealId?: string, party?: 'ALICE' | 'BOB'): Promise<EscrowAccountRef> {
@@ -379,5 +388,178 @@ export class EvmPlugin implements ChainPlugin {
 
   getOperatorAddress(): string {
     return this.config?.operator?.address || '0x0000000000000000000000000000000000000000';
+  }
+
+  /**
+   * Approve the broker contract to spend ERC20 tokens from an escrow address.
+   * Grants unlimited allowance for gas optimization.
+   */
+  async approveBrokerForERC20(escrowRef: EscrowAccountRef, tokenAddress: string): Promise<SubmittedTx> {
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    const wallet = this.wallets.get(escrowRef.address);
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${escrowRef.address}`);
+    }
+
+    const connectedWallet = wallet.connect(this.provider);
+    const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, connectedWallet);
+
+    // Approve unlimited spending to save gas on future transactions
+    const tx = await tokenContract.approve(this.brokerContract.target, ethers.MaxUint256);
+
+    console.log(`[${this.chainId}] Approved broker to spend ${tokenAddress} from ${escrowRef.address}: ${tx.hash}`);
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString(),
+      nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
+    };
+  }
+
+  /**
+   * Execute atomic swap via broker contract.
+   * For native: sends all escrow balance as msg.value.
+   * For ERC20: broker pulls from escrow (must be pre-approved).
+   */
+  async swapViaBroker(params: BrokerSwapParams): Promise<SubmittedTx> {
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    const wallet = this.wallets.get(params.escrow.address);
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
+    }
+
+    const connectedWallet = wallet.connect(this.provider);
+    const brokerWithSigner = this.brokerContract.connect(connectedWallet);
+
+    // Convert dealId to bytes32
+    const dealIdBytes32 = ethers.id(params.dealId);
+
+    let tx;
+
+    if (!params.currency) {
+      // Native currency swap (ETH, MATIC, etc.)
+      // Get total balance and send it all
+      const balance = await this.provider.getBalance(params.escrow.address);
+
+      // Parse amounts to wei
+      const amountWei = ethers.parseEther(params.amount);
+      const feesWei = ethers.parseEther(params.fees);
+
+      tx = await brokerWithSigner.swapNative(
+        dealIdBytes32,
+        params.payback,
+        params.recipient,
+        params.feeRecipient,
+        amountWei,
+        feesWei,
+        { value: balance } // Send entire balance
+      );
+
+      console.log(`[${this.chainId}] Native swap via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    } else {
+      // ERC20 token swap
+      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
+      if (!assetConfig || !assetConfig.contractAddress) {
+        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      }
+
+      const decimals = assetConfig.decimals || 18;
+      const amountWei = ethers.parseUnits(params.amount, decimals);
+      const feesWei = ethers.parseUnits(params.fees, decimals);
+
+      tx = await brokerWithSigner.swapERC20(
+        assetConfig.contractAddress,
+        dealIdBytes32,
+        params.escrow.address,  // Escrow address (source of funds)
+        params.payback,
+        params.recipient,
+        params.feeRecipient,
+        amountWei,
+        feesWei
+      );
+
+      console.log(`[${this.chainId}] ERC20 swap via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    }
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString(),
+      nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
+    };
+  }
+
+  /**
+   * Execute atomic revert via broker contract.
+   * For native: sends all escrow balance as msg.value.
+   * For ERC20: broker pulls from escrow (must be pre-approved).
+   */
+  async revertViaBroker(params: BrokerRevertParams): Promise<SubmittedTx> {
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    const wallet = this.wallets.get(params.escrow.address);
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
+    }
+
+    const connectedWallet = wallet.connect(this.provider);
+    const brokerWithSigner = this.brokerContract.connect(connectedWallet);
+
+    // Convert dealId to bytes32
+    const dealIdBytes32 = ethers.id(params.dealId);
+
+    let tx;
+
+    if (!params.currency) {
+      // Native currency revert
+      const balance = await this.provider.getBalance(params.escrow.address);
+      const feesWei = ethers.parseEther(params.fees);
+
+      tx = await brokerWithSigner.revertNative(
+        dealIdBytes32,
+        params.payback,
+        params.feeRecipient,
+        feesWei,
+        { value: balance } // Send entire balance
+      );
+
+      console.log(`[${this.chainId}] Native revert via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    } else {
+      // ERC20 token revert
+      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
+      if (!assetConfig || !assetConfig.contractAddress) {
+        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      }
+
+      const decimals = assetConfig.decimals || 18;
+      const feesWei = ethers.parseUnits(params.fees, decimals);
+
+      tx = await brokerWithSigner.revertERC20(
+        assetConfig.contractAddress,
+        dealIdBytes32,
+        params.escrow.address,  // Escrow address (source of funds)
+        params.payback,
+        params.feeRecipient,
+        feesWei
+      );
+
+      console.log(`[${this.chainId}] ERC20 revert via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    }
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString(),
+      nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
+    };
   }
 }

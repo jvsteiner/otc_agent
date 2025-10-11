@@ -33,8 +33,12 @@ npm run db:migrate
 
 ### Testing & Quality
 ```bash
-# Run all tests
+# Run all tests (all packages)
 npm test
+
+# Run tests in a specific package
+npm test --workspace=packages/core
+npm test --workspace=packages/backend
 
 # Run specific test file
 npm test packages/core/test/specific-test.test.ts
@@ -52,6 +56,32 @@ npm run typecheck
 npm run clean
 ```
 
+### Smart Contract Development (contracts/)
+```bash
+# Build Solidity contracts
+cd contracts && forge build
+
+# Run contract tests
+forge test
+
+# Run with verbosity
+forge test -vv        # Standard
+forge test -vvv       # Traces for failures
+forge test -vvvv      # All traces
+
+# Run specific test
+forge test --match-test testSwap
+
+# Gas report
+forge test --gas-report
+
+# Coverage
+forge coverage
+
+# Deploy contracts
+forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
+```
+
 ## Core Architecture
 
 ### Package Structure
@@ -60,6 +90,8 @@ npm run clean
 - `packages/backend`: JSON-RPC server, engine loop (30s), notifier, DAL
 - `packages/web`: Static/SSR minimal pages for deal creation and personal pages
 - `packages/tools`: Scripts, simulators, seeding utilities
+- `packages/playwright-jsonrpc`: E2E testing microservice for JSON-RPC API testing
+- `contracts/`: Solidity smart contracts (Foundry project) for on-chain escrow verification
 
 ### Database Schema
 SQLite database with key tables:
@@ -247,6 +279,28 @@ E2E test scenarios that MUST pass:
 - Escrow addresses are HD-derived (BIP32/44) from HOT_WALLET_SEED
 - All transaction queue items must be persisted to `queue_items` table before submission
 - Gas refunds must complete before marking deal as fully closed
+
+## Smart Contracts (contracts/)
+
+The project includes production-grade Solidity contracts for on-chain escrow verification:
+
+### Contract Architecture
+- **UnicitySwapEscrow**: Core escrow contract with state machine (COLLECTION → SWAP → COMPLETED/REVERTED)
+- **UnicitySwapEscrowFactory**: Factory for deploying escrow instances with CREATE2 support
+- **UnicitySwapEscrowBeacon**: Optional upgradeable proxy pattern
+
+### Key Contract Features
+- Operator-controlled swap execution
+- Atomic state transitions with re-entrancy protection
+- Multi-currency support (native ETH and ERC20)
+- Immutable security-critical parameters
+- Gas-optimized operations (~138k gas for swap)
+
+### Contract Development
+- Built with Foundry (Solidity 0.8.24)
+- Comprehensive test suite (39+ tests including fuzz and security tests)
+- OpenZeppelin dependencies for security (ReentrancyGuard, SafeERC20)
+- See contracts/README.md for detailed API and usage examples
 
 ## Debugging & Development Tools
 

@@ -52,6 +52,7 @@ async function main() {
     collectConfirms: parseInt(process.env.ETH_COLLECT_CONFIRMS || '12'),
     operator: { address: process.env.ETH_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
     hotWalletSeed: process.env.HOT_WALLET_SEED,
+    brokerAddress: process.env.ETH_BROKER_ADDRESS, // UnicitySwapBroker contract
   });
   
   // Register Polygon plugin (always enabled with default or configured RPC)
@@ -62,8 +63,9 @@ async function main() {
     collectConfirms: parseInt(process.env.POLYGON_COLLECT_CONFIRMS || '30'),
     operator: { address: process.env.POLYGON_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
     hotWalletSeed: process.env.HOT_WALLET_SEED,
+    brokerAddress: process.env.POLYGON_BROKER_ADDRESS, // UnicitySwapBroker contract
   });
-  
+
   // Register Base plugin (always enabled with default or configured RPC)
   await pluginManager.registerPlugin({
     chainId: 'BASE',
@@ -72,6 +74,7 @@ async function main() {
     collectConfirms: parseInt(process.env.BASE_COLLECT_CONFIRMS || '12'),
     operator: { address: process.env.BASE_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
     hotWalletSeed: process.env.HOT_WALLET_SEED,
+    brokerAddress: process.env.BASE_BROKER_ADDRESS, // UnicitySwapBroker contract
   });
   
   // Initialize engine

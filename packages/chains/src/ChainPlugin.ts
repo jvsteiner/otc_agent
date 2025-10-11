@@ -30,6 +30,7 @@ export interface ChainConfig {
   hotWalletSeed?: string;   // derivation root for escrows
   feePayerKeyRef?: string;  // optional fee payer for gas top-ups
   database?: any;           // Optional database reference for persistence
+  brokerAddress?: string;   // UnicitySwapBroker contract address (for EVM chains)
 }
 
 /**
@@ -88,6 +89,34 @@ export interface SubmittedTx {
   additionalTxids?: string[];
   // Gas price used for the transaction (in gwei for EVM chains)
   gasPrice?: string;
+}
+
+/**
+ * Parameters for broker-based swap execution.
+ * Used by EVM chains to execute atomic swaps via UnicitySwapBroker contract.
+ */
+export interface BrokerSwapParams {
+  dealId: string;           // Unique deal identifier
+  escrow: EscrowAccountRef; // Source escrow account
+  payback: string;          // Address to receive surplus/refund
+  recipient: string;        // Address to receive swap amount
+  feeRecipient: string;     // Address to receive commission
+  amount: string;           // Swap amount (decimal string)
+  fees: string;             // Commission amount (decimal string)
+  currency?: string;        // Token contract address (undefined for native)
+}
+
+/**
+ * Parameters for broker-based revert execution.
+ * Used by EVM chains to execute atomic reverts via UnicitySwapBroker contract.
+ */
+export interface BrokerRevertParams {
+  dealId: string;           // Unique deal identifier
+  escrow: EscrowAccountRef; // Source escrow account
+  payback: string;          // Address to receive refund
+  feeRecipient: string;     // Address to receive commission
+  fees: string;             // Commission amount (decimal string)
+  currency?: string;        // Token contract address (undefined for native)
 }
 
 /**
@@ -213,4 +242,37 @@ export interface ChainPlugin {
    * @returns The operator's blockchain address
    */
   getOperatorAddress(): string;
+
+  /**
+   * Approve broker contract to spend ERC20 tokens from an escrow address.
+   * This is called once when creating an escrow for an ERC20 asset.
+   * Grants unlimited allowance to optimize gas costs.
+   *
+   * @param escrowRef - The escrow account that will hold tokens
+   * @param tokenAddress - The ERC20 token contract address
+   * @returns Transaction submission details
+   */
+  approveBrokerForERC20?(escrowRef: EscrowAccountRef, tokenAddress: string): Promise<SubmittedTx>;
+
+  /**
+   * Execute an atomic swap via the broker contract.
+   * For native currency: transfers all escrow balance to broker with the call.
+   * For ERC20: broker pulls from escrow (requires prior approval).
+   * Distributes funds to recipient (swap), feeRecipient (commission), and payback (surplus).
+   *
+   * @param params - Swap parameters including dealId, addresses, and amounts
+   * @returns Transaction submission details
+   */
+  swapViaBroker?(params: BrokerSwapParams): Promise<SubmittedTx>;
+
+  /**
+   * Execute an atomic revert via the broker contract.
+   * For native currency: transfers all escrow balance to broker with the call.
+   * For ERC20: broker pulls from escrow (requires prior approval).
+   * Distributes fees to feeRecipient and remainder to payback.
+   *
+   * @param params - Revert parameters including dealId, addresses, and amounts
+   * @returns Transaction submission details
+   */
+  revertViaBroker?(params: BrokerRevertParams): Promise<SubmittedTx>;
 }
