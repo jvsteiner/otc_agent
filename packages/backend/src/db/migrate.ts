@@ -173,12 +173,55 @@ export function runMigrations(db: DB): void {
             }
             console.log('Migration already applied, continuing...');
           }
+        }
+        // Special handling for the broker fields migration
+        else if (file === '008_add_broker_fields.sql') {
+          try {
+            // Check which columns already exist
+            const brokerColumns = ['payback', 'recipient', 'feeRecipient', 'fees'];
+            const existingBrokerColumns = new Set<string>();
+
+            for (const col of brokerColumns) {
+              const checkColumn = db.prepare(
+                "SELECT COUNT(*) as count FROM pragma_table_info('queue_items') WHERE name = ?"
+              ).get(col) as { count: number };
+
+              if (checkColumn.count > 0) {
+                existingBrokerColumns.add(col);
+              }
+            }
+
+            // Add only missing columns
+            if (!existingBrokerColumns.has('payback')) {
+              console.log('  Adding payback column');
+              db.exec('ALTER TABLE queue_items ADD COLUMN payback TEXT');
+            }
+            if (!existingBrokerColumns.has('recipient')) {
+              console.log('  Adding recipient column');
+              db.exec('ALTER TABLE queue_items ADD COLUMN recipient TEXT');
+            }
+            if (!existingBrokerColumns.has('feeRecipient')) {
+              console.log('  Adding feeRecipient column');
+              db.exec('ALTER TABLE queue_items ADD COLUMN feeRecipient TEXT');
+            }
+            if (!existingBrokerColumns.has('fees')) {
+              console.log('  Adding fees column');
+              db.exec('ALTER TABLE queue_items ADD COLUMN fees TEXT');
+            }
+
+            console.log('Broker fields migration completed successfully');
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name')) {
+              throw err;
+            }
+            console.log('Migration already applied, continuing...');
+          }
         } else {
           db.exec(migration);
         }
       }
     }
-    
+
     console.log('Database migrations completed successfully');
   } catch (error) {
     console.error('Failed to run migrations:', error);

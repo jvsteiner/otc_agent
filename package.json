@@ -7,12 +7,12 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "tsc --build packages/core/tsconfig.json packages/chains/tsconfig.json packages/backend/tsconfig.json packages/tools/tsconfig.json --force",
     "dev": "npm run dev --workspace=packages/backend",
     "test": "npm run test --workspaces",
     "lint": "eslint packages/*/src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
-    "clean": "npm run clean --workspaces",
+    "clean": "rm -rf packages/*/dist && tsc --build --clean",
     "db:migrate": "npm run db:migrate --workspace=packages/backend"
   },
   "devDependencies": {

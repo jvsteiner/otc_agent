@@ -18,6 +18,7 @@ export interface ChainConfig {
   confirmations: number;    // practical finality
   collectConfirms?: number; // for deposits ≥ this to count for locks
   operator: { address: string };
+  operatorPrivateKey?: string; // EVM operator private key for signing transactions
 
   // Commission policy presets by asset pattern; 'ERC20:*' acts as fallback.
   commissionPolicy?: Record<string, {
@@ -112,6 +113,20 @@ export interface BrokerSwapParams {
  */
 export interface BrokerRevertParams {
   dealId: string;           // Unique deal identifier
+  escrow: EscrowAccountRef; // Source escrow account
+  payback: string;          // Address to receive refund
+  feeRecipient: string;     // Address to receive commission
+  fees: string;             // Commission amount (decimal string)
+  currency?: string;        // Token contract address (undefined for native)
+}
+
+/**
+ * Parameters for broker-based post-deal refund execution.
+ * Used by EVM chains to clean up late deposits or leftover funds after deal closure.
+ * Unlike BrokerRevertParams, this does NOT mark dealId as processed (can be called multiple times).
+ */
+export interface BrokerRefundParams {
+  dealId: string;           // Deal identifier (for tracking only, not enforced)
   escrow: EscrowAccountRef; // Source escrow account
   payback: string;          // Address to receive refund
   feeRecipient: string;     // Address to receive commission
@@ -275,4 +290,17 @@ export interface ChainPlugin {
    * @returns Transaction submission details
    */
   revertViaBroker?(params: BrokerRevertParams): Promise<SubmittedTx>;
+
+  /**
+   * Execute post-deal refund via the broker contract.
+   * Used for cleaning up late deposits or leftover funds after deal closure (CLOSED/REVERTED).
+   * Unlike revertViaBroker, this does NOT mark the dealId as processed and can be called multiple times.
+   * For native currency: transfers all escrow balance to broker with the call.
+   * For ERC20: broker pulls from escrow (requires prior approval).
+   * Distributes fees to feeRecipient and remainder to payback.
+   *
+   * @param params - Refund parameters including dealId (tracking only), addresses, and amounts
+   * @returns Transaction submission details
+   */
+  refundViaBroker?(params: BrokerRefundParams): Promise<SubmittedTx>;
 }

@@ -249,6 +249,85 @@
     "stateMutability": "nonpayable"
   },
   {
+    "type": "function",
+    "name": "refundNative",
+    "inputs": [
+      {
+        "name": "dealId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "payback",
+        "type": "address",
+        "internalType": "address payable"
+      },
+      {
+        "name": "feeRecipient",
+        "type": "address",
+        "internalType": "address payable"
+      },
+      {
+        "name": "fees",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "refundERC20",
+    "inputs": [
+      {
+        "name": "currency",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "dealId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "escrow",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "payback",
+        "type": "address",
+        "internalType": "address payable"
+      },
+      {
+        "name": "feeRecipient",
+        "type": "address",
+        "internalType": "address payable"
+      },
+      {
+        "name": "fees",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "payoutERC20",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
     "type": "event",
     "name": "OperatorUpdated",
     "inputs": [
@@ -385,6 +464,74 @@
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "RefundExecuted",
+    "inputs": [
+      {
+        "name": "dealId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "currency",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "feeRecipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "payback",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "feeAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "refundAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ERC20Recovered",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "DealAlreadyProcessed",
     "inputs": [
@@ -500,6 +647,11 @@
   {
     "type": "error",
     "name": "UnauthorizedOperator",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoTokensToRecover",
     "inputs": []
   }
 ]

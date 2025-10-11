@@ -5,7 +5,7 @@
  * Runs on a 30-second interval with an independent 5-second queue processor.
  */
 
-import { Deal, QueueItem, AssetCode, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts } from '@otc-broker/core';
+import { Deal, QueueItem, AssetCode, ChainId, EscrowAccountRef, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts, parseAssetCode } from '@otc-broker/core';
 import { DB } from '../db/database';
 import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { AccountRepository } from '../db/repositories/AccountRepository';
@@ -179,9 +179,12 @@ export class Engine {
       
       for (const deal of activeDeals) {
         console.log(`[Engine] Processing deal ${deal.id} in stage ${deal.stage}`);
-        
+
         try {
           await this.processDeal(deal);
+
+          // Check for late deposits on closed/reverted deals
+          await this.checkForLateDeposits(deal);
         } catch (error) {
           console.error(`Error processing deal ${deal.id}:`, error);
           this.dealRepo.addEvent(deal.id, `Engine error: ${error}`);
@@ -897,95 +900,136 @@ export class Engine {
     });
     
     this.db.runInTransaction(() => {
-      // Queue swap payouts
-      if (deal.escrowA && deal.bobDetails) {
-        console.log(`[Engine] Creating Alice->Bob payout queue item`);
-        // Create payout for Unicity chains
-        let payoutId: string | undefined;
-        if (deal.alice.chainId === 'UNICITY') {
-          payoutId = this.payoutRepo.createPayout({
-            dealId: deal.id,
-            chainId: deal.alice.chainId,
-            fromAddr: deal.escrowA.address,
-            toAddr: deal.bobDetails.recipientAddress,
-            asset: deal.alice.asset,
-            totalAmount: deal.alice.amount,
-            purpose: 'SWAP_PAYOUT',
-            phase: 'PHASE_1_SWAP',
-            metadata: { side: 'A' }
-          });
-        }
-        
-        const queueItem = this.queueRepo.enqueue({
-          dealId: deal.id,
-          chainId: deal.alice.chainId,
-          from: deal.escrowA,
-          to: deal.bobDetails.recipientAddress,
-          asset: deal.alice.asset,
-          amount: deal.alice.amount,
-          purpose: 'SWAP_PAYOUT',
-          // For Unicity, assign to phase 1
-          phase: deal.alice.chainId === 'UNICITY' ? 'PHASE_1_SWAP' : undefined,
-        });
-        
-        // Link queue item to payout for Unicity
-        if (payoutId) {
-          this.payoutRepo.linkQueueItemToPayout(queueItem.id, payoutId);
-        }
-      }
-      
-      if (deal.escrowB && deal.aliceDetails) {
-        console.log(`[Engine] Creating Bob->Alice payout queue item:`, {
-          bobChainId: deal.bob.chainId,
-          bobAsset: deal.bob.asset,
-          bobAmount: deal.bob.amount,
-          escrowB: deal.escrowB,
-          aliceRecipient: deal.aliceDetails.recipientAddress
-        });
-        
-        // Create payout for Unicity chains
-        let payoutId: string | undefined;
-        if (deal.bob.chainId === 'UNICITY') {
-          payoutId = this.payoutRepo.createPayout({
-            dealId: deal.id,
-            chainId: deal.bob.chainId,
-            fromAddr: deal.escrowB.address,
-            toAddr: deal.aliceDetails.recipientAddress,
-            asset: deal.bob.asset,
-            totalAmount: deal.bob.amount,
-            purpose: 'SWAP_PAYOUT',
-            phase: 'PHASE_1_SWAP',
-            metadata: { side: 'B' }
-          });
-        }
-        
-        const queueItem = this.queueRepo.enqueue({
-          dealId: deal.id,
-          chainId: deal.bob.chainId,
-          from: deal.escrowB,
-          to: deal.aliceDetails.recipientAddress,
-          asset: deal.bob.asset,
-          amount: deal.bob.amount,
-          purpose: 'SWAP_PAYOUT',
-          // For Unicity, assign to phase 1
-          phase: deal.bob.chainId === 'UNICITY' ? 'PHASE_1_SWAP' : undefined,
-        });
-        
-        // Link queue item to payout for Unicity
-        if (payoutId) {
-          this.payoutRepo.linkQueueItemToPayout(queueItem.id, payoutId);
-        }
-      }
-      
-      // Queue operator commissions
+      // Calculate commissions first (needed for both broker and non-broker paths)
       const sideACommission = this.calculateCommissionAmount(deal, 'A');
       const sideBCommission = this.calculateCommissionAmount(deal, 'B');
+
+      // Check if we can use broker for Alice's side
+      const canUseBrokerForAlice = this.canUseBroker(deal.alice.chainId);
+
+      // Queue swap payouts
+      if (deal.escrowA && deal.bobDetails && deal.aliceDetails) {
+
+        if (canUseBrokerForAlice) {
+          // Use broker for atomic swap (includes commission and surplus refund)
+          console.log(`[Engine] Using broker for Alice->Bob swap in deal ${deal.id}`);
+          this.buildBrokerSwapForSide(
+            deal,
+            'ALICE',
+            deal.escrowA,
+            deal.bobDetails.recipientAddress,
+            deal.aliceDetails.paybackAddress,
+            deal.alice.amount,
+            sideACommission
+          );
+        } else {
+          // Fall back to queue-based approach
+          console.log(`[Engine] Creating Alice->Bob payout queue item`);
+          // Create payout for Unicity chains
+          let payoutId: string | undefined;
+          if (deal.alice.chainId === 'UNICITY') {
+            payoutId = this.payoutRepo.createPayout({
+              dealId: deal.id,
+              chainId: deal.alice.chainId,
+              fromAddr: deal.escrowA.address,
+              toAddr: deal.bobDetails.recipientAddress,
+              asset: deal.alice.asset,
+              totalAmount: deal.alice.amount,
+              purpose: 'SWAP_PAYOUT',
+              phase: 'PHASE_1_SWAP',
+              metadata: { side: 'A' }
+            });
+          }
+
+          const queueItem = this.queueRepo.enqueue({
+            dealId: deal.id,
+            chainId: deal.alice.chainId,
+            from: deal.escrowA,
+            to: deal.bobDetails.recipientAddress,
+            asset: deal.alice.asset,
+            amount: deal.alice.amount,
+            purpose: 'SWAP_PAYOUT',
+            // For Unicity, assign to phase 1
+            phase: deal.alice.chainId === 'UNICITY' ? 'PHASE_1_SWAP' : undefined,
+          });
+
+          // Link queue item to payout for Unicity
+          if (payoutId) {
+            this.payoutRepo.linkQueueItemToPayout(queueItem.id, payoutId);
+          }
+        }
+      }
       
-      if (deal.escrowA && parseFloat(sideACommission) > 0) {
-        const commAsset = deal.commissionPlan.sideA.currency === 'ASSET' 
-          ? deal.alice.asset 
+      // Check if we can use broker for Bob's side
+      const canUseBrokerForBob = this.canUseBroker(deal.bob.chainId);
+
+      if (deal.escrowB && deal.aliceDetails && deal.bobDetails) {
+
+        if (canUseBrokerForBob) {
+          // Use broker for atomic swap (includes commission and surplus refund)
+          console.log(`[Engine] Using broker for Bob->Alice swap in deal ${deal.id}`);
+          this.buildBrokerSwapForSide(
+            deal,
+            'BOB',
+            deal.escrowB,
+            deal.aliceDetails.recipientAddress,
+            deal.bobDetails.paybackAddress,
+            deal.bob.amount,
+            sideBCommission
+          );
+        } else {
+          // Fall back to queue-based approach
+          console.log(`[Engine] Creating Bob->Alice payout queue item:`, {
+            bobChainId: deal.bob.chainId,
+            bobAsset: deal.bob.asset,
+            bobAmount: deal.bob.amount,
+            escrowB: deal.escrowB,
+            aliceRecipient: deal.aliceDetails.recipientAddress
+          });
+
+          // Create payout for Unicity chains
+          let payoutId: string | undefined;
+          if (deal.bob.chainId === 'UNICITY') {
+            payoutId = this.payoutRepo.createPayout({
+              dealId: deal.id,
+              chainId: deal.bob.chainId,
+              fromAddr: deal.escrowB.address,
+              toAddr: deal.aliceDetails.recipientAddress,
+              asset: deal.bob.asset,
+              totalAmount: deal.bob.amount,
+              purpose: 'SWAP_PAYOUT',
+              phase: 'PHASE_1_SWAP',
+              metadata: { side: 'B' }
+            });
+          }
+
+          const queueItem = this.queueRepo.enqueue({
+            dealId: deal.id,
+            chainId: deal.bob.chainId,
+            from: deal.escrowB,
+            to: deal.aliceDetails.recipientAddress,
+            asset: deal.bob.asset,
+            amount: deal.bob.amount,
+            purpose: 'SWAP_PAYOUT',
+            // For Unicity, assign to phase 1
+            phase: deal.bob.chainId === 'UNICITY' ? 'PHASE_1_SWAP' : undefined,
+          });
+
+          // Link queue item to payout for Unicity
+          if (payoutId) {
+            this.payoutRepo.linkQueueItemToPayout(queueItem.id, payoutId);
+          }
+        }
+      }
+      
+      // Queue operator commissions (only for non-broker chains)
+      // Broker handles commissions atomically in the swap transaction
+
+      if (!canUseBrokerForAlice && deal.escrowA && parseFloat(sideACommission) > 0) {
+        const commAsset = deal.commissionPlan.sideA.currency === 'ASSET'
+          ? deal.alice.asset
           : getNativeAsset(deal.alice.chainId);
-        
+
         const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
         this.queueRepo.enqueue({
           dealId: deal.id,
@@ -999,8 +1043,8 @@ export class Engine {
           phase: deal.alice.chainId === 'UNICITY' ? 'PHASE_2_COMMISSION' : undefined,
         });
       }
-      
-      if (deal.escrowB && parseFloat(sideBCommission) > 0) {
+
+      if (!canUseBrokerForBob && deal.escrowB && parseFloat(sideBCommission) > 0) {
         const commAsset = deal.commissionPlan.sideB.currency === 'ASSET'
           ? deal.bob.asset
           : getNativeAsset(deal.bob.chainId);
@@ -1236,6 +1280,59 @@ export class Engine {
     }
   }
 
+  /**
+   * Check if a deal side can use broker for atomic swap/revert.
+   * Returns true if the chain has broker methods and broker is configured.
+   */
+  private canUseBroker(chainId: ChainId): boolean {
+    const plugin = this.pluginManager.getPlugin(chainId);
+
+    // Check if plugin has broker methods (swapViaBroker and revertViaBroker)
+    const hasBrokerMethods = !!(plugin as any).swapViaBroker && !!(plugin as any).revertViaBroker;
+
+    if (!hasBrokerMethods) {
+      return false;
+    }
+
+    // For now, we only support broker on EVM chains
+    const evmChains = ['ETH', 'POLYGON', 'BASE', 'SEPOLIA'];
+    return evmChains.includes(chainId);
+  }
+
+  /**
+   * Build a broker swap queue item for a deal side.
+   * This creates a single atomic queue item that handles swap + commission + refund.
+   */
+  private buildBrokerSwapForSide(
+    deal: Deal,
+    party: 'ALICE' | 'BOB',
+    fromEscrow: any,
+    toAddress: string,
+    paybackAddress: string,
+    swapAmount: string,
+    commissionAmount: string
+  ): void {
+    const side = party === 'ALICE' ? deal.alice : deal.bob;
+    const plugin = this.pluginManager.getPlugin(side.chainId);
+
+    console.log(`[Engine] Creating broker swap for ${party} in deal ${deal.id}`);
+
+    this.queueRepo.enqueue({
+      dealId: deal.id,
+      chainId: side.chainId,
+      from: fromEscrow,
+      to: toAddress, // This is actually not used by broker, but kept for consistency
+      asset: side.asset,
+      amount: swapAmount,
+      purpose: 'BROKER_SWAP',
+      phase: 'PHASE_1_SWAP', // Same priority as regular swaps
+      payback: paybackAddress,
+      recipient: toAddress,
+      feeRecipient: plugin.getOperatorAddress(),
+      fees: commissionAmount,
+    });
+  }
+
   private async revertDeal(deal: Deal) {
     // CRITICAL SAFEGUARD #1: Never revert if BOTH sides are locked
     const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
@@ -1342,35 +1439,89 @@ export class Engine {
     }
 
     this.db.runInTransaction(() => {
+      // Check if we can use broker for reverts
+      const canUseBrokerForAlice = this.canUseBroker(deal.alice.chainId);
+      const canUseBrokerForBob = this.canUseBroker(deal.bob.chainId);
+
       // Queue refunds for all confirmed deposits
       if (deal.escrowA && deal.aliceDetails && deal.sideAState) {
-        for (const [asset, amount] of Object.entries(deal.sideAState.collectedByAsset)) {
-          if (parseFloat(amount) > 0) {
-            this.queueRepo.enqueue({
-              dealId: deal.id,
-              chainId: deal.alice.chainId,
-              from: deal.escrowA,
-              to: deal.aliceDetails.paybackAddress,
-              asset: asset as any,
-              amount,
-              purpose: 'TIMEOUT_REFUND',
-            });
+        const totalCollected = Object.entries(deal.sideAState.collectedByAsset)
+          .reduce((sum, [_, amt]) => sum + parseFloat(amt), 0);
+
+        if (totalCollected > 0 && canUseBrokerForAlice) {
+          // Use broker for atomic revert (refund + commission)
+          const sideACommission = this.calculateCommissionAmount(deal, 'A');
+          const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
+
+          console.log(`[Engine] Using broker for Alice revert in deal ${deal.id}`);
+          this.queueRepo.enqueue({
+            dealId: deal.id,
+            chainId: deal.alice.chainId,
+            from: deal.escrowA,
+            to: deal.aliceDetails.paybackAddress,
+            asset: deal.alice.asset,
+            amount: '0', // Amount not used for revert (sends everything)
+            purpose: 'BROKER_REVERT',
+            phase: 'PHASE_1_SWAP',
+            payback: deal.aliceDetails.paybackAddress,
+            feeRecipient: plugin.getOperatorAddress(),
+            fees: sideACommission,
+          });
+        } else {
+          // Fall back to individual refund queue items
+          for (const [asset, amount] of Object.entries(deal.sideAState.collectedByAsset)) {
+            if (parseFloat(amount) > 0) {
+              this.queueRepo.enqueue({
+                dealId: deal.id,
+                chainId: deal.alice.chainId,
+                from: deal.escrowA,
+                to: deal.aliceDetails.paybackAddress,
+                asset: asset as any,
+                amount,
+                purpose: 'TIMEOUT_REFUND',
+              });
+            }
           }
         }
       }
 
       if (deal.escrowB && deal.bobDetails && deal.sideBState) {
-        for (const [asset, amount] of Object.entries(deal.sideBState.collectedByAsset)) {
-          if (parseFloat(amount) > 0) {
-            this.queueRepo.enqueue({
-              dealId: deal.id,
-              chainId: deal.bob.chainId,
-              from: deal.escrowB,
-              to: deal.bobDetails.paybackAddress,
-              asset: asset as any,
-              amount,
-              purpose: 'TIMEOUT_REFUND',
-            });
+        const totalCollected = Object.entries(deal.sideBState.collectedByAsset)
+          .reduce((sum, [_, amt]) => sum + parseFloat(amt), 0);
+
+        if (totalCollected > 0 && canUseBrokerForBob) {
+          // Use broker for atomic revert (refund + commission)
+          const sideBCommission = this.calculateCommissionAmount(deal, 'B');
+          const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
+
+          console.log(`[Engine] Using broker for Bob revert in deal ${deal.id}`);
+          this.queueRepo.enqueue({
+            dealId: deal.id,
+            chainId: deal.bob.chainId,
+            from: deal.escrowB,
+            to: deal.bobDetails.paybackAddress,
+            asset: deal.bob.asset,
+            amount: '0', // Amount not used for revert (sends everything)
+            purpose: 'BROKER_REVERT',
+            phase: 'PHASE_1_SWAP',
+            payback: deal.bobDetails.paybackAddress,
+            feeRecipient: plugin.getOperatorAddress(),
+            fees: sideBCommission,
+          });
+        } else {
+          // Fall back to individual refund queue items
+          for (const [asset, amount] of Object.entries(deal.sideBState.collectedByAsset)) {
+            if (parseFloat(amount) > 0) {
+              this.queueRepo.enqueue({
+                dealId: deal.id,
+                chainId: deal.bob.chainId,
+                from: deal.escrowB,
+                to: deal.bobDetails.paybackAddress,
+                asset: asset as any,
+                amount,
+                purpose: 'TIMEOUT_REFUND',
+              });
+            }
           }
         }
       }
@@ -1532,6 +1683,19 @@ export class Engine {
       purpose: item.purpose,
       phase: item.phase
     });
+
+    // Handle BROKER_SWAP, BROKER_REVERT, and BROKER_REFUND separately (they don't use nonce logic)
+    if (item.purpose === 'BROKER_SWAP') {
+      return this.submitBrokerSwap(item, deal);
+    }
+
+    if (item.purpose === 'BROKER_REVERT') {
+      return this.submitBrokerRevert(item, deal);
+    }
+
+    if (item.purpose === 'BROKER_REFUND') {
+      return this.submitBrokerRefund(item, deal);
+    }
 
     const plugin = this.pluginManager.getPlugin(item.chainId);
 
@@ -1735,6 +1899,316 @@ export class Engine {
       nonce: txOptions?.nonce,
       purpose: item.purpose
     });
+  }
+
+  /**
+   * Submit a broker swap transaction.
+   * This is an atomic operation that handles swap + commission + surplus refund.
+   */
+  private async submitBrokerSwap(item: QueueItem, deal: Deal): Promise<void> {
+    console.log(`[BrokerSwap] Submitting broker swap for deal ${deal.id.slice(0, 8)}...`);
+
+    if (!item.recipient || !item.payback || !item.feeRecipient || !item.fees) {
+      throw new Error(`Missing broker swap parameters in queue item ${item.id}`);
+    }
+
+    const plugin = this.pluginManager.getPlugin(item.chainId);
+
+    if (!(plugin as any).swapViaBroker) {
+      throw new Error(`Chain ${item.chainId} does not support broker swaps`);
+    }
+
+    // Get the full escrow account ref with keyRef
+    let escrowRef = item.from;
+    if (deal.escrowA && deal.escrowA.address === item.from.address) {
+      escrowRef = deal.escrowA;
+    } else if (deal.escrowB && deal.escrowB.address === item.from.address) {
+      escrowRef = deal.escrowB;
+    }
+
+    // Determine if this is ERC20 or native
+    const assetConfig = parseAssetCode(item.asset, item.chainId);
+    const currency = assetConfig?.contractAddress; // undefined for native
+
+    try {
+      const result = await (plugin as any).swapViaBroker({
+        dealId: item.dealId,
+        escrow: escrowRef,
+        payback: item.payback,
+        recipient: item.recipient,
+        feeRecipient: item.feeRecipient,
+        amount: item.amount,
+        fees: item.fees,
+        currency: currency,
+      });
+
+      // Update queue item status
+      const txRef: any = {
+        txid: result.txid,
+        chainId: item.chainId,
+        requiredConfirms: getConfirmationThreshold(item.chainId),
+        submittedAt: result.submittedAt,
+        confirms: 0,
+        status: 'SUBMITTED',
+        nonceOrInputs: result.nonceOrInputs,
+        gasPrice: result.gasPrice,
+      };
+
+      this.queueRepo.updateStatus(item.id, 'SUBMITTED', txRef);
+      this.dealRepo.addEvent(deal.id, `Broker swap submitted: ${result.txid.slice(0, 10)}...`);
+
+      console.log(`[BrokerSwap] Transaction submitted successfully: ${result.txid}`);
+    } catch (error: any) {
+      console.error(`[BrokerSwap] Failed to submit broker swap:`, error.message);
+      this.dealRepo.addEvent(deal.id, `Broker swap failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Submit a broker revert transaction.
+   * This is an atomic operation that handles refund + commission.
+   */
+  private async submitBrokerRevert(item: QueueItem, deal: Deal): Promise<void> {
+    console.log(`[BrokerRevert] Submitting broker revert for deal ${deal.id.slice(0, 8)}...`);
+
+    if (!item.payback || !item.feeRecipient || !item.fees) {
+      throw new Error(`Missing broker revert parameters in queue item ${item.id}`);
+    }
+
+    const plugin = this.pluginManager.getPlugin(item.chainId);
+
+    if (!(plugin as any).revertViaBroker) {
+      throw new Error(`Chain ${item.chainId} does not support broker reverts`);
+    }
+
+    // Get the full escrow account ref with keyRef
+    let escrowRef = item.from;
+    if (deal.escrowA && deal.escrowA.address === item.from.address) {
+      escrowRef = deal.escrowA;
+    } else if (deal.escrowB && deal.escrowB.address === item.from.address) {
+      escrowRef = deal.escrowB;
+    }
+
+    // Determine if this is ERC20 or native
+    const assetConfig = parseAssetCode(item.asset, item.chainId);
+    const currency = assetConfig?.contractAddress; // undefined for native
+
+    try {
+      const result = await (plugin as any).revertViaBroker({
+        dealId: item.dealId,
+        escrow: escrowRef,
+        payback: item.payback,
+        feeRecipient: item.feeRecipient,
+        fees: item.fees,
+        currency: currency,
+      });
+
+      // Update queue item status
+      const txRef: any = {
+        txid: result.txid,
+        chainId: item.chainId,
+        requiredConfirms: getConfirmationThreshold(item.chainId),
+        submittedAt: result.submittedAt,
+        confirms: 0,
+        status: 'SUBMITTED',
+        nonceOrInputs: result.nonceOrInputs,
+        gasPrice: result.gasPrice,
+      };
+
+      this.queueRepo.updateStatus(item.id, 'SUBMITTED', txRef);
+      this.dealRepo.addEvent(deal.id, `Broker revert submitted: ${result.txid.slice(0, 10)}...`);
+
+      console.log(`[BrokerRevert] Transaction submitted successfully: ${result.txid}`);
+    } catch (error: any) {
+      console.error(`[BrokerRevert] Failed to submit broker revert:`, error.message);
+      this.dealRepo.addEvent(deal.id, `Broker revert failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Submit a broker refund transaction (post-deal cleanup).
+   * This is used for cleaning up late deposits after deal closure.
+   */
+  private async submitBrokerRefund(item: QueueItem, deal: Deal): Promise<void> {
+    console.log(`[BrokerRefund] Submitting broker refund for deal ${deal.id.slice(0, 8)}...`);
+
+    if (!item.payback || !item.feeRecipient || !item.fees) {
+      throw new Error(`Missing broker refund parameters in queue item ${item.id}`);
+    }
+
+    const plugin = this.pluginManager.getPlugin(item.chainId);
+
+    if (!(plugin as any).refundViaBroker) {
+      throw new Error(`Chain ${item.chainId} does not support broker refunds`);
+    }
+
+    // Get the full escrow account ref with keyRef
+    let escrowRef = item.from;
+    if (deal.escrowA && deal.escrowA.address === item.from.address) {
+      escrowRef = deal.escrowA;
+    } else if (deal.escrowB && deal.escrowB.address === item.from.address) {
+      escrowRef = deal.escrowB;
+    }
+
+    // Determine if this is ERC20 or native
+    const assetConfig = parseAssetCode(item.asset, item.chainId);
+    const currency = assetConfig?.contractAddress; // undefined for native
+
+    try {
+      const result = await (plugin as any).refundViaBroker({
+        dealId: item.dealId,
+        escrow: escrowRef,
+        payback: item.payback,
+        feeRecipient: item.feeRecipient,
+        fees: item.fees,
+        currency: currency,
+      });
+
+      // Update queue item status
+      const txRef: any = {
+        txid: result.txid,
+        chainId: item.chainId,
+        requiredConfirms: getConfirmationThreshold(item.chainId),
+        submittedAt: result.submittedAt,
+        confirms: 0,
+        status: 'SUBMITTED',
+        nonceOrInputs: result.nonceOrInputs,
+        gasPrice: result.gasPrice,
+      };
+
+      this.queueRepo.updateStatus(item.id, 'SUBMITTED', txRef);
+      this.dealRepo.addEvent(deal.id, `Broker post-deal refund submitted: ${result.txid.slice(0, 10)}...`);
+
+      console.log(`[BrokerRefund] Transaction submitted successfully: ${result.txid}`);
+    } catch (error: any) {
+      console.error(`[BrokerRefund] Failed to submit broker refund:`, error.message);
+      this.dealRepo.addEvent(deal.id, `Broker refund failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Check for late deposits to closed/reverted deals.
+   * Creates broker refund queue items for any leftover funds.
+   */
+  private async checkForLateDeposits(deal: Deal): Promise<void> {
+    // Only check deals in CLOSED or REVERTED state
+    if (deal.stage !== 'CLOSED' && deal.stage !== 'REVERTED') {
+      return;
+    }
+
+    // Skip if deal was closed/reverted very recently (within 5 minutes)
+    // This avoids false positives from pending transactions
+    const closedRecently = deal.events
+      .filter(e => e.msg.includes('CLOSED') || e.msg.includes('REVERTED'))
+      .some(e => new Date(e.t).getTime() > Date.now() - 5 * 60 * 1000);
+
+    if (closedRecently) {
+      return;
+    }
+
+    // Check both sides for late deposits
+    const sides = [
+      { party: 'ALICE' as const, escrow: deal.escrowA, spec: deal.alice, details: deal.aliceDetails },
+      { party: 'BOB' as const, escrow: deal.escrowB, spec: deal.bob, details: deal.bobDetails }
+    ];
+
+    for (const side of sides) {
+      if (!side.escrow || !side.details) {
+        continue;
+      }
+
+      try {
+        const plugin = this.pluginManager.getPlugin(side.spec.chainId);
+
+        // Query current balance
+        const depositsView = await plugin.listConfirmedDeposits(
+          side.spec.asset,
+          side.escrow.address,
+          0, // No confirmation requirement for balance check
+          undefined
+        );
+
+        const balance = depositsView.totalConfirmed;
+
+        // If balance > 0, there are leftover funds
+        if (parseFloat(balance) > 0) {
+          console.log(`[LateDeposit] Found ${balance} ${side.spec.asset} in ${side.party} escrow for closed deal ${deal.id.slice(0, 8)}...`);
+
+          // Check if we already have a pending BROKER_REFUND for this escrow
+          const existingRefunds = this.queueRepo.getByDeal(deal.id)
+            .filter(q =>
+              q.purpose === 'BROKER_REFUND' &&
+              q.from.address === side.escrow!.address &&
+              q.status !== 'COMPLETED'
+            );
+
+          if (existingRefunds.length > 0) {
+            console.log(`[LateDeposit] Refund already queued for ${side.party} escrow, skipping`);
+            continue;
+          }
+
+          await this.createBrokerRefund(deal, side.party, side.spec, side.escrow, side.details.paybackAddress, balance);
+        }
+      } catch (error: any) {
+        console.error(`[LateDeposit] Error checking ${side.party} escrow:`, error.message);
+      }
+    }
+  }
+
+  /**
+   * Create broker refund queue item for late deposit.
+   */
+  private async createBrokerRefund(
+    deal: Deal,
+    party: 'ALICE' | 'BOB',
+    spec: any,
+    escrow: EscrowAccountRef,
+    paybackAddress: string,
+    amount: string
+  ): Promise<void> {
+    const plugin = this.pluginManager.getPlugin(spec.chainId);
+
+    // Check if broker available
+    if (!(plugin as any).refundViaBroker) {
+      console.warn(`[LateDeposit] Cannot create broker refund for ${spec.chainId} - broker not available`);
+      return;
+    }
+
+    // Estimate gas/commission fee for refund operation
+    // For simplicity, use a fixed small fee (operator will charge minimal fee for cleanup)
+    const feeAmount = '0.001'; // Small fixed fee
+
+    // Generate unique tracking ID for this late deposit refund
+    const refundTrackingId = `${deal.id}_late_${party}_${Date.now()}`;
+
+    console.log(`[LateDeposit] Creating BROKER_REFUND queue item for deal ${deal.id}, party ${party}, amount ${amount}`);
+
+    // Create queue item
+    const queueItem = {
+      id: crypto.randomBytes(16).toString('hex'),
+      dealId: refundTrackingId, // Use tracking ID instead of original deal ID
+      chainId: spec.chainId,
+      from: escrow,
+      to: paybackAddress, // Not used for broker refund, but kept for consistency
+      asset: spec.asset,
+      amount: amount,
+      purpose: 'BROKER_REFUND' as const,
+      phase: 'PHASE_3_REFUND' as const,
+      seq: 0, // Not used for broker operations
+      status: 'PENDING' as const,
+      createdAt: new Date().toISOString(),
+      payback: paybackAddress,
+      feeRecipient: plugin.getOperatorAddress(),
+      fees: feeAmount,
+    };
+
+    this.queueRepo.enqueue(queueItem);
+    this.dealRepo.addEvent(deal.id, `Late deposit detected: ${amount} ${spec.asset} from ${party}, refund queued`);
+
+    console.log(`[LateDeposit] BROKER_REFUND queued for deal ${deal.id}, party ${party}`);
   }
 
   /**

@@ -5,10 +5,10 @@
  */
 
 import express from 'express';
-import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, getAssetRegistry, formatAssetCode, parseAssetCode, generateDealName, validateDealName } from '@otc-broker/core';
+import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, AssetCode, ChainId, getAssetRegistry, formatAssetCode, parseAssetCode, generateDealName, validateDealName } from '@otc-broker/core';
 import { DealRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { DB } from '../db/database';
-import { PluginManager } from '@otc-broker/chains';
+import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import * as crypto from 'crypto';
 import { EmailService } from '../services/email';
 
@@ -339,12 +339,15 @@ export class RpcServer {
     };
     
     let escrowRef: EscrowAccountRef | undefined;
-    
+
     if (params.party === 'ALICE') {
       deal.aliceDetails = details;
       // Generate escrow for Alice's send chain with dealId for uniqueness
       deal.escrowA = await sendPlugin.generateEscrowAccount(deal.alice.asset, deal.id, 'ALICE');
       escrowRef = deal.escrowA;
+
+      // Approve broker for ERC20 assets if broker is configured
+      await this.approveBrokerIfNeeded(sendPlugin, deal.escrowA, deal.alice.asset, deal.alice.chainId, deal.id);
 
       // Initialize gas reimbursement tracking if this is an ERC-20 deal on EVM chain
       this.initializeGasReimbursement(deal, 'ALICE');
@@ -353,6 +356,9 @@ export class RpcServer {
       // Generate escrow for Bob's send chain with dealId for uniqueness
       deal.escrowB = await sendPlugin.generateEscrowAccount(deal.bob.asset, deal.id, 'BOB');
       escrowRef = deal.escrowB;
+
+      // Approve broker for ERC20 assets if broker is configured
+      await this.approveBrokerIfNeeded(sendPlugin, deal.escrowB, deal.bob.asset, deal.bob.chainId, deal.id);
 
       // Initialize gas reimbursement tracking if this is an ERC-20 deal on EVM chain
       this.initializeGasReimbursement(deal, 'BOB');
@@ -5519,6 +5525,48 @@ export class RpcServer {
     </html>
   `;
 }
+
+  /**
+   * Approve broker contract for ERC20 tokens if broker is configured and asset is ERC20.
+   * This is called when escrow is created for a party.
+   */
+  private async approveBrokerIfNeeded(
+    plugin: ChainPlugin,
+    escrow: EscrowAccountRef,
+    asset: AssetCode,
+    chainId: ChainId,
+    dealId: string
+  ): Promise<void> {
+    // Check if plugin has broker methods
+    if (!plugin.approveBrokerForERC20) {
+      return; // Not a broker-enabled chain
+    }
+
+    // Parse asset to check if it's ERC20
+    const { parseAssetCode } = await import('@otc-broker/core');
+    const assetConfig = parseAssetCode(asset, chainId);
+
+    if (!assetConfig || assetConfig.type !== 'ERC20' || !assetConfig.contractAddress) {
+      return; // Not an ERC20 asset, no approval needed
+    }
+
+    console.log(`[Broker] Approving broker for ERC20 token ${asset} in deal ${dealId.slice(0, 8)}...`);
+
+    try {
+      // Note: Escrow must have gas for approval transaction
+      // This should be funded externally or by the user's initial deposit
+
+      // Submit approval transaction
+      const tx = await plugin.approveBrokerForERC20(escrow, assetConfig.contractAddress);
+      console.log(`[Broker] Approval tx submitted: ${tx.txid}`);
+
+      this.dealRepo.addEvent(dealId, `Broker approved for ${asset}: ${tx.txid.slice(0, 10)}...`);
+    } catch (error: any) {
+      console.error(`[Broker] Failed to approve broker for ${asset}:`, error.message);
+      this.dealRepo.addEvent(dealId, `Warning: Broker approval failed for ${asset}: ${error.message}`);
+      // Don't throw - we can still fall back to non-broker flow if needed
+    }
+  }
 
   /**
    * Initialize gas reimbursement tracking for a party when escrow is generated

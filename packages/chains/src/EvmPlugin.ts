@@ -4,10 +4,73 @@
  * Handles native currency and ERC-20 token transfers with deterministic HD wallet generation.
  */
 
-import { ethers } from 'ethers';
-import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx, BrokerSwapParams, BrokerRevertParams } from './ChainPlugin';
+import { ethers, ContractTransactionResponse } from 'ethers';
+import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx, BrokerSwapParams, BrokerRevertParams, BrokerRefundParams } from './ChainPlugin';
 import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts, parseAssetCode } from '@otc-broker/core';
 import BROKER_ABI from './abi/UnicitySwapBroker.json';
+
+/**
+ * Typed interface for UnicitySwapBroker contract methods.
+ * Provides type safety for broker contract interactions.
+ */
+interface IUnicitySwapBroker extends ethers.BaseContract {
+  swapNative(
+    dealId: string,
+    payback: string,
+    recipient: string,
+    feeRecipient: string,
+    amount: bigint,
+    fees: bigint,
+    operatorSignature: string,
+    overrides?: { value: bigint }
+  ): Promise<ContractTransactionResponse>;
+
+  swapERC20(
+    currency: string,
+    dealId: string,
+    escrow: string,
+    payback: string,
+    recipient: string,
+    feeRecipient: string,
+    amount: bigint,
+    fees: bigint
+  ): Promise<ContractTransactionResponse>;
+
+  revertNative(
+    dealId: string,
+    payback: string,
+    feeRecipient: string,
+    fees: bigint,
+    operatorSignature: string,
+    overrides?: { value: bigint }
+  ): Promise<ContractTransactionResponse>;
+
+  revertERC20(
+    currency: string,
+    dealId: string,
+    escrow: string,
+    payback: string,
+    feeRecipient: string,
+    fees: bigint
+  ): Promise<ContractTransactionResponse>;
+
+  refundNative(
+    dealId: string,
+    payback: string,
+    feeRecipient: string,
+    fees: bigint,
+    overrides?: { value: bigint }
+  ): Promise<ContractTransactionResponse>;
+
+  refundERC20(
+    currency: string,
+    dealId: string,
+    escrow: string,
+    payback: string,
+    feeRecipient: string,
+    fees: bigint
+  ): Promise<ContractTransactionResponse>;
+}
 
 /**
  * Minimal ERC-20 ABI for token interaction.
@@ -31,7 +94,8 @@ export class EvmPlugin implements ChainPlugin {
   private config!: ChainConfig;
   private provider!: ethers.JsonRpcProvider;
   private wallets = new Map<string, ethers.Wallet>();
-  private brokerContract?: ethers.Contract;
+  private brokerContract?: IUnicitySwapBroker;
+  private operatorWallet?: ethers.Wallet;
 
   constructor(chainId: ChainId) {
     this.chainId = chainId;
@@ -41,9 +105,20 @@ export class EvmPlugin implements ChainPlugin {
     this.config = cfg;
     this.provider = new ethers.JsonRpcProvider(cfg.rpcUrl);
 
+    // Initialize operator wallet if private key provided
+    if (cfg.operatorPrivateKey) {
+      this.operatorWallet = new ethers.Wallet(cfg.operatorPrivateKey, this.provider);
+      console.log(`[${this.chainId}] Initialized operator wallet: ${this.operatorWallet.address}`);
+
+      // Verify operator address matches
+      if (cfg.operator.address.toLowerCase() !== this.operatorWallet.address.toLowerCase()) {
+        console.warn(`[${this.chainId}] WARNING: Operator address mismatch! Config: ${cfg.operator.address}, Derived: ${this.operatorWallet.address}`);
+      }
+    }
+
     // Initialize broker contract if address provided
     if (cfg.brokerAddress) {
-      this.brokerContract = new ethers.Contract(cfg.brokerAddress, BROKER_ABI, this.provider);
+      this.brokerContract = new ethers.Contract(cfg.brokerAddress, BROKER_ABI, this.provider) as unknown as IUnicitySwapBroker;
       console.log(`[${this.chainId}] Initialized broker contract at ${cfg.brokerAddress}`);
     }
   }
@@ -391,6 +466,68 @@ export class EvmPlugin implements ChainPlugin {
   }
 
   /**
+   * Generate operator signature for native currency operations.
+   * Matches the signature verification in UnicitySwapBroker contract.
+   *
+   * @param dealId Unique deal identifier
+   * @param payback Address to receive surplus/refund
+   * @param recipient Address to receive swap amount (address(0) for revert)
+   * @param feeRecipient Address to receive fee
+   * @param amount Swap amount (0 for revert)
+   * @param fees Fee amount
+   * @param escrowAddress The escrow EOA address that will call the contract
+   * @returns ECDSA signature from operator
+   */
+  private async generateOperatorSignature(
+    dealId: string,
+    payback: string,
+    recipient: string,
+    feeRecipient: string,
+    amount: string,
+    fees: string,
+    escrowAddress: string
+  ): Promise<string> {
+    if (!this.operatorWallet) {
+      throw new Error(`Operator wallet not configured for ${this.chainId}`);
+    }
+
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    // Convert dealId to bytes32
+    const dealIdBytes32 = ethers.id(dealId);
+
+    // Convert amounts to wei/smallest unit
+    const amountWei = ethers.parseEther(amount);
+    const feesWei = ethers.parseEther(fees);
+
+    // Construct message hash matching contract's _verifyOperatorSignature
+    // keccak256(abi.encodePacked(address(this), dealId, payback, recipient, feeRecipient, amount, fees, msg.sender))
+    const messageHash = ethers.solidityPackedKeccak256(
+      ['address', 'bytes32', 'address', 'address', 'address', 'uint256', 'uint256', 'address'],
+      [
+        await this.brokerContract.getAddress(),  // Contract address
+        dealIdBytes32,
+        payback,
+        recipient,
+        feeRecipient,
+        amountWei,
+        feesWei,
+        escrowAddress  // The escrow EOA that will call the function
+      ]
+    );
+
+    // Apply Ethereum Signed Message prefix (contract will also apply this)
+    const ethSignedMessageHash = ethers.hashMessage(ethers.getBytes(messageHash));
+
+    // Sign the prefixed hash directly using signDigest (no additional prefix)
+    const signature = this.operatorWallet.signingKey.sign(ethSignedMessageHash).serialized;
+
+    return signature;
+  }
+
+  /**
    * Approve the broker contract to spend ERC20 tokens from an escrow address.
    * Grants unlimited allowance for gas optimization.
    */
@@ -436,7 +573,7 @@ export class EvmPlugin implements ChainPlugin {
     }
 
     const connectedWallet = wallet.connect(this.provider);
-    const brokerWithSigner = this.brokerContract.connect(connectedWallet);
+    const brokerWithSigner = this.brokerContract.connect(connectedWallet) as unknown as IUnicitySwapBroker;
 
     // Convert dealId to bytes32
     const dealIdBytes32 = ethers.id(params.dealId);
@@ -452,6 +589,17 @@ export class EvmPlugin implements ChainPlugin {
       const amountWei = ethers.parseEther(params.amount);
       const feesWei = ethers.parseEther(params.fees);
 
+      // Generate operator signature for native swap
+      const signature = await this.generateOperatorSignature(
+        params.dealId,
+        params.payback,
+        params.recipient,
+        params.feeRecipient,
+        params.amount,
+        params.fees,
+        params.escrow.address  // Escrow EOA will be msg.sender
+      );
+
       tx = await brokerWithSigner.swapNative(
         dealIdBytes32,
         params.payback,
@@ -459,6 +607,7 @@ export class EvmPlugin implements ChainPlugin {
         params.feeRecipient,
         amountWei,
         feesWei,
+        signature,
         { value: balance } // Send entire balance
       );
 
@@ -512,7 +661,7 @@ export class EvmPlugin implements ChainPlugin {
     }
 
     const connectedWallet = wallet.connect(this.provider);
-    const brokerWithSigner = this.brokerContract.connect(connectedWallet);
+    const brokerWithSigner = this.brokerContract.connect(connectedWallet) as unknown as IUnicitySwapBroker;
 
     // Convert dealId to bytes32
     const dealIdBytes32 = ethers.id(params.dealId);
@@ -524,11 +673,23 @@ export class EvmPlugin implements ChainPlugin {
       const balance = await this.provider.getBalance(params.escrow.address);
       const feesWei = ethers.parseEther(params.fees);
 
+      // Generate operator signature for native revert (recipient=address(0), amount=0)
+      const signature = await this.generateOperatorSignature(
+        params.dealId,
+        params.payback,
+        ethers.ZeroAddress,  // recipient is address(0) for revert
+        params.feeRecipient,
+        '0',  // amount is 0 for revert
+        params.fees,
+        params.escrow.address  // Escrow EOA will be msg.sender
+      );
+
       tx = await brokerWithSigner.revertNative(
         dealIdBytes32,
         params.payback,
         params.feeRecipient,
         feesWei,
+        signature,
         { value: balance } // Send entire balance
       );
 
@@ -553,6 +714,74 @@ export class EvmPlugin implements ChainPlugin {
       );
 
       console.log(`[${this.chainId}] ERC20 revert via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    }
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString(),
+      nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
+    };
+  }
+
+  /**
+   * Execute post-deal refund via broker contract.
+   * Used for cleaning up late deposits or leftover funds after deal closure.
+   * For native: sends all escrow balance as msg.value.
+   * For ERC20: broker pulls from escrow (must be pre-approved).
+   */
+  async refundViaBroker(params: BrokerRefundParams): Promise<SubmittedTx> {
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    const wallet = this.wallets.get(params.escrow.address);
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
+    }
+
+    const connectedWallet = wallet.connect(this.provider);
+    const brokerWithSigner = this.brokerContract.connect(connectedWallet) as unknown as IUnicitySwapBroker;
+
+    // Convert dealId to bytes32 (used for tracking only)
+    const dealIdBytes32 = ethers.id(params.dealId);
+
+    let tx;
+
+    if (!params.currency) {
+      // Native currency refund
+      const balance = await this.provider.getBalance(params.escrow.address);
+      const feesWei = ethers.parseEther(params.fees);
+
+      tx = await brokerWithSigner.refundNative(
+        dealIdBytes32,
+        params.payback,
+        params.feeRecipient,
+        feesWei,
+        { value: balance } // Send entire balance
+      );
+
+      console.log(`[${this.chainId}] Native post-deal refund via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    } else {
+      // ERC20 token refund
+      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
+      if (!assetConfig || !assetConfig.contractAddress) {
+        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      }
+
+      const decimals = assetConfig.decimals || 18;
+      const feesWei = ethers.parseUnits(params.fees, decimals);
+
+      tx = await brokerWithSigner.refundERC20(
+        assetConfig.contractAddress,
+        dealIdBytes32,
+        params.escrow.address,  // Escrow address (source of funds)
+        params.payback,
+        params.feeRecipient,
+        feesWei
+      );
+
+      console.log(`[${this.chainId}] ERC20 post-deal refund via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
     }
 
     return {

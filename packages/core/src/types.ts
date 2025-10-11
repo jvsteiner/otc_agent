@@ -12,7 +12,7 @@
  */
 export type ChainId =
   | 'UNICITY'
-  | 'ETH' | 'POLYGON' | 'BASE' | 'SOLANA' | 'BTC'
+  | 'ETH' | 'POLYGON' | 'BASE' | 'SEPOLIA' | 'SOLANA' | 'BTC'
   | `EVM:${string}`
   | `CUSTOM:${string}`;
 
@@ -180,7 +180,7 @@ export interface DealSideState {
  * Identifies the purpose of a queued transaction.
  * Used to prioritize and track different types of payouts.
  */
-export type QueuePurpose = 'SWAP_PAYOUT' | 'OP_COMMISSION' | 'GAS_REIMBURSEMENT' | 'SURPLUS_REFUND' | 'TIMEOUT_REFUND' | 'GAS_REFUND_TO_TANK';
+export type QueuePurpose = 'SWAP_PAYOUT' | 'OP_COMMISSION' | 'GAS_REIMBURSEMENT' | 'SURPLUS_REFUND' | 'TIMEOUT_REFUND' | 'GAS_REFUND_TO_TANK' | 'BROKER_SWAP' | 'BROKER_REVERT' | 'BROKER_REFUND';
 
 /**
  * Execution phase for UTXO-based chains.
@@ -246,6 +246,16 @@ export interface QueueItem {
   createdAt: string;
   /** Reference to submitted transaction if broadcasted */
   submittedTx?: TxRef;
+
+  // Broker-specific fields (for BROKER_SWAP and BROKER_REVERT)
+  /** Payback address for surplus/refunds (broker operations) */
+  payback?: string;
+  /** Recipient address for swap amount (broker swap only) */
+  recipient?: string;
+  /** Fee recipient address (broker operations) */
+  feeRecipient?: string;
+  /** Commission/fee amount (broker operations) */
+  fees?: string;
 
   // Gas bump tracking metadata (for stuck transaction handling)
   /** Number of times gas has been bumped for this transaction */

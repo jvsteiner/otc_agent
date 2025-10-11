@@ -51,6 +51,7 @@ async function main() {
     confirmations: parseInt(process.env.ETH_CONFIRMATIONS || '12'),
     collectConfirms: parseInt(process.env.ETH_COLLECT_CONFIRMS || '12'),
     operator: { address: process.env.ETH_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
+    operatorPrivateKey: process.env.ETH_OPERATOR_PRIVATE_KEY,
     hotWalletSeed: process.env.HOT_WALLET_SEED,
     brokerAddress: process.env.ETH_BROKER_ADDRESS, // UnicitySwapBroker contract
   });
@@ -62,6 +63,7 @@ async function main() {
     confirmations: parseInt(process.env.POLYGON_CONFIRMATIONS || '30'),
     collectConfirms: parseInt(process.env.POLYGON_COLLECT_CONFIRMS || '30'),
     operator: { address: process.env.POLYGON_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
+    operatorPrivateKey: process.env.POLYGON_OPERATOR_PRIVATE_KEY,
     hotWalletSeed: process.env.HOT_WALLET_SEED,
     brokerAddress: process.env.POLYGON_BROKER_ADDRESS, // UnicitySwapBroker contract
   });
@@ -73,10 +75,26 @@ async function main() {
     confirmations: parseInt(process.env.BASE_CONFIRMATIONS || '12'),
     collectConfirms: parseInt(process.env.BASE_COLLECT_CONFIRMS || '12'),
     operator: { address: process.env.BASE_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
+    operatorPrivateKey: process.env.BASE_OPERATOR_PRIVATE_KEY,
     hotWalletSeed: process.env.HOT_WALLET_SEED,
     brokerAddress: process.env.BASE_BROKER_ADDRESS, // UnicitySwapBroker contract
   });
-  
+
+  // Register Sepolia testnet plugin (if configured)
+  if (process.env.SEPOLIA_RPC) {
+    await pluginManager.registerPlugin({
+      chainId: 'SEPOLIA',
+      rpcUrl: process.env.SEPOLIA_RPC,
+      confirmations: parseInt(process.env.SEPOLIA_CONFIRMATIONS || '3'),
+      collectConfirms: parseInt(process.env.SEPOLIA_COLLECT_CONFIRMS || '3'),
+      operator: { address: process.env.SEPOLIA_OPERATOR_ADDRESS || process.env.ETH_OPERATOR_ADDRESS || '0x0000000000000000000000000000000000000000' },
+      operatorPrivateKey: process.env.SEPOLIA_OPERATOR_PRIVATE_KEY || process.env.ETH_OPERATOR_PRIVATE_KEY,
+      hotWalletSeed: process.env.HOT_WALLET_SEED,
+      brokerAddress: process.env.SEPOLIA_BROKER_ADDRESS, // UnicitySwapBroker contract
+    });
+    console.log('Sepolia testnet enabled');
+  }
+
   // Initialize engine
   const engine = new Engine(db, pluginManager);
   

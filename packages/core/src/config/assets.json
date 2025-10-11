@@ -164,6 +164,28 @@
       "tokenId": null,
       "decimals": 6,
       "icon": "$"
+    },
+    {
+      "assetName": "Ethereum (Sepolia Testnet)",
+      "assetSymbol": "ETH",
+      "chainId": "SEPOLIA",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 18,
+      "icon": "🧪"
+    },
+    {
+      "assetName": "Tether USD (Sepolia Testnet)",
+      "assetSymbol": "USDT",
+      "chainId": "SEPOLIA",
+      "native": false,
+      "type": "ERC20",
+      "contractAddress": "0xaa8e23fb1079ea71e0a56f48a2aa51851d8433d0",
+      "tokenId": null,
+      "decimals": 6,
+      "icon": "₮"
     }
   ],
   "supportedChains": [
@@ -191,6 +213,11 @@
       "chainId": "SOLANA",
       "name": "Solana",
       "icon": "◎"
+    },
+    {
+      "chainId": "SEPOLIA",
+      "name": "Sepolia Testnet",
+      "icon": "🧪"
     }
   ]
 }

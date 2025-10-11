@@ -22,7 +22,7 @@ export class QueueRepository {
    * @returns Created queue item with generated ID and sequence
    * @throws Error if conflicting operations detected
    */
-  enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq' | 'status'> & { payoutId?: string }): QueueItem {
+  enqueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'seq' | 'status'> & { payoutId?: string; payback?: string; recipient?: string; feeRecipient?: string; fees?: string }): QueueItem {
     // CRITICAL SAFEGUARD #6: Prevent double-spending by blocking conflicting queue items
     // But allow refunds for CLOSED deals (post-close surplus returns)
     if (item.purpose === 'TIMEOUT_REFUND') {
@@ -87,11 +87,12 @@ export class QueueRepository {
     
     const stmt = this.db.prepare(`
       INSERT INTO queue_items (
-        id, dealId, chainId, fromAddr, toAddr, 
-        asset, amount, purpose, phase, seq, status, createdAt, payoutId
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, dealId, chainId, fromAddr, toAddr,
+        asset, amount, purpose, phase, seq, status, createdAt, payoutId,
+        payback, recipient, feeRecipient, fees
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    
+
     stmt.run(
       queueItem.id,
       queueItem.dealId,
@@ -105,7 +106,11 @@ export class QueueRepository {
       queueItem.seq,
       'PENDING',
       queueItem.createdAt,
-      payoutId || null
+      payoutId || null,
+      queueItem.payback || null,
+      queueItem.recipient || null,
+      queueItem.feeRecipient || null,
+      queueItem.fees || null
     );
     
     return queueItem;
@@ -284,6 +289,20 @@ export class QueueRepository {
       createdAt: row.createdAt,
       submittedTx: row.submittedTx ? JSON.parse(row.submittedTx) : undefined,
     };
+
+    // Add broker-specific fields only if present
+    if (row.payback) {
+      item.payback = row.payback;
+    }
+    if (row.recipient) {
+      item.recipient = row.recipient;
+    }
+    if (row.feeRecipient) {
+      item.feeRecipient = row.feeRecipient;
+    }
+    if (row.fees) {
+      item.fees = row.fees;
+    }
 
     // Add gas bump metadata only if present
     if (row.gasBumpAttempts !== undefined) {

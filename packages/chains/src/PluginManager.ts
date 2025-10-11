@@ -50,6 +50,9 @@ export class PluginManager {
       case 'ETH':
         plugin = new EthereumPlugin(config);
         break;
+      case 'SEPOLIA':
+        plugin = new EthereumPlugin(config); // Use EthereumPlugin for Sepolia testnet
+        break;
       case 'POLYGON':
         plugin = new PolygonPlugin(config);
         break;
