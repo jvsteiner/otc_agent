@@ -134,8 +134,8 @@ export class EthereumPlugin implements ChainPlugin {
     });
 
     // Initialize Etherscan API for transaction history
-    // No API key needed for basic queries
-    this.etherscanAPI = new EtherscanAPI(this.chainId);
+    // Use API key from config if provided
+    this.etherscanAPI = new EtherscanAPI(this.chainId, cfg.etherscanApiKey);
 
     // Initialize operator wallet if private key provided
     if (cfg.operatorPrivateKey) {
@@ -1628,6 +1628,115 @@ export class EthereumPlugin implements ChainPlugin {
       nonceOrInputs: tx.nonce?.toString(),
       gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
     };
+  }
+
+  /**
+   * Fetch and decode internal transactions from a broker contract call.
+   * Parses internal transfers to identify swap payouts, commission payments, and refunds.
+   *
+   * Implementation notes:
+   * - Broker contract methods (swapNative, swapERC20, revertNative, etc.) execute multiple internal transfers
+   * - First transfer (index 0) = Swap payout to recipient (or refund to payback for reverts)
+   * - Second transfer (index 1) = Commission to fee recipient
+   * - Third transfer (index 2+) = Surplus/refund to payback address
+   * - Uses Etherscan API which requires API key for production use
+   *
+   * @param txHash - Transaction hash to fetch internal transactions for
+   * @returns Array of decoded internal transfers with type classification
+   */
+  async getInternalTransactions(txHash: string): Promise<Array<{
+    from: string;
+    to: string;
+    value: string;
+    type: 'swap' | 'fee' | 'refund' | 'unknown';
+  }>> {
+    if (!this.etherscanAPI) {
+      console.warn(`[${this.chainId}] Etherscan API not configured, cannot fetch internal transactions`);
+      return [];
+    }
+
+    if (!this.brokerContract) {
+      console.warn(`[${this.chainId}] Broker contract not configured, internal transactions not applicable`);
+      return [];
+    }
+
+    try {
+      console.log(`[${this.chainId}] Fetching internal transactions for ${txHash}`);
+
+      // Fetch internal transactions from Etherscan
+      const internalTxs = await this.etherscanAPI.getInternalTransactions(txHash);
+
+      if (internalTxs.length === 0) {
+        console.log(`[${this.chainId}] No internal transactions found for ${txHash}`);
+        return [];
+      }
+
+      console.log(`[${this.chainId}] Found ${internalTxs.length} internal transactions`);
+
+      // Filter out failed transactions
+      const successfulTxs = internalTxs.filter(tx => !tx.isError);
+
+      if (successfulTxs.length === 0) {
+        console.warn(`[${this.chainId}] All internal transactions failed for ${txHash}`);
+        return [];
+      }
+
+      // Get the broker contract address for filtering
+      const brokerAddress = (await this.brokerContract.getAddress()).toLowerCase();
+
+      // Filter to only include transfers FROM the broker contract (outgoing transfers)
+      const brokerTransfers = successfulTxs.filter(tx =>
+        tx.from.toLowerCase() === brokerAddress &&
+        parseFloat(tx.value) > 0
+      );
+
+      console.log(`[${this.chainId}] Found ${brokerTransfers.length} outgoing broker transfers`);
+
+      // Classify transfers based on position and patterns
+      // Pattern for broker operations:
+      // - swapNative/swapERC20: [recipient (swap), feeRecipient (commission), payback (surplus)]
+      // - revertNative/revertERC20: [feeRecipient (commission), payback (refund)]
+      // - refundNative/refundERC20: [feeRecipient (commission), payback (refund)]
+
+      return brokerTransfers.map((tx, index) => {
+        let type: 'swap' | 'fee' | 'refund' | 'unknown' = 'unknown';
+
+        if (brokerTransfers.length === 1) {
+          // Single transfer - could be swap-only or refund-only (no commission)
+          type = 'refund';
+        } else if (brokerTransfers.length === 2) {
+          // Two transfers: first is fee, second is refund (revert pattern)
+          // OR first is swap, second is fee (swap pattern without surplus)
+          if (index === 0) {
+            // First transfer - assume fee for revert, or swap for successful deal
+            // We can't determine definitively without more context
+            // Default to 'fee' as it's more common in two-transfer scenarios
+            type = 'fee';
+          } else if (index === 1) {
+            type = 'refund';
+          }
+        } else if (brokerTransfers.length >= 3) {
+          // Three or more transfers: swap (recipient), fee (feeRecipient), refund/surplus (payback)
+          if (index === 0) {
+            type = 'swap';
+          } else if (index === 1) {
+            type = 'fee';
+          } else {
+            type = 'refund';
+          }
+        }
+
+        return {
+          from: tx.from,
+          to: tx.to,
+          value: tx.value,
+          type
+        };
+      });
+    } catch (error) {
+      console.error(`[${this.chainId}] Error fetching internal transactions for ${txHash}:`, error);
+      return [];
+    }
   }
 
   getCollectConfirms(): number {

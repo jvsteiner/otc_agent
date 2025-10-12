@@ -2976,14 +2976,16 @@
         function getExplorerUrl(chainId, type, value) {
           const explorers = {
             'UNICITY': { base: 'https://unicity.network', tx: '/tx/', addr: '/address/' },
-            'POLYGON': { base: 'https://polygonscan.com', tx: '/tx/', addr: '/address/' },
             'ETH': { base: 'https://etherscan.io', tx: '/tx/', addr: '/address/' },
+            'SEPOLIA': { base: 'https://sepolia.etherscan.io', tx: '/tx/', addr: '/address/' },
+            'POLYGON': { base: 'https://polygonscan.com', tx: '/tx/', addr: '/address/' },
+            'BSC': { base: 'https://bscscan.com', tx: '/tx/', addr: '/address/' },
             'BASE': { base: 'https://basescan.org', tx: '/tx/', addr: '/address/' }
           };
-          
+
           const explorer = explorers[chainId];
           if (!explorer) return '#';
-          
+
           if (type === 'tx') {
             return explorer.base + explorer.tx + value;
           } else if (type === 'address') {

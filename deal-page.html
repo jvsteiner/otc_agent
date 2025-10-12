@@ -461,6 +461,8 @@
         .tag-commission { background: #fef3c7; color: #92400e; }
         .tag-refund { background: #fce7f3; color: #9f1239; }
         .tag-payout { background: #e0f2fe; color: #0369a1; font-size: 11px; }
+        .tag-broker { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .tag-unknown { background: #f3f4f6; color: #6b7280; }
         .tag-payout-part { 
           background: #f3f4f6; 
           color: #4b5563; 
@@ -2976,14 +2978,16 @@
         function getExplorerUrl(chainId, type, value) {
           const explorers = {
             'UNICITY': { base: 'https://unicity.network', tx: '/tx/', addr: '/address/' },
-            'POLYGON': { base: 'https://polygonscan.com', tx: '/tx/', addr: '/address/' },
             'ETH': { base: 'https://etherscan.io', tx: '/tx/', addr: '/address/' },
+            'SEPOLIA': { base: 'https://sepolia.etherscan.io', tx: '/tx/', addr: '/address/' },
+            'POLYGON': { base: 'https://polygonscan.com', tx: '/tx/', addr: '/address/' },
+            'BSC': { base: 'https://bscscan.com', tx: '/tx/', addr: '/address/' },
             'BASE': { base: 'https://basescan.org', tx: '/tx/', addr: '/address/' }
           };
-          
+
           const explorer = explorers[chainId];
           if (!explorer) return '#';
-          
+
           if (type === 'tx') {
             return explorer.base + explorer.tx + value;
           } else if (type === 'address') {
@@ -3226,7 +3230,10 @@
                     chainId: item.chainId,
                     escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
                     time: item.blockTime || item.createdAt,
-                    blockNumber: item.blockNumber
+                    blockNumber: item.blockNumber,
+                    // Include internal transactions if present (for broker swaps)
+                    internalTransactions: item.internalTransactions,
+                    purpose: item.purpose
                   });
                 }
                 
@@ -3554,11 +3561,12 @@
                 'swap': 'Swap',
                 'commission': 'Fees',
                 'refund': 'Refund',
-                'return': 'Return'
+                'return': 'Return',
+                'unknown': tx.purpose === 'BROKER_SWAP' ? 'Broker Swap' : 'Transfer'
               };
-              
+
               const tagLabel = tagLabels[tx.tag] || tx.tag;
-              let tagHtml = '<span class="tx-tag tag-' + tx.tag + '">' + tagLabel + '</span>';
+              let tagHtml = '<span class="tx-tag tag-' + (tx.purpose === 'BROKER_SWAP' ? 'broker' : tx.tag) + '">' + tagLabel + '</span>';
               
               // Add payout indicator for Unicity transactions that are part of a payout
               if (tx.isPartOfPayout && tx.txIndex && tx.txTotal) {
@@ -3570,7 +3578,40 @@
               if (tx.isPartOfPayout) {
                 itemClasses.push('payout-transaction');
               }
-              
+
+              // Build internal transactions HTML if present (for broker swaps)
+              let internalTxHtml = '';
+              if (tx.internalTransactions && tx.internalTransactions.length > 0 && tx.purpose === 'BROKER_SWAP') {
+                internalTxHtml = '<div class="internal-transactions" style="margin-top: 10px; padding-left: 20px; border-left: 3px solid #667eea;">';
+                internalTxHtml += '<div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;"><strong>Broker Transaction Details:</strong></div>';
+
+                for (const internalTx of tx.internalTransactions) {
+                  const internalType = internalTx.type || 'transfer';
+                  const internalTypeLabel = internalType === 'swap' ? '💱 Swap' :
+                                           internalType === 'fee' ? '💰 Fee' :
+                                           internalType === 'refund' ? '↩️ Refund' : '→';
+
+                  // Format addresses
+                  const internalFromAddr = formatAddress(internalTx.from);
+                  const internalToAddr = formatAddress(internalTx.to);
+
+                  // Create explorer links for internal transaction addresses
+                  const internalFromLink = '<a href="' + getExplorerUrl(chainId, 'address', internalTx.from) + '" target="_blank" class="tx-hash-link" style="font-size: 10px;">' + internalFromAddr + '</a>';
+                  const internalToLink = '<a href="' + getExplorerUrl(chainId, 'address', internalTx.to) + '" target="_blank" class="tx-hash-link" style="font-size: 10px;">' + internalToAddr + '</a>';
+
+                  internalTxHtml += '<div style="margin: 5px 0; padding: 5px; background: #f9fafb; border-radius: 4px; font-size: 10px;">';
+                  internalTxHtml += '<span style="margin-right: 8px;">' + internalTypeLabel + '</span>';
+                  internalTxHtml += '<strong>' + internalTx.value + ' ' + cleanAssetDisplay(tx.asset) + '</strong>';
+                  internalTxHtml += '<div style="margin-top: 3px; color: #6b7280;">';
+                  internalTxHtml += 'From: ' + internalFromLink + '<br>';
+                  internalTxHtml += 'To: ' + internalToLink;
+                  internalTxHtml += '</div>';
+                  internalTxHtml += '</div>';
+                }
+
+                internalTxHtml += '</div>';
+              }
+
               return '<div class="transaction-item ' + itemClasses.join(' ') + '">' +
                 '<div class="tx-left">' +
                   '<div class="tx-header">' +
@@ -3586,6 +3627,7 @@
                   '<div class="tx-hash">' +
                     '<span class="tx-addr-label">TxID:</span> ' + txLink +
                   '</div>' +
+                  internalTxHtml +
                 '</div>' +
                 '<div class="tx-right">' +
                   '<div class="tx-time">' + new Date(tx.time).toLocaleTimeString() + '</div>' +

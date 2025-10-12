@@ -23,6 +23,23 @@ interface Transaction {
 }
 
 /**
+ * Internal transaction data structure returned by Etherscan API.
+ */
+interface InternalTransaction {
+  hash: string;
+  blockNumber: string;
+  timeStamp: string;
+  from: string;
+  to: string;
+  value: string;
+  contractAddress: string;
+  type: string;
+  traceId: string;
+  isError: string;
+  errCode: string;
+}
+
+/**
  * Etherscan API response structure.
  */
 interface EtherscanResponse {
@@ -44,19 +61,24 @@ export class EtherscanAPI {
     const envKeyMap: Record<string, string> = {
       'ETH': 'ETHERSCAN_API_KEY',
       'ETHEREUM': 'ETHERSCAN_API_KEY',
+      'SEPOLIA': 'ETHERSCAN_API_KEY',
       'POLYGON': 'POLYGONSCAN_API_KEY',
       'MATIC': 'POLYGONSCAN_API_KEY',
-      'BASE': 'BASESCAN_API_KEY'
+      'BASE': 'BASESCAN_API_KEY',
+      'BSC': 'BSCSCAN_API_KEY'
     };
-    
+
     const envKey = envKeyMap[chainId.toUpperCase()];
     this.apiKey = apiKey || (envKey && process.env[envKey]) || undefined;
-    
+
     // Map chain IDs to Etherscan API endpoints
     switch (chainId.toUpperCase()) {
       case 'ETH':
       case 'ETHEREUM':
         this.apiUrl = 'https://api.etherscan.io/api';
+        break;
+      case 'SEPOLIA':
+        this.apiUrl = 'https://api-sepolia.etherscan.io/api';
         break;
       case 'POLYGON':
       case 'MATIC':
@@ -64,6 +86,9 @@ export class EtherscanAPI {
         break;
       case 'BASE':
         this.apiUrl = 'https://api.basescan.org/api';
+        break;
+      case 'BSC':
+        this.apiUrl = 'https://api.bscscan.com/api';
         break;
       default:
         // Default to Ethereum
@@ -246,6 +271,66 @@ export class EtherscanAPI {
       return [];
     } catch (error) {
       console.error('Failed to fetch ERC20 transfers:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Fetch internal transactions for a specific transaction hash.
+   * Internal transactions are transfers that occur within smart contract execution.
+   * Used to decode broker contract calls into individual transfer operations.
+   *
+   * @param txHash - Transaction hash to fetch internal transactions for
+   * @returns Array of internal transactions
+   */
+  async getInternalTransactions(
+    txHash: string
+  ): Promise<Array<{
+    from: string;
+    to: string;
+    value: string;
+    type: string;
+    isError: boolean;
+  }>> {
+    try {
+      const params = new URLSearchParams({
+        module: 'account',
+        action: 'txlistinternal',
+        txhash: txHash,
+      });
+
+      if (this.apiKey) {
+        params.append('apikey', this.apiKey);
+      }
+
+      const response = await fetch(`${this.apiUrl}?${params.toString()}`);
+      const data = await response.json() as EtherscanResponse;
+
+      // Check for API errors
+      if (data.message && data.message.includes('deprecated V1 endpoint')) {
+        console.error(`Etherscan API error: ${data.message}. API key required for V2.`);
+        if (!this.apiKey) {
+          console.error(`Please set API key environment variable for ${this.apiUrl}`);
+        }
+        return [];
+      }
+
+      if (data.status === '1' && Array.isArray(data.result)) {
+        return (data.result as unknown as InternalTransaction[]).map((tx: InternalTransaction) => ({
+          from: tx.from,
+          to: tx.to,
+          value: ethers.formatEther(tx.value),
+          type: tx.type,
+          isError: tx.isError === '1'
+        }));
+      } else if (data.message === 'No transactions found') {
+        return [];
+      } else {
+        console.warn('Etherscan API response for internal transactions:', data.message);
+        return [];
+      }
+    } catch (error) {
+      console.error('Failed to fetch internal transactions from Etherscan:', error);
       return [];
     }
   }

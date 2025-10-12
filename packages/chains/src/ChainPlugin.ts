@@ -32,6 +32,7 @@ export interface ChainConfig {
   feePayerKeyRef?: string;  // optional fee payer for gas top-ups
   database?: any;           // Optional database reference for persistence
   brokerAddress?: string;   // UnicitySwapBroker contract address (for EVM chains)
+  etherscanApiKey?: string; // Etherscan API key for fetching transaction details (optional)
 }
 
 /**
@@ -326,4 +327,21 @@ export interface ChainPlugin {
    * @returns Number of confirmations required for finality
    */
   getConfirmationThreshold(): number;
+
+  /**
+   * Fetch and decode internal transactions from a broker contract call.
+   * Used to display detailed transaction history showing internal transfers:
+   * - Swap payout to recipient
+   * - Commission payment to fee recipient
+   * - Refund/surplus to payback address
+   *
+   * @param txHash - Transaction hash to fetch internal transactions for
+   * @returns Array of decoded internal transfers with type classification
+   */
+  getInternalTransactions?(txHash: string): Promise<Array<{
+    from: string;
+    to: string;
+    value: string;
+    type: 'swap' | 'fee' | 'refund' | 'unknown';
+  }>>;
 }

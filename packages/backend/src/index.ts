@@ -54,6 +54,7 @@ async function main() {
     operatorPrivateKey: process.env.ETH_OPERATOR_PRIVATE_KEY,
     hotWalletSeed: process.env.HOT_WALLET_SEED,
     brokerAddress: process.env.ETH_BROKER_ADDRESS, // UnicitySwapBroker contract
+    etherscanApiKey: process.env.ETHERSCAN_API_KEY,
   });
   
   // Register Polygon plugin (always enabled with default or configured RPC)
@@ -66,6 +67,7 @@ async function main() {
     operatorPrivateKey: process.env.POLYGON_OPERATOR_PRIVATE_KEY,
     hotWalletSeed: process.env.HOT_WALLET_SEED,
     brokerAddress: process.env.POLYGON_BROKER_ADDRESS, // UnicitySwapBroker contract
+    etherscanApiKey: process.env.POLYGONSCAN_API_KEY,
   });
 
   // Register Base plugin (always enabled with default or configured RPC)
@@ -78,6 +80,7 @@ async function main() {
     operatorPrivateKey: process.env.BASE_OPERATOR_PRIVATE_KEY,
     hotWalletSeed: process.env.HOT_WALLET_SEED,
     brokerAddress: process.env.BASE_BROKER_ADDRESS, // UnicitySwapBroker contract
+    etherscanApiKey: process.env.BASESCAN_API_KEY,
   });
 
   // Register Sepolia testnet plugin (if configured)
@@ -91,6 +94,7 @@ async function main() {
       operatorPrivateKey: process.env.SEPOLIA_OPERATOR_PRIVATE_KEY || process.env.ETH_OPERATOR_PRIVATE_KEY,
       hotWalletSeed: process.env.HOT_WALLET_SEED,
       brokerAddress: process.env.SEPOLIA_BROKER_ADDRESS, // UnicitySwapBroker contract
+      etherscanApiKey: process.env.SEPOLIASCAN_API_KEY || process.env.ETHERSCAN_API_KEY,
     });
     console.log('Sepolia testnet enabled');
   }
@@ -106,6 +110,7 @@ async function main() {
       operatorPrivateKey: process.env.BSC_OPERATOR_PRIVATE_KEY,
       hotWalletSeed: process.env.HOT_WALLET_SEED,
       brokerAddress: process.env.BSC_BROKER_ADDRESS, // UnicitySwapBroker contract
+      etherscanApiKey: process.env.BSCSCAN_API_KEY,
     });
     console.log('BSC enabled');
   }

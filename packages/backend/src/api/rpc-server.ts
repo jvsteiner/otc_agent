@@ -49,6 +49,20 @@ interface SendInviteParams {
  * JSON-RPC server that exposes OTC broker functionality via HTTP.
  * Handles deal creation, party management, status queries, and serves web pages.
  */
+/**
+ * Retry state for internal transaction fetching
+ */
+interface InternalTxRetryState {
+  txid: string;
+  chainId: string;
+  firstAttempt: number;  // Timestamp of first attempt
+  lastAttempt: number;   // Timestamp of last attempt
+  retryCount: number;    // Number of retries
+  nextRetryAt: number;   // When to retry next (timestamp)
+  isPending: boolean;    // Whether retry is still pending
+  result?: any[];        // Cached successful result
+}
+
 export class RpcServer {
   private app: express.Application;
   private dealRepo: DealRepository;
@@ -56,6 +70,15 @@ export class RpcServer {
   private payoutRepo: PayoutRepository;
   private pluginManager: PluginManager;
   private emailService: EmailService;
+
+  // Internal transaction retry cache
+  private internalTxCache: Map<string, InternalTxRetryState> = new Map();
+  private retryWorkerInterval: NodeJS.Timeout | null = null;
+
+  // Retry configuration
+  private readonly RETRY_INTERVALS = [30000, 60000, 120000, 300000, 600000]; // 30s, 1m, 2m, 5m, 10m
+  private readonly MAX_RETRY_AGE = 900000; // 15 minutes
+  private readonly RETRY_WORKER_INTERVAL = 60000; // Check every 60 seconds
 
   constructor(private db: DB, pluginManager: PluginManager) {
     this.app = express();
@@ -65,8 +88,9 @@ export class RpcServer {
     this.payoutRepo = new PayoutRepository(db);
     this.pluginManager = pluginManager;
     this.emailService = new EmailService(db);
-    
+
     this.setupRoutes();
+    this.startRetryWorker();
   }
 
   /**
@@ -432,18 +456,18 @@ export class RpcServer {
     return { ok: true };
   }
 
-  private async getStatus(params: StatusParams) {
+  private async getStatus(params: StatusParams): Promise<any> {
     const deal = this.dealRepo.get(params.dealId);
     if (!deal) {
       throw new Error('Deal not found');
     }
-    
+
     // Get all queue items (transactions) for this deal
     const queueItems = this.queueRepo.getByDeal(params.dealId);
-    
+
     // Get payouts for this deal
     const payouts = this.payoutRepo.getPayoutsByDealId(params.dealId);
-    
+
     // Build instructions
     const instructions = {
       sideA: [] as any[],
@@ -565,14 +589,16 @@ export class RpcServer {
     }
     
     // Tag transactions properly and associate with payouts
-    const taggedTransactions = queueItems.map(item => {
+    // Also fetch internal transactions for broker contract calls
+    const taggedTransactions = await Promise.all(queueItems.map(async (item) => {
       // Find associated payout if exists
       const associatedPayout = payouts.find(p => {
         const payoutQueueItems = this.payoutRepo.getQueueItemsByPayoutId(p.payoutId);
         return payoutQueueItems.some(qi => qi.id === item.id);
       });
-      
-      return {
+
+      // Base transaction data
+      const taggedTx: any = {
         ...item,
         tag: item.purpose === 'SWAP_PAYOUT' ? 'swap' :
              item.purpose === 'OP_COMMISSION' ? 'commission' :
@@ -589,7 +615,84 @@ export class RpcServer {
           minConfirmations: associatedPayout.minConfirmations
         } : undefined
       };
-    });
+
+      // Fetch internal transactions for broker contract calls
+      // Only applicable for EVM chains with broker contracts
+      if (item.submittedTx?.txid &&
+          (item.purpose === 'BROKER_SWAP' ||
+           item.purpose === 'BROKER_REVERT' ||
+           item.purpose === 'BROKER_REFUND')) {
+
+        try {
+          // First check the cache
+          const cacheKey = `${item.chainId}:${item.submittedTx.txid}`;
+          const cachedState = this.internalTxCache.get(cacheKey);
+
+          if (cachedState && cachedState.result) {
+            // We have cached results!
+            console.log(`[${item.chainId}] Using cached internal transactions for ${item.submittedTx.txid}`);
+            taggedTx.internalTransactions = cachedState.result;
+            taggedTx.internalTxCached = true;
+          } else {
+            // Get the plugin for the chain ID
+            const plugin = this.pluginManager.getPlugin(item.chainId);
+
+            // Check if plugin supports getInternalTransactions
+            if (plugin && typeof plugin.getInternalTransactions === 'function') {
+              console.log(`[${item.chainId}] Fetching internal transactions for broker call ${item.submittedTx.txid}`);
+              const internalTxs = await plugin.getInternalTransactions(item.submittedTx.txid);
+
+              if (internalTxs && internalTxs.length > 0) {
+                // Found internal transactions, cache them
+                taggedTx.internalTransactions = internalTxs;
+                console.log(`[${item.chainId}] Found ${internalTxs.length} internal transactions for ${item.submittedTx.txid}`);
+
+                // Update cache if we were retrying
+                if (cachedState) {
+                  cachedState.result = internalTxs;
+                  cachedState.isPending = false;
+                }
+              } else if (this.isRecentTransaction(item.submittedTx.submittedAt)) {
+                // Empty result for a recent transaction - set up retry
+                console.log(`[${item.chainId}] No internal transactions found for recent tx ${item.submittedTx.txid}, scheduling retry`);
+
+                // Create or update retry state
+                const retryState = this.getOrCreateRetryState(item.submittedTx.txid, item.chainId);
+
+                // Mark that internal transactions are pending
+                taggedTx.internalTxPending = true;
+                taggedTx.internalTxRetryInfo = {
+                  retryCount: retryState.retryCount,
+                  nextRetryIn: Math.max(0, retryState.nextRetryAt - Date.now())
+                };
+              } else if (cachedState && cachedState.isPending) {
+                // Still retrying
+                taggedTx.internalTxPending = true;
+                taggedTx.internalTxRetryInfo = {
+                  retryCount: cachedState.retryCount,
+                  nextRetryIn: Math.max(0, cachedState.nextRetryAt - Date.now())
+                };
+              }
+            }
+          }
+        } catch (error) {
+          // Log error but don't break the status response
+          console.error(`[${item.chainId}] Error fetching internal transactions for ${item.submittedTx?.txid}:`, error);
+
+          // If it's a recent transaction, set up retry
+          if (item.submittedTx?.txid && this.isRecentTransaction(item.submittedTx.submittedAt)) {
+            const retryState = this.getOrCreateRetryState(item.submittedTx.txid, item.chainId);
+            taggedTx.internalTxPending = true;
+            taggedTx.internalTxRetryInfo = {
+              retryCount: retryState.retryCount,
+              nextRetryIn: Math.max(0, retryState.nextRetryAt - Date.now())
+            };
+          }
+        }
+      }
+
+      return taggedTx;
+    }));
     
     // Enrich deposits with resolution status
     const enrichDepositsWithResolution = (deposits: any[] = []) => {
@@ -2063,6 +2166,8 @@ export class RpcServer {
         .tag-commission { background: #fef3c7; color: #92400e; }
         .tag-refund { background: #fce7f3; color: #9f1239; }
         .tag-payout { background: #e0f2fe; color: #0369a1; font-size: 11px; }
+        .tag-broker { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .tag-unknown { background: #f3f4f6; color: #6b7280; }
         .tag-payout-part { 
           background: #f3f4f6; 
           color: #4b5563; 
@@ -4807,14 +4912,16 @@ export class RpcServer {
         function getExplorerUrl(chainId, type, value) {
           const explorers = {
             'UNICITY': { base: 'https://unicity.network', tx: '/tx/', addr: '/address/' },
-            'POLYGON': { base: 'https://polygonscan.com', tx: '/tx/', addr: '/address/' },
             'ETH': { base: 'https://etherscan.io', tx: '/tx/', addr: '/address/' },
+            'SEPOLIA': { base: 'https://sepolia.etherscan.io', tx: '/tx/', addr: '/address/' },
+            'POLYGON': { base: 'https://polygonscan.com', tx: '/tx/', addr: '/address/' },
+            'BSC': { base: 'https://bscscan.com', tx: '/tx/', addr: '/address/' },
             'BASE': { base: 'https://basescan.org', tx: '/tx/', addr: '/address/' }
           };
-          
+
           const explorer = explorers[chainId];
           if (!explorer) return '#';
-          
+
           if (type === 'tx') {
             return explorer.base + explorer.tx + value;
           } else if (type === 'address') {
@@ -5057,7 +5164,10 @@ export class RpcServer {
                     chainId: item.chainId,
                     escrow: isFromYourEscrow ? 'Your escrow' : 'Their escrow',
                     time: item.blockTime || item.createdAt,
-                    blockNumber: item.blockNumber
+                    blockNumber: item.blockNumber,
+                    // Include internal transactions if present (for broker swaps)
+                    internalTransactions: item.internalTransactions,
+                    purpose: item.purpose
                   });
                 }
                 
@@ -5385,11 +5495,12 @@ export class RpcServer {
                 'swap': 'Swap',
                 'commission': 'Fees',
                 'refund': 'Refund',
-                'return': 'Return'
+                'return': 'Return',
+                'unknown': tx.purpose === 'BROKER_SWAP' ? 'Broker Swap' : 'Transfer'
               };
-              
+
               const tagLabel = tagLabels[tx.tag] || tx.tag;
-              let tagHtml = '<span class="tx-tag tag-' + tx.tag + '">' + tagLabel + '</span>';
+              let tagHtml = '<span class="tx-tag tag-' + (tx.purpose === 'BROKER_SWAP' ? 'broker' : tx.tag) + '">' + tagLabel + '</span>';
               
               // Add payout indicator for Unicity transactions that are part of a payout
               if (tx.isPartOfPayout && tx.txIndex && tx.txTotal) {
@@ -5401,7 +5512,40 @@ export class RpcServer {
               if (tx.isPartOfPayout) {
                 itemClasses.push('payout-transaction');
               }
-              
+
+              // Build internal transactions HTML if present (for broker swaps)
+              let internalTxHtml = '';
+              if (tx.internalTransactions && tx.internalTransactions.length > 0 && tx.purpose === 'BROKER_SWAP') {
+                internalTxHtml = '<div class="internal-transactions" style="margin-top: 10px; padding-left: 20px; border-left: 3px solid #667eea;">';
+                internalTxHtml += '<div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;"><strong>Broker Transaction Details:</strong></div>';
+
+                for (const internalTx of tx.internalTransactions) {
+                  const internalType = internalTx.type || 'transfer';
+                  const internalTypeLabel = internalType === 'swap' ? '💱 Swap' :
+                                           internalType === 'fee' ? '💰 Fee' :
+                                           internalType === 'refund' ? '↩️ Refund' : '→';
+
+                  // Format addresses
+                  const internalFromAddr = formatAddress(internalTx.from);
+                  const internalToAddr = formatAddress(internalTx.to);
+
+                  // Create explorer links for internal transaction addresses
+                  const internalFromLink = '<a href="' + getExplorerUrl(chainId, 'address', internalTx.from) + '" target="_blank" class="tx-hash-link" style="font-size: 10px;">' + internalFromAddr + '</a>';
+                  const internalToLink = '<a href="' + getExplorerUrl(chainId, 'address', internalTx.to) + '" target="_blank" class="tx-hash-link" style="font-size: 10px;">' + internalToAddr + '</a>';
+
+                  internalTxHtml += '<div style="margin: 5px 0; padding: 5px; background: #f9fafb; border-radius: 4px; font-size: 10px;">';
+                  internalTxHtml += '<span style="margin-right: 8px;">' + internalTypeLabel + '</span>';
+                  internalTxHtml += '<strong>' + internalTx.value + ' ' + cleanAssetDisplay(tx.asset) + '</strong>';
+                  internalTxHtml += '<div style="margin-top: 3px; color: #6b7280;">';
+                  internalTxHtml += 'From: ' + internalFromLink + '<br>';
+                  internalTxHtml += 'To: ' + internalToLink;
+                  internalTxHtml += '</div>';
+                  internalTxHtml += '</div>';
+                }
+
+                internalTxHtml += '</div>';
+              }
+
               return '<div class="transaction-item ' + itemClasses.join(' ') + '">' +
                 '<div class="tx-left">' +
                   '<div class="tx-header">' +
@@ -5417,6 +5561,7 @@ export class RpcServer {
                   '<div class="tx-hash">' +
                     '<span class="tx-addr-label">TxID:</span> ' + txLink +
                   '</div>' +
+                  internalTxHtml +
                 '</div>' +
                 '<div class="tx-right">' +
                   '<div class="tx-time">' + new Date(tx.time).toLocaleTimeString() + '</div>' +
@@ -5685,9 +5830,143 @@ export class RpcServer {
     }
   }
 
+  /**
+   * Starts the background worker that retries failed internal transaction fetches
+   */
+  private startRetryWorker(): void {
+    console.log('[InternalTxRetry] Starting background retry worker');
+
+    // Run immediately on start
+    this.processRetryQueue();
+
+    // Then run every 60 seconds
+    this.retryWorkerInterval = setInterval(() => {
+      this.processRetryQueue();
+    }, this.RETRY_WORKER_INTERVAL);
+  }
+
+  /**
+   * Stops the retry worker (useful for cleanup)
+   */
+  private stopRetryWorker(): void {
+    if (this.retryWorkerInterval) {
+      clearInterval(this.retryWorkerInterval);
+      this.retryWorkerInterval = null;
+      console.log('[InternalTxRetry] Stopped background retry worker');
+    }
+  }
+
+  /**
+   * Process the retry queue, attempting to fetch internal transactions for pending items
+   */
+  private async processRetryQueue(): Promise<void> {
+    const now = Date.now();
+    const pendingRetries: InternalTxRetryState[] = [];
+
+    // Find items that need retry
+    for (const [key, state] of this.internalTxCache.entries()) {
+      if (state.isPending && now >= state.nextRetryAt) {
+        // Check if it's too old (> 15 minutes)
+        if (now - state.firstAttempt > this.MAX_RETRY_AGE) {
+          console.log(`[InternalTxRetry] Giving up on ${state.txid} after 15 minutes`);
+          state.isPending = false;
+          continue;
+        }
+        pendingRetries.push(state);
+      }
+    }
+
+    if (pendingRetries.length === 0) {
+      return;
+    }
+
+    console.log(`[InternalTxRetry] Processing ${pendingRetries.length} pending retries`);
+
+    // Process each retry
+    for (const state of pendingRetries) {
+      try {
+        const plugin = this.pluginManager.getPlugin(state.chainId as ChainId);
+
+        if (plugin && typeof plugin.getInternalTransactions === 'function') {
+          console.log(`[InternalTxRetry] Retrying ${state.txid} (attempt ${state.retryCount + 1})`);
+
+          const internalTxs = await plugin.getInternalTransactions(state.txid);
+
+          if (internalTxs && internalTxs.length > 0) {
+            // Success! Cache the result
+            console.log(`[InternalTxRetry] SUCCESS: Found ${internalTxs.length} internal transactions for ${state.txid}`);
+            state.result = internalTxs;
+            state.isPending = false;
+            state.lastAttempt = now;
+          } else {
+            // Still empty, schedule next retry
+            state.retryCount++;
+            state.lastAttempt = now;
+
+            // Calculate next retry time using exponential backoff
+            const retryInterval = this.RETRY_INTERVALS[Math.min(state.retryCount - 1, this.RETRY_INTERVALS.length - 1)];
+            state.nextRetryAt = now + retryInterval;
+
+            console.log(`[InternalTxRetry] Still empty for ${state.txid}, will retry in ${retryInterval / 1000}s`);
+          }
+        }
+      } catch (error) {
+        console.error(`[InternalTxRetry] Error retrying ${state.txid}:`, error);
+        // On error, schedule next retry
+        state.retryCount++;
+        state.lastAttempt = now;
+        const retryInterval = this.RETRY_INTERVALS[Math.min(state.retryCount - 1, this.RETRY_INTERVALS.length - 1)];
+        state.nextRetryAt = now + retryInterval;
+      }
+    }
+  }
+
+  /**
+   * Get or create a retry state for a transaction
+   */
+  private getOrCreateRetryState(txid: string, chainId: string | ChainId): InternalTxRetryState {
+    const key = `${chainId}:${txid}`;
+
+    if (!this.internalTxCache.has(key)) {
+      const now = Date.now();
+      this.internalTxCache.set(key, {
+        txid,
+        chainId: chainId as string,
+        firstAttempt: now,
+        lastAttempt: now,
+        retryCount: 0,
+        nextRetryAt: now + this.RETRY_INTERVALS[0], // First retry in 30s
+        isPending: true
+      });
+    }
+
+    return this.internalTxCache.get(key)!;
+  }
+
+  /**
+   * Check if a transaction is recent (< 10 minutes old)
+   */
+  private isRecentTransaction(submittedAt?: string | number): boolean {
+    if (!submittedAt) return false;
+
+    const txTime = typeof submittedAt === 'string' ? new Date(submittedAt).getTime() : submittedAt;
+    const now = Date.now();
+    const age = now - txTime;
+
+    // Consider transactions < 10 minutes old as recent
+    return age < 600000; // 10 minutes
+  }
+
   start(port: number) {
     this.app.listen(port, () => {
       console.log(`RPC server listening on port ${port}`);
     });
+  }
+
+  /**
+   * Clean up on server shutdown
+   */
+  stop(): void {
+    this.stopRetryWorker();
   }
 }
