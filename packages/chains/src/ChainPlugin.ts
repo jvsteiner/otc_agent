@@ -303,4 +303,13 @@ export interface ChainPlugin {
    * @returns Transaction submission details
    */
   refundViaBroker?(params: BrokerRefundParams): Promise<SubmittedTx>;
+
+  /**
+   * Check if broker contract is configured and available for this chain.
+   * Returns true only if the broker contract address is set and initialized.
+   * Used by Engine to decide between broker-based or queue-based swap execution.
+   *
+   * @returns True if broker is available, false otherwise
+   */
+  isBrokerAvailable?(): boolean;
 }

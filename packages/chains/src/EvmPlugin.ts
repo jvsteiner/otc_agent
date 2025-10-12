@@ -466,6 +466,14 @@ export class EvmPlugin implements ChainPlugin {
   }
 
   /**
+   * Check if broker contract is configured and available.
+   * Returns true only if brokerContract is initialized (requires brokerAddress in config).
+   */
+  isBrokerAvailable(): boolean {
+    return !!this.brokerContract;
+  }
+
+  /**
    * Generate operator signature for native currency operations.
    * Matches the signature verification in UnicitySwapBroker contract.
    *

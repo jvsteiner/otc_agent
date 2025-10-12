@@ -3153,6 +3153,22 @@ export class Engine {
         phase: item.phase
       });
 
+      // CRITICAL FIX: Handle BROKER_SWAP, BROKER_REVERT, and BROKER_REFUND separately (they don't use nonce logic)
+      if (item.purpose === 'BROKER_SWAP') {
+        console.log(`[QueueProcessor] Routing to submitBrokerSwap for item ${item.id}`);
+        return this.submitBrokerSwap(item, deal);
+      }
+
+      if (item.purpose === 'BROKER_REVERT') {
+        console.log(`[QueueProcessor] Routing to submitBrokerRevert for item ${item.id}`);
+        return this.submitBrokerRevert(item, deal);
+      }
+
+      if (item.purpose === 'BROKER_REFUND') {
+        console.log(`[QueueProcessor] Routing to submitBrokerRefund for item ${item.id}`);
+        return this.submitBrokerRefund(item, deal);
+      }
+
       const plugin = this.pluginManager.getPlugin(item.chainId);
       console.log(`[QueueProcessor] Using plugin for chain ${item.chainId}: ${plugin.constructor.name}`);
 
