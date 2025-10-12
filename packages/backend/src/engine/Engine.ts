@@ -78,11 +78,13 @@ export class Engine {
         privateKey: tankPrivateKey,
         fundAmounts: {
           ETH: process.env.ETH_GAS_FUND_AMOUNT || '0.01',
-          POLYGON: process.env.POLYGON_GAS_FUND_AMOUNT || '0.5'
+          POLYGON: process.env.POLYGON_GAS_FUND_AMOUNT || '0.5',
+          SEPOLIA: process.env.SEPOLIA_GAS_FUND_AMOUNT || '0.01'
         },
         lowThresholds: {
           ETH: process.env.ETH_LOW_GAS_THRESHOLD || '0.1',
-          POLYGON: process.env.POLYGON_LOW_GAS_THRESHOLD || '5'
+          POLYGON: process.env.POLYGON_LOW_GAS_THRESHOLD || '5',
+          SEPOLIA: process.env.SEPOLIA_LOW_GAS_THRESHOLD || '0.1'
         }
       };
       
@@ -90,14 +92,21 @@ export class Engine {
       
       // Initialize tank for configured chains
       const chainConfigs = new Map<string, { rpcUrl: string }>();
-      
+
       // Always configure Ethereum and Polygon with their RPCs (default or configured)
-      chainConfigs.set('ETH', { 
-        rpcUrl: process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com' 
+      chainConfigs.set('ETH', {
+        rpcUrl: process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com'
       });
       chainConfigs.set('POLYGON', {
         rpcUrl: process.env.POLYGON_RPC || 'https://polygon-mainnet.g.alchemy.com/v2/9LkJ1e22_qxEBFxOQ4pD3'
       });
+
+      // Add SEPOLIA testnet for testing
+      if (process.env.SEPOLIA_RPC) {
+        chainConfigs.set('SEPOLIA', {
+          rpcUrl: process.env.SEPOLIA_RPC
+        });
+      }
       
       if (chainConfigs.size > 0) {
         await this.tankManager.init(chainConfigs);
@@ -522,8 +531,9 @@ export class Engine {
         ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
         : (deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString());
       
-      // For lock checking, always use the proper confirmation threshold
-      const lockMinConf = getConfirmationThreshold(deal.alice.chainId);
+      // For lock checking, use the plugin's collect confirms configuration
+      const alicePlugin = this.pluginManager.getPlugin(deal.alice.chainId);
+      const lockMinConf = alicePlugin.getCollectConfirms();
       
       const locks = checkLocks(
         allDeposits,
@@ -658,8 +668,9 @@ export class Engine {
         ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
         : (deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString());
       
-      // For lock checking, always use the proper confirmation threshold
-      const lockMinConfB = getConfirmationThreshold(deal.bob.chainId);
+      // For lock checking, use the plugin's collect confirms configuration
+      const bobPlugin = this.pluginManager.getPlugin(deal.bob.chainId);
+      const lockMinConfB = bobPlugin.getCollectConfirms();
       
       console.log(`[Engine] Calling checkLocks for Bob with:`, {
         depositCount: allDepositsB.length,
@@ -1813,11 +1824,11 @@ export class Engine {
           console.log(`[AtomicSubmit] ✓ IDEMPOTENCY CHECK: ${item.purpose} already executed on-chain!`);
           console.log(`[AtomicSubmit] Found existing tx: ${existingTx.txid} at block ${existingTx.blockNumber}`);
 
-          // Mark as COMPLETED without submitting
+          // Mark as COMPLETED without submitting (reuse plugin variable from line 1720)
           const txRef: any = {
             txid: existingTx.txid,
             chainId: item.chainId,
-            requiredConfirms: getConfirmationThreshold(item.chainId),
+            requiredConfirms: plugin.getConfirmationThreshold(),
             submittedAt: new Date().toISOString(),
             confirms: 999, // High number to indicate it's already confirmed
             status: 'COMPLETED',
@@ -1879,11 +1890,11 @@ export class Engine {
       console.log(`[AtomicSubmit] ✓ Nonce ${tx.nonceOrInputs} validation passed - no duplicates found`);
     }
 
-    // Update queue item with tx info
+    // Update queue item with tx info (reuse plugin variable from line 1720)
     const txRef: any = {
       txid: tx.txid,
       chainId: item.chainId,
-      requiredConfirms: getConfirmationThreshold(item.chainId),
+      requiredConfirms: plugin.getConfirmationThreshold(),
       submittedAt: tx.submittedAt,
       confirms: 0,
       status: 'SUBMITTED',
@@ -1951,11 +1962,11 @@ export class Engine {
         currency: currency,
       });
 
-      // Update queue item status
+      // Update queue item status (reuse plugin variable from beginning of method)
       const txRef: any = {
         txid: result.txid,
         chainId: item.chainId,
-        requiredConfirms: getConfirmationThreshold(item.chainId),
+        requiredConfirms: plugin.getConfirmationThreshold(),
         submittedAt: result.submittedAt,
         confirms: 0,
         status: 'SUBMITTED',
@@ -2013,11 +2024,11 @@ export class Engine {
         currency: currency,
       });
 
-      // Update queue item status
+      // Update queue item status (reuse plugin variable from beginning of method)
       const txRef: any = {
         txid: result.txid,
         chainId: item.chainId,
-        requiredConfirms: getConfirmationThreshold(item.chainId),
+        requiredConfirms: plugin.getConfirmationThreshold(),
         submittedAt: result.submittedAt,
         confirms: 0,
         status: 'SUBMITTED',
@@ -2075,11 +2086,11 @@ export class Engine {
         currency: currency,
       });
 
-      // Update queue item status
+      // Update queue item status (reuse plugin variable from beginning of method)
       const txRef: any = {
         txid: result.txid,
         chainId: item.chainId,
-        requiredConfirms: getConfirmationThreshold(item.chainId),
+        requiredConfirms: plugin.getConfirmationThreshold(),
         submittedAt: result.submittedAt,
         confirms: 0,
         status: 'SUBMITTED',
@@ -3319,11 +3330,11 @@ export class Engine {
         console.log(`[QueueProcessor] ✓ Sequential ordering validated (highest queued: ${highestQueued}, new nonce: ${submittedNonce})`);
       }
 
-      // Update queue item with tx info
+      // Update queue item with tx info (reuse plugin variable from line 3186)
       const txRef: any = {
         txid: tx.txid,
         chainId: item.chainId,
-        requiredConfirms: getConfirmationThreshold(item.chainId),
+        requiredConfirms: plugin.getConfirmationThreshold(),
         submittedAt: tx.submittedAt,
         confirms: 0,  // Initial confirms
         status: 'SUBMITTED',
@@ -3493,7 +3504,7 @@ export class Engine {
       const txRef: any = {
         txid: tx.txid,
         chainId: item.chainId,
-        requiredConfirms: getConfirmationThreshold(item.chainId),
+        requiredConfirms: plugin.getConfirmationThreshold(),
         submittedAt: tx.submittedAt,
         confirms: 0,  // Reset confirms for new submission
         status: 'SUBMITTED',

@@ -21,10 +21,16 @@ export interface TankConfig {
   fundAmounts: {
     ETH: string;
     POLYGON: string;
+    SEPOLIA?: string;
+    BSC?: string;
+    BASE?: string;
   };
   lowThresholds: {
     ETH: string;
     POLYGON: string;
+    SEPOLIA?: string;
+    BSC?: string;
+    BASE?: string;
   };
 }
 

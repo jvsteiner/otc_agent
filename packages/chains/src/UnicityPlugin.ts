@@ -719,4 +719,12 @@ export class UnicityPlugin implements ChainPlugin {
   getOperatorAddress(): string {
     return this.config?.operator?.address || 'alpha1qv003pgutceeewj4fzvpdy58rem3xf6lnlv88ku';
   }
+
+  getCollectConfirms(): number {
+    return this.config.collectConfirms || this.config.confirmations;
+  }
+
+  getConfirmationThreshold(): number {
+    return this.config.confirmations;
+  }
 }

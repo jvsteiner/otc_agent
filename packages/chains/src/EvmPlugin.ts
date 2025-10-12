@@ -799,4 +799,12 @@ export class EvmPlugin implements ChainPlugin {
       gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
     };
   }
+
+  getCollectConfirms(): number {
+    return this.config.collectConfirms || this.config.confirmations;
+  }
+
+  getConfirmationThreshold(): number {
+    return this.config.confirmations;
+  }
 }

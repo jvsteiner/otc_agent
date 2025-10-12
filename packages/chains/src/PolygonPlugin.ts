@@ -23,7 +23,7 @@ export class PolygonPlugin extends EthereumPlugin {
       confirmations: config?.confirmations || 30, // Polygon needs more confirmations
       collectConfirms: config?.collectConfirms || 30,
     };
-    
+
     super(polygonConfig);
   }
 }

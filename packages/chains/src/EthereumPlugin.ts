@@ -40,7 +40,7 @@ interface IUnicitySwapBroker extends ethers.BaseContract {
     amount: bigint,
     fees: bigint,
     operatorSignature: string,
-    overrides?: { value: bigint }
+    overrides?: ethers.Overrides
   ): Promise<ContractTransactionResponse>;
 
   swapERC20(
@@ -60,7 +60,7 @@ interface IUnicitySwapBroker extends ethers.BaseContract {
     feeRecipient: string,
     fees: bigint,
     operatorSignature: string,
-    overrides?: { value: bigint }
+    overrides?: ethers.Overrides
   ): Promise<ContractTransactionResponse>;
 
   revertERC20(
@@ -77,7 +77,7 @@ interface IUnicitySwapBroker extends ethers.BaseContract {
     payback: string,
     feeRecipient: string,
     fees: bigint,
-    overrides?: { value: bigint }
+    overrides?: ethers.Overrides
   ): Promise<ContractTransactionResponse>;
 
   refundERC20(
@@ -1245,7 +1245,7 @@ export class EthereumPlugin implements ChainPlugin {
 
     if (!params.currency) {
       // Native currency swap (ETH, MATIC, etc.)
-      // Get total balance and send it all
+      // Get total balance
       const balance = await this.provider.getBalance(params.escrow.address);
 
       // Parse amounts to wei
@@ -1263,6 +1263,46 @@ export class EthereumPlugin implements ChainPlugin {
         params.escrow.address  // Escrow EOA that will call the function
       );
 
+      // Estimate gas cost BEFORE transaction
+      // Cast to any to access estimateGas (exists on BaseContract but not in typed interface)
+      const estimatedGas = await (brokerWithSigner as any).swapNative.estimateGas(
+        dealIdBytes32,
+        params.payback,
+        params.recipient,
+        params.feeRecipient,
+        amountWei,
+        feesWei,
+        signature,
+        { value: balance } // Use full balance for estimation
+      );
+
+      // Get current gas price
+      const feeData = await this.provider.getFeeData();
+      const gasPrice = feeData.gasPrice || ethers.parseUnits('50', 'gwei');
+
+      // Calculate gas cost with 20% safety buffer
+      const gasCostWithBuffer = estimatedGas * gasPrice * 12n / 10n;
+
+      // Calculate actual msg.value (balance MINUS gas reserve)
+      const msgValue = balance - gasCostWithBuffer;
+
+      // Validate sufficient balance
+      if (msgValue <= 0n) {
+        throw new Error(
+          `Insufficient balance for gas: have ${ethers.formatEther(balance)} ${this.chainId}, ` +
+          `need ${ethers.formatEther(gasCostWithBuffer)} ${this.chainId} for gas`
+        );
+      }
+
+      // For swaps, verify we have enough for swap + fees
+      const totalRequired = amountWei + feesWei;
+      if (msgValue < totalRequired) {
+        throw new Error(
+          `Insufficient balance after gas reserve: have ${ethers.formatEther(msgValue)} ${this.chainId}, ` +
+          `need ${ethers.formatEther(totalRequired)} ${this.chainId} for swap+fees`
+        );
+      }
+
       tx = await brokerWithSigner.swapNative(
         dealIdBytes32,
         params.payback,
@@ -1271,10 +1311,18 @@ export class EthereumPlugin implements ChainPlugin {
         amountWei,
         feesWei,
         signature,  // Operator signature
-        { value: balance } // Send entire balance
+        {
+          value: msgValue,  // Use calculated value, NOT full balance
+          gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
+        }
       );
 
-      console.log(`[${this.chainId}] Native swap via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+      console.log(
+        `[${this.chainId}] Native swap via broker: ${tx.hash}` +
+        ` | Balance: ${ethers.formatEther(balance)}` +
+        ` | msg.value: ${ethers.formatEther(msgValue)}` +
+        ` | Gas reserved: ${ethers.formatEther(gasCostWithBuffer)}`
+      );
     } else {
       // ERC20 token swap
       const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
@@ -1368,16 +1416,61 @@ export class EthereumPlugin implements ChainPlugin {
         params.escrow.address  // Escrow EOA that will call the function
       );
 
+      // Estimate gas cost BEFORE transaction
+      // Cast to any to access estimateGas (exists on BaseContract but not in typed interface)
+      const estimatedGas = await (brokerWithSigner as any).revertNative.estimateGas(
+        dealIdBytes32,
+        params.payback,
+        params.feeRecipient,
+        feesWei,
+        signature,
+        { value: balance } // Use full balance for estimation
+      );
+
+      // Get current gas price
+      const feeData = await this.provider.getFeeData();
+      const gasPrice = feeData.gasPrice || ethers.parseUnits('50', 'gwei');
+
+      // Calculate gas cost with 20% safety buffer
+      const gasCostWithBuffer = estimatedGas * gasPrice * 12n / 10n;
+
+      // Calculate actual msg.value (balance MINUS gas reserve)
+      const msgValue = balance - gasCostWithBuffer;
+
+      // Validate sufficient balance
+      if (msgValue <= 0n) {
+        throw new Error(
+          `Insufficient balance for gas: have ${ethers.formatEther(balance)} ${this.chainId}, ` +
+          `need ${ethers.formatEther(gasCostWithBuffer)} ${this.chainId} for gas`
+        );
+      }
+
+      // For reverts, verify we have enough for fees
+      if (msgValue < feesWei) {
+        throw new Error(
+          `Insufficient balance after gas reserve: have ${ethers.formatEther(msgValue)} ${this.chainId}, ` +
+          `need ${ethers.formatEther(feesWei)} ${this.chainId} for fees`
+        );
+      }
+
       tx = await brokerWithSigner.revertNative(
         dealIdBytes32,
         params.payback,
         params.feeRecipient,
         feesWei,
         signature,  // Operator signature
-        { value: balance } // Send entire balance
+        {
+          value: msgValue,  // Use calculated value, NOT full balance
+          gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
+        }
       );
 
-      console.log(`[${this.chainId}] Native revert via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+      console.log(
+        `[${this.chainId}] Native revert via broker: ${tx.hash}` +
+        ` | Balance: ${ethers.formatEther(balance)}` +
+        ` | msg.value: ${ethers.formatEther(msgValue)}` +
+        ` | Gas reserved: ${ethers.formatEther(gasCostWithBuffer)}`
+      );
     } else {
       // ERC20 token revert
       const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
@@ -1454,15 +1547,59 @@ export class EthereumPlugin implements ChainPlugin {
       const balance = await this.provider.getBalance(params.escrow.address);
       const feesWei = ethers.parseEther(params.fees);
 
+      // Estimate gas cost BEFORE transaction
+      // Cast to any to access estimateGas (exists on BaseContract but not in typed interface)
+      const estimatedGas = await (brokerWithSigner as any).refundNative.estimateGas(
+        dealIdBytes32,
+        params.payback,
+        params.feeRecipient,
+        feesWei,
+        { value: balance } // Use full balance for estimation
+      );
+
+      // Get current gas price
+      const feeData = await this.provider.getFeeData();
+      const gasPrice = feeData.gasPrice || ethers.parseUnits('50', 'gwei');
+
+      // Calculate gas cost with 20% safety buffer
+      const gasCostWithBuffer = estimatedGas * gasPrice * 12n / 10n;
+
+      // Calculate actual msg.value (balance MINUS gas reserve)
+      const msgValue = balance - gasCostWithBuffer;
+
+      // Validate sufficient balance
+      if (msgValue <= 0n) {
+        throw new Error(
+          `Insufficient balance for gas: have ${ethers.formatEther(balance)} ${this.chainId}, ` +
+          `need ${ethers.formatEther(gasCostWithBuffer)} ${this.chainId} for gas`
+        );
+      }
+
+      // For refunds, verify we have enough for fees
+      if (msgValue < feesWei) {
+        throw new Error(
+          `Insufficient balance after gas reserve: have ${ethers.formatEther(msgValue)} ${this.chainId}, ` +
+          `need ${ethers.formatEther(feesWei)} ${this.chainId} for fees`
+        );
+      }
+
       tx = await brokerWithSigner.refundNative(
         dealIdBytes32,
         params.payback,
         params.feeRecipient,
         feesWei,
-        { value: balance } // Send entire balance
+        {
+          value: msgValue,  // Use calculated value, NOT full balance
+          gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
+        }
       );
 
-      console.log(`[${this.chainId}] Native post-deal refund via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+      console.log(
+        `[${this.chainId}] Native post-deal refund via broker: ${tx.hash}` +
+        ` | Balance: ${ethers.formatEther(balance)}` +
+        ` | msg.value: ${ethers.formatEther(msgValue)}` +
+        ` | Gas reserved: ${ethers.formatEther(gasCostWithBuffer)}`
+      );
     } else {
       // ERC20 token refund
       const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
@@ -1491,5 +1628,13 @@ export class EthereumPlugin implements ChainPlugin {
       nonceOrInputs: tx.nonce?.toString(),
       gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
     };
+  }
+
+  getCollectConfirms(): number {
+    return this.config.collectConfirms || this.config.confirmations;
+  }
+
+  getConfirmationThreshold(): number {
+    return this.config.confirmations;
   }
 }

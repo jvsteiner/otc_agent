@@ -23,7 +23,7 @@ export class BasePlugin extends EthereumPlugin {
       confirmations: config?.confirmations || 12,
       collectConfirms: config?.collectConfirms || 12,
     };
-    
+
     super(baseConfig);
   }
 }

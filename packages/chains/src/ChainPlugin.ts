@@ -312,4 +312,18 @@ export interface ChainPlugin {
    * @returns True if broker is available, false otherwise
    */
   isBrokerAvailable?(): boolean;
+
+  /**
+   * Get the number of confirmations required for deposit eligibility during COLLECTION stage.
+   * This is the threshold for when deposits become "locked" and deals can proceed to WAITING.
+   * @returns Number of confirmations required
+   */
+  getCollectConfirms(): number;
+
+  /**
+   * Get the number of confirmations required for transaction finality.
+   * This is used to determine when submitted transactions are considered confirmed.
+   * @returns Number of confirmations required for finality
+   */
+  getConfirmationThreshold(): number;
 }
