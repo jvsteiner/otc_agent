@@ -25,6 +25,11 @@ import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
 /**
  * Typed interface for UnicitySwapBroker contract methods.
  * Provides type safety for broker contract interactions.
+ *
+ * SECURITY: Native operations (swapNative, revertNative) require operator signatures.
+ * This allows escrow EOAs to call these functions with proper authorization.
+ * ERC20 operations are operator-only (called from operator wallet).
+ * Refund operations do NOT require signatures (operator-only, post-deal cleanup).
  */
 interface IUnicitySwapBroker extends ethers.BaseContract {
   swapNative(
@@ -1090,25 +1095,25 @@ export class EthereumPlugin implements ChainPlugin {
   }
 
   /**
-   * Generate operator signature for native currency operations.
-   * Matches the signature verification in UnicitySwapBroker contract.
+   * Generate operator signature for native currency broker operations.
+   * Signature binds all transaction parameters and the escrow address (msg.sender).
    *
-   * @param dealId Unique deal identifier
-   * @param payback Address to receive surplus/refund
-   * @param recipient Address to receive swap amount (address(0) for revert)
-   * @param feeRecipient Address to receive fee
-   * @param amount Swap amount (0 for revert)
-   * @param fees Fee amount
-   * @param escrowAddress The escrow EOA address that will call the contract
-   * @returns ECDSA signature from operator
+   * @param dealId - Unique deal identifier
+   * @param payback - Address to receive surplus/refund
+   * @param recipient - Address to receive swap amount (use ethers.ZeroAddress for revert operations)
+   * @param feeRecipient - Address to receive fee
+   * @param amount - Swap amount (use 0 for revert operations)
+   * @param fees - Fee amount
+   * @param escrowAddress - The escrow EOA that will call the broker contract (msg.sender)
+   * @returns ECDSA signature from operator wallet
    */
   private async generateOperatorSignature(
     dealId: string,
     payback: string,
     recipient: string,
     feeRecipient: string,
-    amount: string,
-    fees: string,
+    amount: bigint,
+    fees: bigint,
     escrowAddress: string
   ): Promise<string> {
     if (!this.operatorWallet) {
@@ -1122,12 +1127,8 @@ export class EthereumPlugin implements ChainPlugin {
     // Convert dealId to bytes32
     const dealIdBytes32 = ethers.id(dealId);
 
-    // Convert amounts to wei/smallest unit
-    const amountWei = ethers.parseEther(amount);
-    const feesWei = ethers.parseEther(fees);
-
-    // Construct message hash matching contract's _verifyOperatorSignature
-    // keccak256(abi.encodePacked(address(this), dealId, payback, recipient, feeRecipient, amount, fees, msg.sender))
+    // Construct message hash matching contract's _verifyOperatorSignature logic
+    // Contract: keccak256(abi.encodePacked(address(this), dealId, payback, recipient, feeRecipient, amount, fees, msg.sender))
     const messageHash = ethers.solidityPackedKeccak256(
       ['address', 'bytes32', 'address', 'address', 'address', 'uint256', 'uint256', 'address'],
       [
@@ -1136,20 +1137,21 @@ export class EthereumPlugin implements ChainPlugin {
         payback,
         recipient,
         feeRecipient,
-        amountWei,
-        feesWei,
-        escrowAddress  // The escrow EOA that will call the function
+        amount,
+        fees,
+        escrowAddress  // The escrow EOA calling the function
       ]
     );
 
-    // Apply Ethereum Signed Message prefix (contract will also apply this)
-    const ethSignedMessageHash = ethers.hashMessage(ethers.getBytes(messageHash));
+    // Sign the message hash using EIP-191 format (eth_sign style)
+    // This automatically adds the "\x19Ethereum Signed Message:\n32" prefix
+    const signature = await this.operatorWallet.signMessage(ethers.getBytes(messageHash));
 
-    // Sign the prefixed hash directly using signDigest (no additional prefix)
-    const signature = this.operatorWallet.signingKey.sign(ethSignedMessageHash).serialized;
+    console.log(`[${this.chainId}] Generated operator signature for deal ${dealId.slice(0, 8)}... escrow ${escrowAddress.slice(0, 10)}...`);
 
     return signature;
   }
+
 
   /**
    * Approve the broker contract to spend ERC20 tokens from an escrow address.
@@ -1200,8 +1202,11 @@ export class EthereumPlugin implements ChainPlugin {
 
   /**
    * Execute atomic swap via broker contract.
-   * For native: sends all escrow balance as msg.value.
-   * For ERC20: broker pulls from escrow (must be pre-approved).
+   * For native: sends all escrow balance as msg.value with operator signature.
+   * For ERC20: broker pulls from escrow (must be pre-approved, operator-only call).
+   *
+   * SECURITY: Native swaps require operator signature to authorize escrow EOA.
+   * ERC20 swaps are operator-only (no signature needed).
    */
   async swapViaBroker(params: BrokerSwapParams): Promise<SubmittedTx> {
     if (!this.brokerContract) {
@@ -1253,9 +1258,9 @@ export class EthereumPlugin implements ChainPlugin {
         params.payback,
         params.recipient,
         params.feeRecipient,
-        params.amount,
-        params.fees,
-        params.escrow.address  // Escrow EOA will be msg.sender
+        amountWei,
+        feesWei,
+        params.escrow.address  // Escrow EOA that will call the function
       );
 
       tx = await brokerWithSigner.swapNative(
@@ -1265,7 +1270,7 @@ export class EthereumPlugin implements ChainPlugin {
         params.feeRecipient,
         amountWei,
         feesWei,
-        signature,
+        signature,  // Operator signature
         { value: balance } // Send entire balance
       );
 
@@ -1305,8 +1310,11 @@ export class EthereumPlugin implements ChainPlugin {
 
   /**
    * Execute atomic revert via broker contract.
-   * For native: sends all escrow balance as msg.value.
-   * For ERC20: broker pulls from escrow (must be pre-approved).
+   * For native: sends all escrow balance as msg.value with operator signature.
+   * For ERC20: broker pulls from escrow (must be pre-approved, operator-only call).
+   *
+   * SECURITY: Native reverts require operator signature to authorize escrow EOA.
+   * ERC20 reverts are operator-only (no signature needed).
    */
   async revertViaBroker(params: BrokerRevertParams): Promise<SubmittedTx> {
     if (!this.brokerContract) {
@@ -1348,15 +1356,16 @@ export class EthereumPlugin implements ChainPlugin {
       const balance = await this.provider.getBalance(params.escrow.address);
       const feesWei = ethers.parseEther(params.fees);
 
-      // Generate operator signature for native revert (recipient=address(0), amount=0)
+      // Generate operator signature for native revert
+      // For revert: recipient is address(0) and amount is 0
       const signature = await this.generateOperatorSignature(
         params.dealId,
         params.payback,
-        ethers.ZeroAddress,  // recipient is address(0) for revert
+        ethers.ZeroAddress,  // No recipient for revert
         params.feeRecipient,
-        '0',  // amount is 0 for revert
-        params.fees,
-        params.escrow.address  // Escrow EOA will be msg.sender
+        0n,  // No swap amount for revert
+        feesWei,
+        params.escrow.address  // Escrow EOA that will call the function
       );
 
       tx = await brokerWithSigner.revertNative(
@@ -1364,7 +1373,7 @@ export class EthereumPlugin implements ChainPlugin {
         params.payback,
         params.feeRecipient,
         feesWei,
-        signature,
+        signature,  // Operator signature
         { value: balance } // Send entire balance
       );
 

@@ -11,14 +11,6 @@
     "stateMutability": "nonpayable"
   },
   {
-    "type": "fallback",
-    "stateMutability": "payable"
-  },
-  {
-    "type": "receive",
-    "stateMutability": "payable"
-  },
-  {
     "type": "function",
     "name": "operator",
     "inputs": [],
@@ -46,6 +38,19 @@
   },
   {
     "type": "function",
+    "name": "payoutERC20",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "processedDeals",
     "inputs": [
       {
@@ -62,6 +67,72 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "refundERC20",
+    "inputs": [
+      {
+        "name": "currency",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "dealId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "escrow",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "payback",
+        "type": "address",
+        "internalType": "address payable"
+      },
+      {
+        "name": "feeRecipient",
+        "type": "address",
+        "internalType": "address payable"
+      },
+      {
+        "name": "fees",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "refundNative",
+    "inputs": [
+      {
+        "name": "dealId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "payback",
+        "type": "address",
+        "internalType": "address payable"
+      },
+      {
+        "name": "feeRecipient",
+        "type": "address",
+        "internalType": "address payable"
+      },
+      {
+        "name": "fees",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
   },
   {
     "type": "function",
@@ -131,6 +202,11 @@
         "name": "fees",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "operatorSignature",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -230,6 +306,11 @@
         "name": "fees",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "operatorSignature",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -249,83 +330,29 @@
     "stateMutability": "nonpayable"
   },
   {
-    "type": "function",
-    "name": "refundNative",
-    "inputs": [
-      {
-        "name": "dealId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "payback",
-        "type": "address",
-        "internalType": "address payable"
-      },
-      {
-        "name": "feeRecipient",
-        "type": "address",
-        "internalType": "address payable"
-      },
-      {
-        "name": "fees",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "payable"
-  },
-  {
-    "type": "function",
-    "name": "refundERC20",
-    "inputs": [
-      {
-        "name": "currency",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "dealId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "escrow",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "payback",
-        "type": "address",
-        "internalType": "address payable"
-      },
-      {
-        "name": "feeRecipient",
-        "type": "address",
-        "internalType": "address payable"
-      },
-      {
-        "name": "fees",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "payoutERC20",
+    "type": "event",
+    "name": "ERC20Recovered",
     "inputs": [
       {
         "name": "token",
         "type": "address",
+        "indexed": true,
         "internalType": "address"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    "anonymous": false
   },
   {
     "type": "event",
@@ -361,6 +388,49 @@
         "type": "address",
         "indexed": true,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RefundExecuted",
+    "inputs": [
+      {
+        "name": "dealId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "currency",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "feeRecipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "payback",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "feeAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "refundAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -464,79 +534,38 @@
     "anonymous": false
   },
   {
-    "type": "event",
-    "name": "RefundExecuted",
-    "inputs": [
-      {
-        "name": "dealId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "currency",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "feeRecipient",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      },
-      {
-        "name": "payback",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      },
-      {
-        "name": "feeAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "refundAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "ERC20Recovered",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "owner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
     "type": "error",
     "name": "DealAlreadyProcessed",
     "inputs": [
       {
         "name": "dealId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignatureLength",
+    "inputs": [
+      {
+        "name": "length",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignatureS",
+    "inputs": [
+      {
+        "name": "s",
         "type": "bytes32",
         "internalType": "bytes32"
       }
@@ -583,6 +612,16 @@
   {
     "type": "error",
     "name": "InvalidEscrowAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoTokensToRecover",
     "inputs": []
   },
   {
@@ -647,11 +686,6 @@
   {
     "type": "error",
     "name": "UnauthorizedOperator",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "NoTokensToRecover",
     "inputs": []
   }
 ]
