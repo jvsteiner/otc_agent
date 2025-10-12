@@ -4,7 +4,7 @@
  * Etherscan API integration, HD wallet management, and gas tank support for ERC-20 transfers.
  */
 
-import { ethers } from 'ethers';
+import { ethers, ContractTransactionResponse } from 'ethers';
 import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, parseAssetCode } from '@otc-broker/core';
 import {
   ChainPlugin,
@@ -12,11 +12,78 @@ import {
   EscrowDepositsView,
   QuoteNativeForUSDResult,
   SubmittedTx,
-  PriceQuote
+  PriceQuote,
+  BrokerSwapParams,
+  BrokerRevertParams,
+  BrokerRefundParams
 } from './ChainPlugin';
 import ERC20_ABI from './abi/ERC20.json';
+import BROKER_ABI from './abi/UnicitySwapBroker.json';
 import { EtherscanAPI } from './utils/EtherscanAPI';
 import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
+
+/**
+ * Typed interface for UnicitySwapBroker contract methods.
+ * Provides type safety for broker contract interactions.
+ */
+interface IUnicitySwapBroker extends ethers.BaseContract {
+  swapNative(
+    dealId: string,
+    payback: string,
+    recipient: string,
+    feeRecipient: string,
+    amount: bigint,
+    fees: bigint,
+    operatorSignature: string,
+    overrides?: { value: bigint }
+  ): Promise<ContractTransactionResponse>;
+
+  swapERC20(
+    currency: string,
+    dealId: string,
+    escrow: string,
+    payback: string,
+    recipient: string,
+    feeRecipient: string,
+    amount: bigint,
+    fees: bigint
+  ): Promise<ContractTransactionResponse>;
+
+  revertNative(
+    dealId: string,
+    payback: string,
+    feeRecipient: string,
+    fees: bigint,
+    operatorSignature: string,
+    overrides?: { value: bigint }
+  ): Promise<ContractTransactionResponse>;
+
+  revertERC20(
+    currency: string,
+    dealId: string,
+    escrow: string,
+    payback: string,
+    feeRecipient: string,
+    fees: bigint
+  ): Promise<ContractTransactionResponse>;
+
+  refundNative(
+    dealId: string,
+    payback: string,
+    feeRecipient: string,
+    fees: bigint,
+    overrides?: { value: bigint }
+  ): Promise<ContractTransactionResponse>;
+
+  refundERC20(
+    currency: string,
+    dealId: string,
+    escrow: string,
+    payback: string,
+    feeRecipient: string,
+    fees: bigint
+  ): Promise<ContractTransactionResponse>;
+}
 
 /**
  * Plugin implementation for Ethereum mainnet.
@@ -25,6 +92,7 @@ import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
  * - Etherscan API for transaction history
  * - Gas tank management for ERC-20 transfers
  * - Robust deposit detection with fallback mechanisms
+ * - Optional broker contract support for atomic swaps
  */
 export class EthereumPlugin implements ChainPlugin {
   readonly chainId: ChainId;
@@ -36,6 +104,8 @@ export class EthereumPlugin implements ChainPlugin {
   private database?: any;
   private etherscanAPI?: EtherscanAPI;
   private tankManager?: any; // Will be injected if gas funding is enabled
+  private brokerContract?: IUnicitySwapBroker;
+  private operatorWallet?: ethers.Wallet;
 
   constructor(config?: Partial<ChainConfig>) {
     this.chainId = config?.chainId || 'ETH';
@@ -49,19 +119,36 @@ export class EthereumPlugin implements ChainPlugin {
   async init(cfg: ChainConfig): Promise<void> {
     this.config = cfg;
     this.database = cfg.database;
-    
+
     // Default to PublicNode if no RPC URL provided
     const rpcUrl = cfg.rpcUrl || 'https://ethereum-rpc.publicnode.com';
-    
+
     // Create provider with custom timeout settings
     this.provider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
       staticNetwork: true // Skip network detection to avoid timeout
     });
-    
+
     // Initialize Etherscan API for transaction history
     // No API key needed for basic queries
     this.etherscanAPI = new EtherscanAPI(this.chainId);
-    
+
+    // Initialize operator wallet if private key provided
+    if (cfg.operatorPrivateKey) {
+      this.operatorWallet = new ethers.Wallet(cfg.operatorPrivateKey, this.provider);
+      console.log(`[${this.chainId}] Initialized operator wallet: ${this.operatorWallet.address}`);
+
+      // Verify operator address matches
+      if (cfg.operator?.address && cfg.operator.address.toLowerCase() !== this.operatorWallet.address.toLowerCase()) {
+        console.warn(`[${this.chainId}] WARNING: Operator address mismatch! Config: ${cfg.operator.address}, Derived: ${this.operatorWallet.address}`);
+      }
+    }
+
+    // Initialize broker contract if address provided
+    if (cfg.brokerAddress) {
+      this.brokerContract = new ethers.Contract(cfg.brokerAddress, BROKER_ABI, this.provider) as unknown as IUnicitySwapBroker;
+      console.log(`[${this.chainId}] Initialized broker contract at ${cfg.brokerAddress}`);
+    }
+
     // Initialize hot wallet if seed provided
     if (cfg.hotWalletSeed) {
       try {
@@ -992,5 +1079,408 @@ export class EthereumPlugin implements ChainPlugin {
       console.error(`[${this.chainId}] Error querying transfer events:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Check if broker contract is configured and available.
+   * Returns true only if brokerContract is initialized (requires brokerAddress in config).
+   */
+  isBrokerAvailable(): boolean {
+    return !!this.brokerContract;
+  }
+
+  /**
+   * Generate operator signature for native currency operations.
+   * Matches the signature verification in UnicitySwapBroker contract.
+   *
+   * @param dealId Unique deal identifier
+   * @param payback Address to receive surplus/refund
+   * @param recipient Address to receive swap amount (address(0) for revert)
+   * @param feeRecipient Address to receive fee
+   * @param amount Swap amount (0 for revert)
+   * @param fees Fee amount
+   * @param escrowAddress The escrow EOA address that will call the contract
+   * @returns ECDSA signature from operator
+   */
+  private async generateOperatorSignature(
+    dealId: string,
+    payback: string,
+    recipient: string,
+    feeRecipient: string,
+    amount: string,
+    fees: string,
+    escrowAddress: string
+  ): Promise<string> {
+    if (!this.operatorWallet) {
+      throw new Error(`Operator wallet not configured for ${this.chainId}`);
+    }
+
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    // Convert dealId to bytes32
+    const dealIdBytes32 = ethers.id(dealId);
+
+    // Convert amounts to wei/smallest unit
+    const amountWei = ethers.parseEther(amount);
+    const feesWei = ethers.parseEther(fees);
+
+    // Construct message hash matching contract's _verifyOperatorSignature
+    // keccak256(abi.encodePacked(address(this), dealId, payback, recipient, feeRecipient, amount, fees, msg.sender))
+    const messageHash = ethers.solidityPackedKeccak256(
+      ['address', 'bytes32', 'address', 'address', 'address', 'uint256', 'uint256', 'address'],
+      [
+        await this.brokerContract.getAddress(),  // Contract address
+        dealIdBytes32,
+        payback,
+        recipient,
+        feeRecipient,
+        amountWei,
+        feesWei,
+        escrowAddress  // The escrow EOA that will call the function
+      ]
+    );
+
+    // Apply Ethereum Signed Message prefix (contract will also apply this)
+    const ethSignedMessageHash = ethers.hashMessage(ethers.getBytes(messageHash));
+
+    // Sign the prefixed hash directly using signDigest (no additional prefix)
+    const signature = this.operatorWallet.signingKey.sign(ethSignedMessageHash).serialized;
+
+    return signature;
+  }
+
+  /**
+   * Approve the broker contract to spend ERC20 tokens from an escrow address.
+   * Grants unlimited allowance for gas optimization.
+   */
+  async approveBrokerForERC20(escrowRef: EscrowAccountRef, tokenAddress: string): Promise<SubmittedTx> {
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    let wallet = this.wallets.get(escrowRef.keyRef || escrowRef.address);
+    if (!wallet) {
+      // Try to recreate wallet from keyRef
+      if (escrowRef.keyRef) {
+        if (escrowRef.keyRef.startsWith('0x')) {
+          // Direct private key
+          const newWallet = new ethers.Wallet(escrowRef.keyRef, this.provider);
+          this.wallets.set(escrowRef.keyRef, newWallet as any);
+          wallet = newWallet as any;
+        } else if (escrowRef.keyRef.startsWith('m/') && this.rootWallet) {
+          // HD path
+          const childWallet = this.rootWallet.derivePath(escrowRef.keyRef);
+          const connectedWallet = childWallet.connect(this.provider);
+          this.wallets.set(escrowRef.keyRef, connectedWallet);
+          wallet = connectedWallet;
+        }
+      }
+    }
+
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${escrowRef.address}`);
+    }
+
+    const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, wallet);
+
+    // Approve unlimited spending to save gas on future transactions
+    const tx = await tokenContract.approve(this.brokerContract.target, ethers.MaxUint256);
+
+    console.log(`[${this.chainId}] Approved broker to spend ${tokenAddress} from ${escrowRef.address}: ${tx.hash}`);
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString(),
+      nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
+    };
+  }
+
+  /**
+   * Execute atomic swap via broker contract.
+   * For native: sends all escrow balance as msg.value.
+   * For ERC20: broker pulls from escrow (must be pre-approved).
+   */
+  async swapViaBroker(params: BrokerSwapParams): Promise<SubmittedTx> {
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    let wallet = this.wallets.get(params.escrow.keyRef || params.escrow.address);
+    if (!wallet) {
+      // Try to recreate wallet from keyRef
+      if (params.escrow.keyRef) {
+        if (params.escrow.keyRef.startsWith('0x')) {
+          // Direct private key
+          const newWallet = new ethers.Wallet(params.escrow.keyRef, this.provider);
+          this.wallets.set(params.escrow.keyRef, newWallet as any);
+          wallet = newWallet as any;
+        } else if (params.escrow.keyRef.startsWith('m/') && this.rootWallet) {
+          // HD path
+          const childWallet = this.rootWallet.derivePath(params.escrow.keyRef);
+          const connectedWallet = childWallet.connect(this.provider);
+          this.wallets.set(params.escrow.keyRef, connectedWallet);
+          wallet = connectedWallet;
+        }
+      }
+    }
+
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
+    }
+
+    const brokerWithSigner = this.brokerContract.connect(wallet) as unknown as IUnicitySwapBroker;
+
+    // Convert dealId to bytes32
+    const dealIdBytes32 = ethers.id(params.dealId);
+
+    let tx;
+
+    if (!params.currency) {
+      // Native currency swap (ETH, MATIC, etc.)
+      // Get total balance and send it all
+      const balance = await this.provider.getBalance(params.escrow.address);
+
+      // Parse amounts to wei
+      const amountWei = ethers.parseEther(params.amount);
+      const feesWei = ethers.parseEther(params.fees);
+
+      // Generate operator signature for native swap
+      const signature = await this.generateOperatorSignature(
+        params.dealId,
+        params.payback,
+        params.recipient,
+        params.feeRecipient,
+        params.amount,
+        params.fees,
+        params.escrow.address  // Escrow EOA will be msg.sender
+      );
+
+      tx = await brokerWithSigner.swapNative(
+        dealIdBytes32,
+        params.payback,
+        params.recipient,
+        params.feeRecipient,
+        amountWei,
+        feesWei,
+        signature,
+        { value: balance } // Send entire balance
+      );
+
+      console.log(`[${this.chainId}] Native swap via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    } else {
+      // ERC20 token swap
+      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
+      if (!assetConfig || !assetConfig.contractAddress) {
+        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      }
+
+      const decimals = assetConfig.decimals || 18;
+      const amountWei = ethers.parseUnits(params.amount, decimals);
+      const feesWei = ethers.parseUnits(params.fees, decimals);
+
+      tx = await brokerWithSigner.swapERC20(
+        assetConfig.contractAddress,
+        dealIdBytes32,
+        params.escrow.address,  // Escrow address (source of funds)
+        params.payback,
+        params.recipient,
+        params.feeRecipient,
+        amountWei,
+        feesWei
+      );
+
+      console.log(`[${this.chainId}] ERC20 swap via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    }
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString(),
+      nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
+    };
+  }
+
+  /**
+   * Execute atomic revert via broker contract.
+   * For native: sends all escrow balance as msg.value.
+   * For ERC20: broker pulls from escrow (must be pre-approved).
+   */
+  async revertViaBroker(params: BrokerRevertParams): Promise<SubmittedTx> {
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    let wallet = this.wallets.get(params.escrow.keyRef || params.escrow.address);
+    if (!wallet) {
+      // Try to recreate wallet from keyRef
+      if (params.escrow.keyRef) {
+        if (params.escrow.keyRef.startsWith('0x')) {
+          // Direct private key
+          const newWallet = new ethers.Wallet(params.escrow.keyRef, this.provider);
+          this.wallets.set(params.escrow.keyRef, newWallet as any);
+          wallet = newWallet as any;
+        } else if (params.escrow.keyRef.startsWith('m/') && this.rootWallet) {
+          // HD path
+          const childWallet = this.rootWallet.derivePath(params.escrow.keyRef);
+          const connectedWallet = childWallet.connect(this.provider);
+          this.wallets.set(params.escrow.keyRef, connectedWallet);
+          wallet = connectedWallet;
+        }
+      }
+    }
+
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
+    }
+
+    const brokerWithSigner = this.brokerContract.connect(wallet) as unknown as IUnicitySwapBroker;
+
+    // Convert dealId to bytes32
+    const dealIdBytes32 = ethers.id(params.dealId);
+
+    let tx;
+
+    if (!params.currency) {
+      // Native currency revert
+      const balance = await this.provider.getBalance(params.escrow.address);
+      const feesWei = ethers.parseEther(params.fees);
+
+      // Generate operator signature for native revert (recipient=address(0), amount=0)
+      const signature = await this.generateOperatorSignature(
+        params.dealId,
+        params.payback,
+        ethers.ZeroAddress,  // recipient is address(0) for revert
+        params.feeRecipient,
+        '0',  // amount is 0 for revert
+        params.fees,
+        params.escrow.address  // Escrow EOA will be msg.sender
+      );
+
+      tx = await brokerWithSigner.revertNative(
+        dealIdBytes32,
+        params.payback,
+        params.feeRecipient,
+        feesWei,
+        signature,
+        { value: balance } // Send entire balance
+      );
+
+      console.log(`[${this.chainId}] Native revert via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    } else {
+      // ERC20 token revert
+      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
+      if (!assetConfig || !assetConfig.contractAddress) {
+        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      }
+
+      const decimals = assetConfig.decimals || 18;
+      const feesWei = ethers.parseUnits(params.fees, decimals);
+
+      tx = await brokerWithSigner.revertERC20(
+        assetConfig.contractAddress,
+        dealIdBytes32,
+        params.escrow.address,  // Escrow address (source of funds)
+        params.payback,
+        params.feeRecipient,
+        feesWei
+      );
+
+      console.log(`[${this.chainId}] ERC20 revert via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    }
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString(),
+      nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
+    };
+  }
+
+  /**
+   * Execute post-deal refund via broker contract.
+   * Used for cleaning up late deposits or leftover funds after deal closure.
+   * For native: sends all escrow balance as msg.value.
+   * For ERC20: broker pulls from escrow (must be pre-approved).
+   */
+  async refundViaBroker(params: BrokerRefundParams): Promise<SubmittedTx> {
+    if (!this.brokerContract) {
+      throw new Error(`Broker contract not configured for ${this.chainId}`);
+    }
+
+    let wallet = this.wallets.get(params.escrow.keyRef || params.escrow.address);
+    if (!wallet) {
+      // Try to recreate wallet from keyRef
+      if (params.escrow.keyRef) {
+        if (params.escrow.keyRef.startsWith('0x')) {
+          // Direct private key
+          const newWallet = new ethers.Wallet(params.escrow.keyRef, this.provider);
+          this.wallets.set(params.escrow.keyRef, newWallet as any);
+          wallet = newWallet as any;
+        } else if (params.escrow.keyRef.startsWith('m/') && this.rootWallet) {
+          // HD path
+          const childWallet = this.rootWallet.derivePath(params.escrow.keyRef);
+          const connectedWallet = childWallet.connect(this.provider);
+          this.wallets.set(params.escrow.keyRef, connectedWallet);
+          wallet = connectedWallet;
+        }
+      }
+    }
+
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
+    }
+
+    const brokerWithSigner = this.brokerContract.connect(wallet) as unknown as IUnicitySwapBroker;
+
+    // Convert dealId to bytes32 (used for tracking only)
+    const dealIdBytes32 = ethers.id(params.dealId);
+
+    let tx;
+
+    if (!params.currency) {
+      // Native currency refund
+      const balance = await this.provider.getBalance(params.escrow.address);
+      const feesWei = ethers.parseEther(params.fees);
+
+      tx = await brokerWithSigner.refundNative(
+        dealIdBytes32,
+        params.payback,
+        params.feeRecipient,
+        feesWei,
+        { value: balance } // Send entire balance
+      );
+
+      console.log(`[${this.chainId}] Native post-deal refund via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    } else {
+      // ERC20 token refund
+      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
+      if (!assetConfig || !assetConfig.contractAddress) {
+        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      }
+
+      const decimals = assetConfig.decimals || 18;
+      const feesWei = ethers.parseUnits(params.fees, decimals);
+
+      tx = await brokerWithSigner.refundERC20(
+        assetConfig.contractAddress,
+        dealIdBytes32,
+        params.escrow.address,  // Escrow address (source of funds)
+        params.payback,
+        params.feeRecipient,
+        feesWei
+      );
+
+      console.log(`[${this.chainId}] ERC20 post-deal refund via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+    }
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString(),
+      nonceOrInputs: tx.nonce?.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : undefined,
+    };
   }
 }

@@ -7,7 +7,6 @@
 import { ChainId } from '@otc-broker/core';
 import { ChainPlugin, ChainConfig } from './ChainPlugin';
 import { UnicityPlugin } from './UnicityPlugin';
-import { EvmPlugin } from './EvmPlugin';
 import { EthereumPlugin } from './EthereumPlugin';
 import { PolygonPlugin } from './PolygonPlugin';
 import { BasePlugin } from './BasePlugin';
@@ -40,9 +39,9 @@ export class PluginManager {
     if (this.database && !config.database) {
       config.database = this.database;
     }
-    
+
     let plugin: ChainPlugin;
-    
+
     switch (config.chainId) {
       case 'UNICITY':
         plugin = new UnicityPlugin();
@@ -51,7 +50,8 @@ export class PluginManager {
         plugin = new EthereumPlugin(config);
         break;
       case 'SEPOLIA':
-        plugin = new EthereumPlugin(config); // Use EthereumPlugin for Sepolia testnet
+        // Use unified EthereumPlugin for all EVM chains
+        plugin = new EthereumPlugin({ ...config, chainId: 'SEPOLIA' });
         break;
       case 'POLYGON':
         plugin = new PolygonPlugin(config);
@@ -60,16 +60,18 @@ export class PluginManager {
         plugin = new BasePlugin(config);
         break;
       case 'BSC':
-        plugin = new EthereumPlugin(config); // Use EthereumPlugin for BSC (EVM-compatible)
+        // Use unified EthereumPlugin for all EVM chains
+        plugin = new EthereumPlugin({ ...config, chainId: 'BSC' });
         break;
       default:
         if (config.chainId.startsWith('EVM:')) {
-          plugin = new EvmPlugin(config.chainId);
+          // Use unified EthereumPlugin for generic EVM chains
+          plugin = new EthereumPlugin(config);
         } else {
           throw new Error(`Unsupported chain: ${config.chainId}`);
         }
     }
-    
+
     await plugin.init(config);
     this.plugins.set(config.chainId, plugin);
   }
