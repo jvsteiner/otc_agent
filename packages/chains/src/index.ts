@@ -9,7 +9,6 @@ export * from './types';
 
 // Plugin implementations
 export * from './UnicityPlugin';
-export * from './EvmPlugin';
 export * from './EthereumPlugin';
 export * from './PolygonPlugin';
 export * from './BasePlugin';

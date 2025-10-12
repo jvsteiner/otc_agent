@@ -1,8 +1,8 @@
 import { ethers } from 'ethers';
-import { EvmPlugin } from './packages/chains/dist/EvmPlugin.js';
+import { EthereumPlugin } from './packages/chains/dist/EthereumPlugin.js';
 
 async function testERC20Detection() {
-  const plugin = new EvmPlugin('POLYGON');
+  const plugin = new EthereumPlugin('POLYGON');
   
   // Initialize with Polygon RPC
   await plugin.init({

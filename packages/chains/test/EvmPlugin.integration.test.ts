@@ -1,6 +1,6 @@
 /**
  * @file EvmPlugin.integration.test.ts
- * @description Integration tests for EvmPlugin signature generation with live contract
+ * @description Integration tests for EthereumPlugin signature generation with live contract
  *
  * PURPOSE: End-to-end verification that TypeScript-generated signatures
  *          are accepted by the actual deployed smart contract.
@@ -21,7 +21,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
-describe('EvmPlugin Integration Tests', () => {
+describe('EthereumPlugin Integration Tests', () => {
   let anvilProcess: ChildProcess;
   let provider: ethers.JsonRpcProvider;
   let deployer: ethers.Wallet;

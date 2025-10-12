@@ -4,12 +4,12 @@
  * Test script to verify Sepolia deposit detection
  */
 
-const { EvmPlugin } = require('./packages/chains/dist/EvmPlugin.js');
+const { EthereumPlugin } = require('./packages/chains/dist/EthereumPlugin.js');
 
 async function testSepoliaDeposits() {
   console.log('=== Testing Sepolia Deposit Detection ===\n');
 
-  const plugin = new EvmPlugin('SEPOLIA');
+  const plugin = new EthereumPlugin('SEPOLIA');
   await plugin.init({
     chainId: 'SEPOLIA',
     rpcUrl: 'https://eth-sepolia.g.alchemy.com/v2/9LkJ1e22_qxEBFxOQ4pD3',

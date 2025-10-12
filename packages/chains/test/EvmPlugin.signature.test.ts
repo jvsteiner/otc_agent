@@ -1,6 +1,6 @@
 /**
  * @file EvmPlugin.signature.test.ts
- * @description Unit tests for EvmPlugin signature generation
+ * @description Unit tests for EthereumPlugin signature generation
  *
  * PURPOSE: Verify that TypeScript/ethers.js backend generates signatures that
  *          EXACTLY match what the Solidity smart contract expects.
@@ -17,7 +17,7 @@
 import { ethers } from 'ethers';
 import { describe, it, expect, beforeAll } from '@jest/globals';
 
-describe('EvmPlugin Signature Generation', () => {
+describe('EthereumPlugin Signature Generation', () => {
   // Test vectors from Solidity (SignatureVerification.t.sol)
   const OPERATOR_PRIVATE_KEY = '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
   const OPERATOR_ADDRESS = '0x1Be31A94361a391bBaFB2a4CCd704F57dc04d4bb';
@@ -37,7 +37,7 @@ describe('EvmPlugin Signature Generation', () => {
 
   /**
    * Generate operator signature for swapNative/revertNative
-   * This is the EXACT implementation from EvmPlugin.ts
+   * This is the EXACT implementation from EthereumPlugin.ts
    */
   function generateOperatorSignature(
     dealId: string,

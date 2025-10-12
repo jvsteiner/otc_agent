@@ -8,8 +8,8 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "test": "jest",
-    "test:unit": "jest EvmPlugin.signature.test.ts",
-    "test:integration": "jest EvmPlugin.integration.test.ts",
+    "test:unit": "jest EthereumPlugin.signature.test.ts",
+    "test:integration": "jest EthereumPlugin.integration.test.ts",
     "test:watch": "jest --watch"
   },
   "dependencies": {

@@ -1154,6 +1154,45 @@ export class EthereumPlugin implements ChainPlugin {
 
 
   /**
+   * Check if broker contract is approved to spend ERC20 tokens from an address.
+   * @param escrowAddress - The address holding ERC20 tokens
+   * @param tokenAddress - The ERC20 token contract address
+   * @returns True if broker has sufficient allowance (> 0), false otherwise
+   */
+  async checkBrokerApproval(escrowAddress: string, tokenAddress: string): Promise<boolean> {
+    if (!this.brokerContract) {
+      console.warn(`[${this.chainId}] Broker contract not configured, cannot check approval`);
+      return false;
+    }
+
+    try {
+      const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
+      const brokerAddress = await this.brokerContract.getAddress();
+
+      // Check allowance: allowance(owner, spender)
+      const allowance = await tokenContract.allowance(escrowAddress, brokerAddress);
+
+      const hasApproval = allowance > 0n;
+
+      console.log(
+        `[${this.chainId}] Broker approval check for token ${tokenAddress.slice(0, 10)}...` +
+        ` from escrow ${escrowAddress.slice(0, 10)}...` +
+        `: ${hasApproval ? 'APPROVED' : 'NOT APPROVED'}` +
+        ` (allowance: ${allowance.toString()})`
+      );
+
+      return hasApproval;
+    } catch (error) {
+      console.error(
+        `[${this.chainId}] Error checking broker approval for token ${tokenAddress}` +
+        ` from escrow ${escrowAddress}:`,
+        error
+      );
+      return false;
+    }
+  }
+
+  /**
    * Approve the broker contract to spend ERC20 tokens from an escrow address.
    * Grants unlimited allowance for gas optimization.
    */
@@ -1213,37 +1252,38 @@ export class EthereumPlugin implements ChainPlugin {
       throw new Error(`Broker contract not configured for ${this.chainId}`);
     }
 
-    let wallet = this.wallets.get(params.escrow.keyRef || params.escrow.address);
-    if (!wallet) {
-      // Try to recreate wallet from keyRef
-      if (params.escrow.keyRef) {
-        if (params.escrow.keyRef.startsWith('0x')) {
-          // Direct private key
-          const newWallet = new ethers.Wallet(params.escrow.keyRef, this.provider);
-          this.wallets.set(params.escrow.keyRef, newWallet as any);
-          wallet = newWallet as any;
-        } else if (params.escrow.keyRef.startsWith('m/') && this.rootWallet) {
-          // HD path
-          const childWallet = this.rootWallet.derivePath(params.escrow.keyRef);
-          const connectedWallet = childWallet.connect(this.provider);
-          this.wallets.set(params.escrow.keyRef, connectedWallet);
-          wallet = connectedWallet;
-        }
-      }
-    }
-
-    if (!wallet) {
-      throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
-    }
-
-    const brokerWithSigner = this.brokerContract.connect(wallet) as unknown as IUnicitySwapBroker;
-
     // Convert dealId to bytes32
     const dealIdBytes32 = ethers.id(params.dealId);
 
     let tx;
+    let brokerWithSigner;
 
     if (!params.currency) {
+      // Native currency swap: escrow wallet calls swapNative with operator signature
+      let wallet = this.wallets.get(params.escrow.keyRef || params.escrow.address);
+      if (!wallet) {
+        // Try to recreate wallet from keyRef
+        if (params.escrow.keyRef) {
+          if (params.escrow.keyRef.startsWith('0x')) {
+            // Direct private key
+            const newWallet = new ethers.Wallet(params.escrow.keyRef, this.provider);
+            this.wallets.set(params.escrow.keyRef, newWallet as any);
+            wallet = newWallet as any;
+          } else if (params.escrow.keyRef.startsWith('m/') && this.rootWallet) {
+            // HD path
+            const childWallet = this.rootWallet.derivePath(params.escrow.keyRef);
+            const connectedWallet = childWallet.connect(this.provider);
+            this.wallets.set(params.escrow.keyRef, connectedWallet);
+            wallet = connectedWallet;
+          }
+        }
+      }
+
+      if (!wallet) {
+        throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
+      }
+
+      brokerWithSigner = this.brokerContract.connect(wallet) as unknown as IUnicitySwapBroker;
       // Native currency swap (ETH, MATIC, etc.)
       // Get total balance
       const balance = await this.provider.getBalance(params.escrow.address);
@@ -1324,18 +1364,23 @@ export class EthereumPlugin implements ChainPlugin {
         ` | Gas reserved: ${ethers.formatEther(gasCostWithBuffer)}`
       );
     } else {
-      // ERC20 token swap
-      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
-      if (!assetConfig || !assetConfig.contractAddress) {
-        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      // ERC20 token swap: operator wallet calls swapERC20 (pulls from escrow via approval)
+      if (!params.currency) {
+        throw new Error(`Missing ERC20 token address for swap`);
       }
 
-      const decimals = assetConfig.decimals || 18;
+      if (!this.operatorWallet) {
+        throw new Error(`Operator wallet not configured for ${this.chainId}`);
+      }
+
+      brokerWithSigner = this.brokerContract.connect(this.operatorWallet) as unknown as IUnicitySwapBroker;
+
+      const decimals = params.decimals || 18;
       const amountWei = ethers.parseUnits(params.amount, decimals);
       const feesWei = ethers.parseUnits(params.fees, decimals);
 
       tx = await brokerWithSigner.swapERC20(
-        assetConfig.contractAddress,
+        params.currency,  // Token contract address
         dealIdBytes32,
         params.escrow.address,  // Escrow address (source of funds)
         params.payback,
@@ -1345,7 +1390,7 @@ export class EthereumPlugin implements ChainPlugin {
         feesWei
       );
 
-      console.log(`[${this.chainId}] ERC20 swap via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+      console.log(`[${this.chainId}] ERC20 swap via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash} | Token: ${params.currency}`);
     }
 
     return {
@@ -1472,17 +1517,23 @@ export class EthereumPlugin implements ChainPlugin {
         ` | Gas reserved: ${ethers.formatEther(gasCostWithBuffer)}`
       );
     } else {
-      // ERC20 token revert
-      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
-      if (!assetConfig || !assetConfig.contractAddress) {
-        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      // ERC20 token revert - must be called by operator
+      if (!params.currency) {
+        throw new Error(`Missing ERC20 token address for revert`);
       }
 
-      const decimals = assetConfig.decimals || 18;
+      if (!this.operatorWallet) {
+        throw new Error(`Operator wallet not configured for ${this.chainId} - required for ERC20 broker operations`);
+      }
+
+      const decimals = params.decimals || 18;
       const feesWei = ethers.parseUnits(params.fees, decimals);
 
-      tx = await brokerWithSigner.revertERC20(
-        assetConfig.contractAddress,
+      // Use operator wallet for ERC20 revert
+      const brokerWithOperator = this.brokerContract.connect(this.operatorWallet) as unknown as IUnicitySwapBroker;
+
+      tx = await brokerWithOperator.revertERC20(
+        params.currency,  // Token contract address
         dealIdBytes32,
         params.escrow.address,  // Escrow address (source of funds)
         params.payback,
@@ -1490,7 +1541,7 @@ export class EthereumPlugin implements ChainPlugin {
         feesWei
       );
 
-      console.log(`[${this.chainId}] ERC20 revert via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+      console.log(`[${this.chainId}] ERC20 revert via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash} | Token: ${params.currency}`);
     }
 
     return {
@@ -1601,17 +1652,23 @@ export class EthereumPlugin implements ChainPlugin {
         ` | Gas reserved: ${ethers.formatEther(gasCostWithBuffer)}`
       );
     } else {
-      // ERC20 token refund
-      const assetConfig = parseAssetCode(params.currency as AssetCode, this.chainId);
-      if (!assetConfig || !assetConfig.contractAddress) {
-        throw new Error(`Invalid ERC20 asset: ${params.currency}`);
+      // ERC20 token refund - must be called by operator
+      if (!params.currency) {
+        throw new Error(`Missing ERC20 token address for refund`);
       }
 
-      const decimals = assetConfig.decimals || 18;
+      if (!this.operatorWallet) {
+        throw new Error(`Operator wallet not configured for ${this.chainId} - required for ERC20 broker operations`);
+      }
+
+      const decimals = params.decimals || 18;
       const feesWei = ethers.parseUnits(params.fees, decimals);
 
-      tx = await brokerWithSigner.refundERC20(
-        assetConfig.contractAddress,
+      // Use operator wallet for ERC20 refund
+      const brokerWithOperator = this.brokerContract.connect(this.operatorWallet) as unknown as IUnicitySwapBroker;
+
+      tx = await brokerWithOperator.refundERC20(
+        params.currency,  // Token contract address
         dealIdBytes32,
         params.escrow.address,  // Escrow address (source of funds)
         params.payback,
@@ -1619,7 +1676,7 @@ export class EthereumPlugin implements ChainPlugin {
         feesWei
       );
 
-      console.log(`[${this.chainId}] ERC20 post-deal refund via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash}`);
+      console.log(`[${this.chainId}] ERC20 post-deal refund via broker for deal ${params.dealId.slice(0, 8)}...: ${tx.hash} | Token: ${params.currency}`);
     }
 
     return {
