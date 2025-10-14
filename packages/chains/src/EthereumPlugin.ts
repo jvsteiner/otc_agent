@@ -1796,6 +1796,135 @@ export class EthereumPlugin implements ChainPlugin {
     }
   }
 
+  /**
+   * Fetch and classify ERC20 token transfers for a transaction hash.
+   * Similar to getInternalTransactions but for ERC20 token transfers.
+   * Classifies transfers by position: first=swap, second=fee, third+=refund.
+   */
+  async getERC20Transfers(txHash: string, tokenAddress?: string): Promise<Array<{
+    from: string;
+    to: string;
+    value: string;        // Formatted amount (e.g., "100.5")
+    valueRaw: string;     // Raw hex value
+    tokenAddress: string;
+    tokenSymbol?: string;
+    tokenDecimals?: number;
+    type: 'swap' | 'fee' | 'refund' | 'unknown';
+  }>> {
+    if (!this.etherscanAPI) {
+      console.warn(`[${this.chainId}] Etherscan API not configured, cannot fetch ERC20 transfers`);
+      return [];
+    }
+
+    if (!this.brokerContract) {
+      console.warn(`[${this.chainId}] Broker contract not configured, ERC20 transfers not applicable`);
+      return [];
+    }
+
+    try {
+      console.log(`[${this.chainId}] Fetching ERC20 transfers for ${txHash}`);
+
+      // Fetch ERC20 Transfer events from Etherscan
+      const transfers = await this.etherscanAPI.getERC20TransfersByTxHash(txHash, tokenAddress);
+
+      if (transfers.length === 0) {
+        console.log(`[${this.chainId}] No ERC20 transfers found for ${txHash}`);
+        return [];
+      }
+
+      console.log(`[${this.chainId}] Found ${transfers.length} ERC20 transfers`);
+
+      // Get the broker contract address for filtering
+      const brokerAddress = (await this.brokerContract.getAddress()).toLowerCase();
+
+      // Filter to only include transfers FROM the broker contract (outgoing transfers)
+      const brokerTransfers = transfers.filter(tx =>
+        tx.from.toLowerCase() === brokerAddress &&
+        BigInt(tx.value) > 0n
+      );
+
+      console.log(`[${this.chainId}] Found ${brokerTransfers.length} outgoing broker ERC20 transfers`);
+
+      // Get token decimals for formatting
+      const tokenDecimalsMap = new Map<string, number>();
+      const tokenSymbolMap = new Map<string, string>();
+
+      for (const transfer of brokerTransfers) {
+        if (!tokenDecimalsMap.has(transfer.tokenAddress)) {
+          try {
+            // Create ERC20 contract instance
+            const tokenContract = new ethers.Contract(
+              transfer.tokenAddress,
+              ['function decimals() view returns (uint8)', 'function symbol() view returns (string)'],
+              this.provider
+            );
+
+            const [decimals, symbol] = await Promise.all([
+              tokenContract.decimals(),
+              tokenContract.symbol().catch(() => 'UNKNOWN')
+            ]);
+
+            tokenDecimalsMap.set(transfer.tokenAddress, Number(decimals));
+            tokenSymbolMap.set(transfer.tokenAddress, symbol);
+          } catch (error) {
+            console.warn(`[${this.chainId}] Failed to get token info for ${transfer.tokenAddress}, using default decimals=18`);
+            tokenDecimalsMap.set(transfer.tokenAddress, 18);
+            tokenSymbolMap.set(transfer.tokenAddress, 'UNKNOWN');
+          }
+        }
+      }
+
+      // Classify transfers based on position (same logic as internal transactions)
+      // Pattern for broker operations:
+      // - swapERC20: [recipient (swap), feeRecipient (commission), payback (surplus)]
+      // - revertERC20: [feeRecipient (commission), payback (refund)]
+      // - refundERC20: [feeRecipient (commission), payback (refund)]
+
+      return brokerTransfers.map((tx, index) => {
+        let type: 'swap' | 'fee' | 'refund' | 'unknown' = 'unknown';
+
+        if (brokerTransfers.length === 1) {
+          // Single transfer - refund-only (no commission)
+          type = 'refund';
+        } else if (brokerTransfers.length === 2) {
+          // Two transfers: first is fee, second is refund (revert pattern)
+          // OR first is swap, second is fee (swap pattern without surplus)
+          if (index === 0) {
+            type = 'fee';
+          } else if (index === 1) {
+            type = 'refund';
+          }
+        } else if (brokerTransfers.length >= 3) {
+          // Three or more transfers: swap, fee, refund/surplus
+          if (index === 0) {
+            type = 'swap';
+          } else if (index === 1) {
+            type = 'fee';
+          } else {
+            type = 'refund';
+          }
+        }
+
+        const decimals = tokenDecimalsMap.get(tx.tokenAddress) || 18;
+        const symbol = tokenSymbolMap.get(tx.tokenAddress);
+
+        return {
+          from: tx.from,
+          to: tx.to,
+          value: ethers.formatUnits(tx.value, decimals),
+          valueRaw: tx.value,
+          tokenAddress: tx.tokenAddress,
+          tokenSymbol: symbol,
+          tokenDecimals: decimals,
+          type
+        };
+      });
+    } catch (error) {
+      console.error(`[${this.chainId}] Error fetching ERC20 transfers for ${txHash}:`, error);
+      return [];
+    }
+  }
+
   getCollectConfirms(): number {
     return this.config.collectConfirms || this.config.confirmations;
   }

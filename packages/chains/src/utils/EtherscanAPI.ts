@@ -276,6 +276,90 @@ export class EtherscanAPI {
   }
 
   /**
+   * Fetch ERC20 Transfer events for a specific transaction hash.
+   * Parses Transfer events from ERC20 token contracts to decode broker operations.
+   *
+   * @param txHash - Transaction hash to fetch ERC20 transfers for
+   * @param tokenAddress - ERC20 token contract address (optional filter)
+   * @returns Array of ERC20 transfers with decoded amounts
+   */
+  async getERC20TransfersByTxHash(
+    txHash: string,
+    tokenAddress?: string
+  ): Promise<Array<{
+    from: string;
+    to: string;
+    value: string;      // Raw value as hex string
+    tokenAddress: string;
+    logIndex: number;
+  }>> {
+    try {
+      // Get transaction receipt to extract Transfer events
+      const params = new URLSearchParams({
+        module: 'proxy',
+        action: 'eth_getTransactionReceipt',
+        txhash: txHash,
+      });
+
+      if (this.apiKey) {
+        params.append('apikey', this.apiKey);
+      }
+
+      const response = await fetch(`${this.apiUrl}?${params.toString()}`);
+      const data = await response.json() as any;
+
+      if (!data.result || !data.result.logs) {
+        return [];
+      }
+
+      // ERC20 Transfer event signature: Transfer(address indexed from, address indexed to, uint256 value)
+      const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+      const transfers: Array<{
+        from: string;
+        to: string;
+        value: string;
+        tokenAddress: string;
+        logIndex: number;
+      }> = [];
+
+      for (const log of data.result.logs) {
+        // Check if this is a Transfer event
+        if (log.topics && log.topics[0] === TRANSFER_EVENT_TOPIC) {
+          // Filter by token address if specified
+          if (tokenAddress && log.address.toLowerCase() !== tokenAddress.toLowerCase()) {
+            continue;
+          }
+
+          // Decode Transfer event
+          // topics[0] = event signature
+          // topics[1] = from address (padded)
+          // topics[2] = to address (padded)
+          // data = value (uint256)
+          if (log.topics.length >= 3) {
+            const from = '0x' + log.topics[1].slice(26); // Remove padding
+            const to = '0x' + log.topics[2].slice(26);   // Remove padding
+            const value = log.data; // Keep as hex string for now
+
+            transfers.push({
+              from,
+              to,
+              value,
+              tokenAddress: log.address,
+              logIndex: parseInt(log.logIndex, 16)
+            });
+          }
+        }
+      }
+
+      return transfers;
+    } catch (error) {
+      console.error('Failed to fetch ERC20 transfers from Etherscan:', error);
+      return [];
+    }
+  }
+
+  /**
    * Fetch internal transactions for a specific transaction hash.
    * Internal transactions are transfers that occur within smart contract execution.
    * Used to decode broker contract calls into individual transfer operations.
