@@ -573,6 +573,9 @@ export class RpcServer {
         case 'ETH':
           rpcEndpoints[chainId] = 'https://ethereum-rpc.publicnode.com';
           break;
+        case 'SEPOLIA':
+          rpcEndpoints[chainId] = process.env.SEPOLIA_RPC || 'https://eth-sepolia.g.alchemy.com/v2/demo';
+          break;
         case 'POLYGON':
           rpcEndpoints[chainId] = 'https://polygon-rpc.com';
           break;
@@ -689,6 +692,33 @@ export class RpcServer {
             };
           }
         }
+
+        // Fetch ERC20 transfers for broker contract ERC20 operations
+        // Check if this is an ERC20 asset (format: "ERC20:0x...")
+        if (item.asset && item.asset.startsWith('ERC20:')) {
+          try {
+            // Extract token contract address from asset code (format: "ERC20:0xAddress")
+            const tokenAddress = item.asset.split(':')[1];
+
+            // Get the plugin for this chain
+            const erc20Plugin = this.pluginManager.getPlugin(item.chainId);
+
+            if (tokenAddress && erc20Plugin && typeof (erc20Plugin as any).getERC20Transfers === 'function') {
+              console.log(`[${item.chainId}] Fetching ERC20 transfers for broker call ${item.submittedTx.txid}`);
+              const erc20Transfers = await (erc20Plugin as any).getERC20Transfers(
+                item.submittedTx.txid,
+                tokenAddress
+              );
+
+              if (erc20Transfers && erc20Transfers.length > 0) {
+                taggedTx.erc20Transfers = erc20Transfers;
+                console.log(`[${item.chainId}] Found ${erc20Transfers.length} ERC20 transfers for ${item.submittedTx.txid}`);
+              }
+            }
+          } catch (error) {
+            console.error(`[${item.chainId}] Error fetching ERC20 transfers for ${item.submittedTx?.txid}:`, error);
+          }
+        }
       }
 
       return taggedTx;
@@ -785,23 +815,17 @@ export class RpcServer {
     if (!deal) {
       throw new Error('Deal not found');
     }
-    
-    // Check if assets are already locked
-    const hasDeposits = (deal.sideAState?.deposits?.length ?? 0) > 0 || (deal.sideBState?.deposits?.length ?? 0) > 0;
-    if (hasDeposits) {
-      throw new Error('Cannot cancel deal - assets have already been locked');
+
+    // Only allow cancellation in CREATED stage (before any deposits arrive)
+    if (deal.stage !== 'CREATED') {
+      throw new Error('Cannot cancel deal - deal has already started or been finalized');
     }
-    
-    // Check if deal is already closed or reverted
-    if (deal.stage === 'CLOSED' || deal.stage === 'REVERTED') {
-      throw new Error('Deal has already been finalized');
-    }
-    
+
     // Update deal stage to REVERTED
     deal.stage = 'REVERTED';
     this.dealRepo.update(deal);
     this.dealRepo.addEvent(deal.id, 'Deal cancelled by party');
-    
+
     return { ok: true };
   }
   
@@ -4120,12 +4144,10 @@ export class RpcServer {
             handleClosedDeal();
           }
           
-          // Show/hide cancel button based on whether assets are locked
-          const hasDeposits = 
-            (dealData.collection?.sideA?.deposits?.length > 0) ||
-            (dealData.collection?.sideB?.deposits?.length > 0);
-          
-          if (!hasDeposits && dealData.stage !== 'CLOSED' && dealData.stage !== 'REVERTED') {
+          // Show/hide cancel button based on deal stage
+          // Can only cancel in CREATED stage (before any deposits)
+          // Cannot cancel in COLLECTION/WAITING/SWAP (deposits may be incoming or locked)
+          if (dealData.stage === 'CREATED') {
             document.getElementById('cancelSection').style.display = 'block';
           } else {
             document.getElementById('cancelSection').style.display = 'none';
@@ -5167,6 +5189,8 @@ export class RpcServer {
                     blockNumber: item.blockNumber,
                     // Include internal transactions if present (for broker swaps)
                     internalTransactions: item.internalTransactions,
+                    // Include ERC20 transfers if present (for broker ERC20 swaps)
+                    erc20Transfers: item.erc20Transfers,
                     purpose: item.purpose
                   });
                 }
@@ -5546,6 +5570,39 @@ export class RpcServer {
                 internalTxHtml += '</div>';
               }
 
+              // Build ERC20 transfer details HTML if present (for broker ERC20 swaps)
+              let erc20TxHtml = '';
+              if (tx.erc20Transfers && tx.erc20Transfers.length > 0 && tx.purpose === 'BROKER_SWAP') {
+                erc20TxHtml = '<div class="erc20-transactions" style="margin-top: 10px; padding-left: 20px; border-left: 3px solid #10b981;">';
+                erc20TxHtml += '<div style="font-size: 11px; color: #6b7280; margin-bottom: 5px;"><strong>ERC20 Token Transfers:</strong></div>';
+
+                for (const erc20Tx of tx.erc20Transfers) {
+                  const erc20Type = erc20Tx.type || 'transfer';
+                  const erc20TypeLabel = erc20Type === 'swap' ? '💱 Swap' :
+                                        erc20Type === 'fee' ? '💰 Fee' :
+                                        erc20Type === 'refund' ? '↩️ Refund' : '→';
+
+                  // Format addresses
+                  const erc20FromAddr = formatAddress(erc20Tx.from);
+                  const erc20ToAddr = formatAddress(erc20Tx.to);
+
+                  // Create explorer links for ERC20 transfer addresses
+                  const erc20FromLink = '<a href="' + getExplorerUrl(chainId, 'address', erc20Tx.from) + '" target="_blank" class="tx-hash-link" style="font-size: 10px;">' + erc20FromAddr + '</a>';
+                  const erc20ToLink = '<a href="' + getExplorerUrl(chainId, 'address', erc20Tx.to) + '" target="_blank" class="tx-hash-link" style="font-size: 10px;">' + erc20ToAddr + '</a>';
+
+                  erc20TxHtml += '<div style="margin: 5px 0; padding: 5px; background: #f0fdf4; border-radius: 4px; font-size: 10px;">';
+                  erc20TxHtml += '<span style="margin-right: 8px;">' + erc20TypeLabel + '</span>';
+                  erc20TxHtml += '<strong>' + erc20Tx.value + ' ' + (erc20Tx.tokenSymbol || 'tokens') + '</strong>';
+                  erc20TxHtml += '<div style="margin-top: 3px; color: #6b7280;">';
+                  erc20TxHtml += 'From: ' + erc20FromLink + '<br>';
+                  erc20TxHtml += 'To: ' + erc20ToLink;
+                  erc20TxHtml += '</div>';
+                  erc20TxHtml += '</div>';
+                }
+
+                erc20TxHtml += '</div>';
+              }
+
               return '<div class="transaction-item ' + itemClasses.join(' ') + '">' +
                 '<div class="tx-left">' +
                   '<div class="tx-header">' +
@@ -5562,6 +5619,7 @@ export class RpcServer {
                     '<span class="tx-addr-label">TxID:</span> ' + txLink +
                   '</div>' +
                   internalTxHtml +
+                  erc20TxHtml +
                 '</div>' +
                 '<div class="tx-right">' +
                   '<div class="tx-time">' + new Date(tx.time).toLocaleTimeString() + '</div>' +
@@ -5760,6 +5818,12 @@ export class RpcServer {
   /**
    * Approve broker contract for ERC20 tokens if broker is configured and asset is ERC20.
    * This is called when escrow is created for a party.
+   *
+   * Flow:
+   * 1. Fund escrow with gas from tank
+   * 2. Wait for gas funding confirmation
+   * 3. Execute ERC20 approval transaction
+   * 4. Refund excess gas back to tank
    */
   private async approveBrokerIfNeeded(
     plugin: ChainPlugin,
@@ -5784,19 +5848,136 @@ export class RpcServer {
     console.log(`[Broker] Approving broker for ERC20 token ${asset} in deal ${dealId.slice(0, 8)}...`);
 
     try {
-      // Note: Escrow must have gas for approval transaction
-      // This should be funded externally or by the user's initial deposit
+      // Step 1: Fund escrow with gas from tank
+      const tankPrivateKey = process.env.TANK_WALLET_PRIVATE_KEY;
+      if (!tankPrivateKey) {
+        console.warn(`[Broker] No TANK_WALLET_PRIVATE_KEY configured, skipping approval for ${asset}`);
+        this.dealRepo.addEvent(dealId, `Warning: Cannot approve broker for ${asset} - no gas tank configured`);
+        return;
+      }
 
-      // Submit approval transaction
+      // Estimate gas needed for approval transaction (typically ~50k gas)
+      const estimatedGasUnits = '60000'; // Conservative estimate for ERC20 approve
+      const gasPrice = await this.getGasPrice(plugin, chainId);
+      const gasCostWei = BigInt(estimatedGasUnits) * BigInt(gasPrice);
+      const gasFundAmount = (gasCostWei * BigInt(120)) / BigInt(100); // Add 20% buffer
+
+      console.log(`[Broker] Funding escrow ${escrow.address} with ${gasFundAmount} wei for approval`);
+      this.dealRepo.addEvent(dealId, `Funding escrow with gas for broker approval...`);
+
+      // Fund escrow from tank
+      const fundingTx = await this.fundEscrowFromTank(plugin, chainId, escrow.address, gasFundAmount.toString(), tankPrivateKey);
+      console.log(`[Broker] Gas funding tx: ${fundingTx.txid}`);
+
+      // Step 2: Wait for gas funding confirmation
+      console.log(`[Broker] Waiting for gas funding confirmation...`);
+      await this.waitForTxConfirmation(plugin, fundingTx.txid, 1); // Wait for 1 confirmation
+      console.log(`[Broker] Gas funding confirmed`);
+
+      // Step 3: Submit approval transaction
       const tx = await plugin.approveBrokerForERC20(escrow, assetConfig.contractAddress);
       console.log(`[Broker] Approval tx submitted: ${tx.txid}`);
-
       this.dealRepo.addEvent(dealId, `Broker approved for ${asset}: ${tx.txid.slice(0, 10)}...`);
+
+      // Step 4: Queue gas refund back to tank (will be processed by Engine)
+      // The refund happens after swap execution to minimize transactions
+      console.log(`[Broker] Approval complete. Gas refund will be processed after swap execution.`);
+
     } catch (error: any) {
       console.error(`[Broker] Failed to approve broker for ${asset}:`, error.message);
       this.dealRepo.addEvent(dealId, `Warning: Broker approval failed for ${asset}: ${error.message}`);
-      // Don't throw - we can still fall back to non-broker flow if needed
+      // Don't throw - deal can still proceed, user may fund gas manually
     }
+  }
+
+  /**
+   * Get current gas price for a chain
+   */
+  private async getGasPrice(plugin: ChainPlugin, chainId: ChainId): Promise<string> {
+    try {
+      // Use plugin-specific method if available
+      if ((plugin as any).getGasPrice) {
+        return await (plugin as any).getGasPrice();
+      }
+
+      // Default gas prices by chain (in wei)
+      const defaults: Record<string, string> = {
+        'ETH': '30000000000',      // 30 gwei
+        'SEPOLIA': '10000000000',   // 10 gwei
+        'POLYGON': '50000000000',   // 50 gwei
+        'BASE': '1000000000',       // 1 gwei
+        'BSC': '5000000000',        // 5 gwei
+      };
+
+      return defaults[chainId] || '20000000000'; // Default 20 gwei
+    } catch (error) {
+      console.warn(`[Broker] Failed to get gas price, using default`);
+      return '20000000000'; // 20 gwei default
+    }
+  }
+
+  /**
+   * Fund escrow from tank wallet
+   */
+  private async fundEscrowFromTank(
+    plugin: any,
+    chainId: ChainId,
+    escrowAddress: string,
+    amountWei: string,
+    tankPrivateKey: string
+  ): Promise<{ txid: string }> {
+    // Import ethers for tank wallet operations
+    const ethers = await import('ethers');
+
+    // Get RPC URL from plugin config
+    const rpcUrl = (plugin as any).config?.rpcUrl;
+    if (!rpcUrl) {
+      throw new Error(`No RPC URL configured for chain ${chainId}`);
+    }
+
+    // Create provider and tank wallet
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const tankWallet = new ethers.Wallet(tankPrivateKey, provider);
+
+    // Send ETH from tank to escrow
+    const tx = await tankWallet.sendTransaction({
+      to: escrowAddress,
+      value: BigInt(amountWei),
+    });
+
+    await tx.wait(1); // Wait for 1 confirmation
+
+    return { txid: tx.hash };
+  }
+
+  /**
+   * Wait for transaction confirmation
+   */
+  private async waitForTxConfirmation(
+    plugin: ChainPlugin,
+    txid: string,
+    requiredConfirmations: number,
+    maxWaitSeconds: number = 300
+  ): Promise<void> {
+    const startTime = Date.now();
+    const maxWaitMs = maxWaitSeconds * 1000;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      const confirmations = await plugin.getTxConfirmations(txid);
+
+      if (confirmations >= requiredConfirmations) {
+        return; // Confirmed!
+      }
+
+      if (confirmations < 0) {
+        throw new Error(`Transaction ${txid} was reorganized or not found`);
+      }
+
+      // Wait 5 seconds before checking again
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+
+    throw new Error(`Transaction ${txid} did not confirm within ${maxWaitSeconds} seconds`);
   }
 
   /**
