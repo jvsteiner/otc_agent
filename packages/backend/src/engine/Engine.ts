@@ -501,27 +501,27 @@ export class Engine {
       
       // Get commission deposits if different currency
       let allDeposits = tradeDeposits.deposits;
-      if (deal.commissionPlan.sideA.currency === 'NATIVE' && 
+      if (deal.commissionPlan.sideA.currency === 'NATIVE' &&
           deal.commissionPlan.sideA.mode === 'FIXED_USD_NATIVE') {
         const nativeAsset = getNativeAsset(deal.alice.chainId);
         const commissionDeposits = await plugin.listConfirmedDeposits(
           nativeAsset,
           deal.escrowA.address,
-          minConf  // Use same minConf as trade deposits (1 for CREATED, proper threshold for COLLECTION)
+          minConf  // Use same minConf as trade deposits (0 for CREATED/COLLECTION, proper threshold for WAITING)
         );
-        
+
         for (const deposit of commissionDeposits.deposits) {
           const isSynthetic = deposit.txid.startsWith('erc20-balance-');
           this.depositRepo.upsert(deal.id, deposit, deal.alice.chainId, deal.escrowA.address, isSynthetic);
         }
-        
+
         // Combine trade and commission deposits (different assets)
         allDeposits = [...tradeDeposits.deposits, ...commissionDeposits.deposits];
       }
       
       // Check locks
       const commissionAmount = this.calculateCommissionAmount(deal, 'A');
-      const commissionAsset = deal.commissionPlan.sideA.currency === 'ASSET' 
+      const commissionAsset = deal.commissionPlan.sideA.currency === 'ASSET'
         ? normalizedAsset  // Use normalized asset to match deposits
         : getNativeAsset(deal.alice.chainId);
       
@@ -872,23 +872,33 @@ export class Engine {
   private calculateCommissionAmount(deal: Deal, side: 'A' | 'B'): string {
     const commReq = side === 'A' ? deal.commissionPlan.sideA : deal.commissionPlan.sideB;
     const tradeSpec = side === 'A' ? deal.alice : deal.bob;
-    
+
+    let baseCommission = '0';
+
     if (commReq.mode === 'PERCENT_BPS') {
       const metadata = getAssetMetadata(tradeSpec.asset, tradeSpec.chainId);
       const decimals = metadata?.decimals || 18;
-      return calculateCommission(tradeSpec.amount, commReq.percentBps!, decimals);
+      baseCommission = calculateCommission(tradeSpec.amount, commReq.percentBps!, decimals);
     } else if (commReq.mode === 'FIXED_USD_NATIVE') {
       // For ASSET currency, use USD value directly for stablecoins
       if (commReq.currency === 'ASSET') {
         // For stablecoins like USDT, 1 token = $1, so USD value = token amount
-        return commReq.usdFixed || '0';
+        baseCommission = commReq.usdFixed || '0';
       } else {
         // For NATIVE currency, use the calculated native amount
-        return commReq.nativeFixed || '0';
+        baseCommission = commReq.nativeFixed || '0';
       }
-    } else {
-      return '0';
     }
+
+    // For ERC20 assets, add fixed fee (in swap currency) to cover gas costs
+    // Total commission = percentage commission + fixed fee (both in same currency)
+    if (tradeSpec.asset.startsWith('ERC20:') && commReq.erc20FixedFee) {
+      const totalCommission = sumAmounts([baseCommission, commReq.erc20FixedFee]);
+      console.log(`[Commission] ${side} ERC20 total: ${baseCommission} (0.3%) + ${commReq.erc20FixedFee} (fixed) = ${totalCommission}`);
+      return totalCommission;
+    }
+
+    return baseCommission;
   }
 
   private async preflightChecks(deal: Deal): Promise<boolean> {

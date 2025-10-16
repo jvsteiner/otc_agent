@@ -254,12 +254,29 @@ export class RpcServer {
   private getCommissionRequirement(spec: DealAssetSpec): CommissionRequirement {
     // ALL assets use the same 0.3% commission from surplus
     // This ensures fairness across all asset types
-    return {
+    const req: CommissionRequirement = {
       mode: 'PERCENT_BPS',
       currency: 'ASSET',
       percentBps: 30, // 0.3% for all assets
       coveredBySurplus: true,
     };
+
+    // Add fixed fee for ERC20 transfers (paid in the swap currency, not native)
+    // This covers gas costs for approval + transfer operations
+    // Fee is configured per-chain via environment variables
+    if (spec.asset.startsWith('ERC20:')) {
+      const envKey = `${spec.chainId}_ERC20_FEE`;
+      const configuredFee = process.env[envKey];
+
+      if (configuredFee && parseFloat(configuredFee) > 0) {
+        req.erc20FixedFee = configuredFee;
+        console.log(`[Commission] Set ERC20 fixed fee for ${spec.chainId}: ${configuredFee} (in swap currency)`);
+      } else {
+        console.log(`[Commission] No ERC20 fee configured for ${spec.chainId} (${envKey})`);
+      }
+    }
+
+    return req;
   }
 
   private async fillPartyDetails(params: FillPartyDetailsParams) {
@@ -490,9 +507,12 @@ export class RpcServer {
         commissionAmount = deal.commissionPlan.sideA.usdFixed || '0';
       }
 
-      // For PERCENT_BPS or same-asset commission, include commission in the trade amount
+      // Add ERC20 fixed fee if present (paid in same currency as swap)
+      const erc20Fee = deal.commissionPlan.sideA.erc20FixedFee || '0';
+
+      // For PERCENT_BPS or same-asset commission, include commission + ERC20 fee in the trade amount
       const totalRequired = deal.commissionPlan.sideA.currency === 'ASSET'
-        ? sumAmounts([deal.alice.amount, commissionAmount])
+        ? sumAmounts([deal.alice.amount, commissionAmount, erc20Fee])
         : deal.alice.amount;
 
       instructions.sideA.push({
@@ -535,9 +555,12 @@ export class RpcServer {
         commissionAmountB = deal.commissionPlan.sideB.usdFixed || '0';
       }
 
-      // For PERCENT_BPS or same-asset commission, include commission in the trade amount
+      // Add ERC20 fixed fee if present (paid in same currency as swap)
+      const erc20FeeB = deal.commissionPlan.sideB.erc20FixedFee || '0';
+
+      // For PERCENT_BPS or same-asset commission, include commission + ERC20 fee in the trade amount
       const totalRequiredB = deal.commissionPlan.sideB.currency === 'ASSET'
-        ? sumAmounts([deal.bob.amount, commissionAmountB])
+        ? sumAmounts([deal.bob.amount, commissionAmountB, erc20FeeB])
         : deal.bob.amount;
 
       instructions.sideB.push({
@@ -2514,6 +2537,11 @@ export class RpcServer {
                 Amount Required: <strong id="escrowAmount">${dealInfo.sendAmount} ${dealInfo.sendAsset} on ${getChainDisplayName(dealInfo.sendChain)}</strong>
               </span>
             </div>
+            <!-- Fee Breakdown -->
+            <div id="feeBreakdown" style="display: none; margin-top: 8px; padding: 8px; background: #fef3c7; border-left: 3px solid #f59e0b; font-size: 11px;">
+              <div style="font-weight: 600; margin-bottom: 4px; color: #92400e;">💰 Fee Breakdown:</div>
+              <div id="feeBreakdownContent" style="color: #78350f;"></div>
+            </div>
             <button class="escrow-copy-btn" onclick="copyEscrowAddress()">
               📋 Copy Escrow Address
             </button>
@@ -4120,6 +4148,31 @@ export class RpcServer {
             document.getElementById('escrowAddress').textContent = escrowAddr;
             document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + assetName + ' on ' + chainDisplayName;
 
+            // Calculate and display fee breakdown
+            const yourSpec = party === 'ALICE' ? dealData.alice : dealData.bob;
+            const yourCommission = party === 'ALICE' ? dealData.commissionPlan.sideA : dealData.commissionPlan.sideB;
+            const baseAmount = parseFloat(yourSpec.amount);
+            const commissionRate = yourCommission.percentBps || 30; // Default 0.3% = 30 bps
+            const commissionAmount = baseAmount * (commissionRate / 10000);
+            const erc20Fee = parseFloat(yourCommission.erc20FixedFee || '0');
+            const totalAmount = parseFloat(escrowAmount);
+
+            // Only show breakdown if there are fees
+            if (commissionAmount > 0 || erc20Fee > 0) {
+              let breakdownHtml = '';
+              breakdownHtml += '<div>• Trade Amount: <strong>' + baseAmount.toFixed(6) + ' ' + assetName + '</strong></div>';
+              if (commissionAmount > 0) {
+                breakdownHtml += '<div>• Commission (' + (commissionRate / 100).toFixed(1) + '%): <strong>' + commissionAmount.toFixed(6) + ' ' + assetName + '</strong></div>';
+              }
+              if (erc20Fee > 0) {
+                breakdownHtml += '<div>• ERC20 Gas Fee: <strong>' + erc20Fee.toFixed(6) + ' ' + assetName + '</strong></div>';
+              }
+              breakdownHtml += '<div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #f59e0b;">• <strong>Total Required: ' + totalAmount.toFixed(6) + ' ' + assetName + '</strong></div>';
+
+              document.getElementById('feeBreakdownContent').innerHTML = breakdownHtml;
+              document.getElementById('feeBreakdown').style.display = 'block';
+            }
+
             // Fetch actual token symbol for ERC20 tokens
             let cleanedEscrowAsset = escrowAsset;
             if (escrowAsset && escrowAsset.includes('@')) {
@@ -4128,7 +4181,23 @@ export class RpcServer {
             if (cleanedEscrowAsset && cleanedEscrowAsset.startsWith('ERC20:')) {
               getAssetNameAsync(cleanedEscrowAsset, escrowChainId).then(symbol => {
                 if (symbol && symbol !== assetName) {
+                  assetName = symbol;
                   document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + symbol + ' on ' + chainDisplayName;
+
+                  // Update fee breakdown with correct symbol
+                  if (commissionAmount > 0 || erc20Fee > 0) {
+                    let breakdownHtml = '';
+                    breakdownHtml += '<div>• Trade Amount: <strong>' + baseAmount.toFixed(6) + ' ' + symbol + '</strong></div>';
+                    if (commissionAmount > 0) {
+                      breakdownHtml += '<div>• Commission (' + (commissionRate / 100).toFixed(1) + '%): <strong>' + commissionAmount.toFixed(6) + ' ' + symbol + '</strong></div>';
+                    }
+                    if (erc20Fee > 0) {
+                      breakdownHtml += '<div>• ERC20 Gas Fee: <strong>' + erc20Fee.toFixed(6) + ' ' + symbol + '</strong></div>';
+                    }
+                    breakdownHtml += '<div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #f59e0b;">• <strong>Total Required: ' + totalAmount.toFixed(6) + ' ' + symbol + '</strong></div>';
+
+                    document.getElementById('feeBreakdownContent').innerHTML = breakdownHtml;
+                  }
                 }
               });
             }

@@ -91,6 +91,8 @@ export interface CommissionRequirement {
   coveredBySurplus: true;
   /** Whether commission can be covered by other party's surplus */
   allowCrossCover?: boolean;
+  /** Fixed asset fee for ERC20 transfers (covers gas costs, paid in swap currency) */
+  erc20FixedFee?: string;   // e.g., "0.001" USDT for USDT swaps on Polygon
 }
 
 /**
