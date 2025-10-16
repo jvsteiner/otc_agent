@@ -49,11 +49,11 @@ CREATE TABLE IF NOT EXISTS accounts (
   utxo_state TEXT              -- JSON snapshot if needed
 );
 
--- Leases (per-deal processing lock)
+-- Leases (per-deal processing lock and global recovery locks)
 CREATE TABLE IF NOT EXISTS leases (
-  dealId TEXT PRIMARY KEY,
-  ownerId TEXT NOT NULL,
-  leaseUntil TEXT NOT NULL
+  id TEXT PRIMARY KEY,
+  type TEXT UNIQUE NOT NULL, -- 'DEAL_<dealId>', 'RECOVERY_GLOBAL', etc.
+  expiresAt INTEGER NOT NULL
 );
 
 -- Events / audit trail
@@ -91,4 +91,4 @@ CREATE INDEX IF NOT EXISTS idx_deposits_address ON escrow_deposits(address);
 CREATE INDEX IF NOT EXISTS idx_queue_deal ON queue_items(dealId);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_items(status);
 CREATE INDEX IF NOT EXISTS idx_events_deal ON events(dealId);
-CREATE INDEX IF NOT EXISTS idx_leases_until ON leases(leaseUntil);
+CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases(type, expiresAt);

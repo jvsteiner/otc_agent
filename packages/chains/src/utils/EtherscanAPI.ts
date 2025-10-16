@@ -55,8 +55,10 @@ interface EtherscanResponse {
 export class EtherscanAPI {
   private apiUrl: string;
   private apiKey?: string;
+  private provider?: ethers.JsonRpcProvider;
 
-  constructor(chainId: string, apiKey?: string) {
+  constructor(chainId: string, apiKey?: string, provider?: ethers.JsonRpcProvider) {
+    this.provider = provider;
     // Try to get API key from environment variables if not provided
     const envKeyMap: Record<string, string> = {
       'ETH': 'ETHERSCAN_API_KEY',
@@ -294,22 +296,40 @@ export class EtherscanAPI {
     logIndex: number;
   }>> {
     try {
-      // Get transaction receipt to extract Transfer events
-      const params = new URLSearchParams({
-        module: 'proxy',
-        action: 'eth_getTransactionReceipt',
-        txhash: txHash,
-      });
+      // Get transaction receipt logs
+      let logs: readonly any[] | any[];
 
-      if (this.apiKey) {
-        params.append('apikey', this.apiKey);
-      }
+      if (this.provider) {
+        // Use RPC provider directly (preferred method)
+        console.log(`Fetching transaction receipt via RPC provider for ${txHash}`);
+        const receipt = await this.provider.getTransactionReceipt(txHash);
 
-      const response = await fetch(`${this.apiUrl}?${params.toString()}`);
-      const data = await response.json() as any;
+        if (!receipt || !receipt.logs) {
+          return [];
+        }
 
-      if (!data.result || !data.result.logs) {
-        return [];
+        logs = receipt.logs;
+      } else {
+        // Fallback to deprecated Etherscan proxy API (may fail)
+        console.warn('Using deprecated Etherscan API - consider providing an RPC provider');
+        const params = new URLSearchParams({
+          module: 'proxy',
+          action: 'eth_getTransactionReceipt',
+          txhash: txHash,
+        });
+
+        if (this.apiKey) {
+          params.append('apikey', this.apiKey);
+        }
+
+        const response = await fetch(`${this.apiUrl}?${params.toString()}`);
+        const data = await response.json() as any;
+
+        if (!data.result || !data.result.logs) {
+          return [];
+        }
+
+        logs = data.result.logs;
       }
 
       // ERC20 Transfer event signature: Transfer(address indexed from, address indexed to, uint256 value)
@@ -323,7 +343,7 @@ export class EtherscanAPI {
         logIndex: number;
       }> = [];
 
-      for (const log of data.result.logs) {
+      for (const log of logs) {
         // Check if this is a Transfer event
         if (log.topics && log.topics[0] === TRANSFER_EVENT_TOPIC) {
           // Filter by token address if specified
@@ -341,12 +361,17 @@ export class EtherscanAPI {
             const to = '0x' + log.topics[2].slice(26);   // Remove padding
             const value = log.data; // Keep as hex string for now
 
+            // Handle logIndex - RPC provider returns number, Etherscan returns hex string
+            const logIndex = typeof log.logIndex === 'number'
+              ? log.logIndex
+              : (typeof log.logIndex === 'string' ? parseInt(log.logIndex, 16) : log.index);
+
             transfers.push({
               from,
               to,
               value,
               tokenAddress: log.address,
-              logIndex: parseInt(log.logIndex, 16)
+              logIndex
             });
           }
         }

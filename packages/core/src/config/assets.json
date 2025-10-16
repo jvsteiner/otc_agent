@@ -177,15 +177,15 @@
       "icon": "🧪"
     },
     {
-      "assetName": "Tether USD (Sepolia Testnet)",
-      "assetSymbol": "USDT",
+      "assetName": "USD Coin (Sepolia Testnet)",
+      "assetSymbol": "USDC",
       "chainId": "SEPOLIA",
       "native": false,
       "type": "ERC20",
-      "contractAddress": "0xaa8e23fb1079ea71e0a56f48a2aa51851d8433d0",
+      "contractAddress": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
       "tokenId": null,
       "decimals": 6,
-      "icon": "₮"
+      "icon": "💵"
     },
     {
       "assetName": "BNB",

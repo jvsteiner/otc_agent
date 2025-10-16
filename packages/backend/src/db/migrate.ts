@@ -216,6 +216,111 @@ export function runMigrations(db: DB): void {
             }
             console.log('Migration already applied, continuing...');
           }
+        }
+        // Special handling for the recovery system migration
+        else if (file === '005_recovery_system.sql') {
+          try {
+            // Check if queue_items table exists
+            const queueTableExists = db.prepare(
+              "SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='queue_items'"
+            ).get() as { count: number };
+
+            if (queueTableExists.count > 0) {
+              // Add recovery columns to queue_items if they don't exist
+              const recoveryColumns = ['recoveryAttempts', 'lastRecoveryAt', 'recoveryError'];
+              for (const col of recoveryColumns) {
+                const checkColumn = db.prepare(
+                  "SELECT COUNT(*) as count FROM pragma_table_info('queue_items') WHERE name = ?"
+                ).get(col) as { count: number };
+
+                if (checkColumn.count === 0) {
+                  console.log(`  Adding ${col} column to queue_items`);
+                  if (col === 'recoveryAttempts') {
+                    db.exec('ALTER TABLE queue_items ADD COLUMN recoveryAttempts INTEGER DEFAULT 0');
+                  } else if (col === 'lastRecoveryAt') {
+                    db.exec('ALTER TABLE queue_items ADD COLUMN lastRecoveryAt INTEGER');
+                  } else if (col === 'recoveryError') {
+                    db.exec('ALTER TABLE queue_items ADD COLUMN recoveryError TEXT');
+                  }
+                }
+              }
+
+              // Add index for efficient recovery queries
+              db.exec('CREATE INDEX IF NOT EXISTS idx_queue_items_recovery ON queue_items(status, submittedTx, lastRecoveryAt)');
+            } else {
+              console.log('  queue_items table does not exist yet, skipping column additions');
+            }
+
+            // Handle leases table schema migration
+            // Check if leases table exists and what schema it has
+            const leasesTableExists = db.prepare(
+              "SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='leases'"
+            ).get() as { count: number };
+
+            if (leasesTableExists.count > 0) {
+              // Check if it has the new schema (type column) or old schema (dealId column)
+              const hasTypeColumn = db.prepare(
+                "SELECT COUNT(*) as count FROM pragma_table_info('leases') WHERE name = 'type'"
+              ).get() as { count: number };
+
+              if (hasTypeColumn.count === 0) {
+                // Old schema detected, need to migrate
+                console.log('  Migrating leases table to new schema...');
+
+                // Rename old table
+                db.exec('ALTER TABLE leases RENAME TO leases_old');
+
+                // Create new leases table with new schema
+                db.exec(`
+                  CREATE TABLE leases (
+                    id TEXT PRIMARY KEY,
+                    type TEXT UNIQUE NOT NULL,
+                    expiresAt INTEGER NOT NULL
+                  )
+                `);
+
+                // Create index for the new schema
+                db.exec('CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases(type, expiresAt)');
+
+                // Migrate data from old schema to new schema
+                // Old schema: dealId (PK), ownerId, leaseUntil
+                // New schema: id (PK), type (UNIQUE), expiresAt
+                db.exec(`
+                  INSERT INTO leases (id, type, expiresAt)
+                  SELECT dealId, 'DEAL_' || dealId, strftime('%s', leaseUntil) * 1000
+                  FROM leases_old
+                `);
+
+                // Drop old table
+                db.exec('DROP TABLE leases_old');
+
+                console.log('  Leases table migration completed');
+              } else {
+                console.log('  Leases table already has new schema, skipping migration');
+              }
+            } else {
+              // Create new leases table from scratch
+              console.log('  Creating leases table with new schema...');
+              db.exec(`
+                CREATE TABLE leases (
+                  id TEXT PRIMARY KEY,
+                  type TEXT UNIQUE NOT NULL,
+                  expiresAt INTEGER NOT NULL
+                )
+              `);
+              db.exec('CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases(type, expiresAt)');
+            }
+
+            // Run the rest of the migration (recovery_log table)
+            db.exec(migration);
+
+            console.log('Recovery system migration completed successfully');
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
+              throw err;
+            }
+            console.log('Migration already applied, continuing...');
+          }
         } else {
           db.exec(migration);
         }

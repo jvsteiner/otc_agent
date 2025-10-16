@@ -134,8 +134,8 @@ export class EthereumPlugin implements ChainPlugin {
     });
 
     // Initialize Etherscan API for transaction history
-    // Use API key from config if provided
-    this.etherscanAPI = new EtherscanAPI(this.chainId, cfg.etherscanApiKey);
+    // Use API key from config if provided, and pass RPC provider for direct receipt fetching
+    this.etherscanAPI = new EtherscanAPI(this.chainId, cfg.etherscanApiKey, this.provider);
 
     // Initialize operator wallet if private key provided
     if (cfg.operatorPrivateKey) {
@@ -1688,6 +1688,46 @@ export class EthereumPlugin implements ChainPlugin {
   }
 
   /**
+   * Classifies broker transfers by position in the transfer sequence.
+   *
+   * Pattern for broker operations:
+   * - Single transfer: refund-only (no commission)
+   * - Two transfers: [fee, refund] (revert pattern) OR [swap, fee] (swap without surplus)
+   * - Three+ transfers: [swap, fee, refund/surplus]
+   *
+   * @param index - Position of transfer in sequence (0-based)
+   * @param totalCount - Total number of transfers in sequence
+   * @returns Transfer type classification
+   */
+  private classifyTransferByPosition(
+    index: number,
+    totalCount: number
+  ): 'swap' | 'fee' | 'refund' | 'unknown' {
+    if (totalCount === 1) {
+      // Single transfer - refund-only (no commission)
+      return 'refund';
+    } else if (totalCount === 2) {
+      // Two transfers: first is fee, second is refund (revert pattern)
+      // OR first is swap, second is fee (swap pattern without surplus)
+      if (index === 0) {
+        return 'fee';
+      } else if (index === 1) {
+        return 'refund';
+      }
+    } else if (totalCount >= 3) {
+      // Three or more transfers: swap, fee, refund/surplus
+      if (index === 0) {
+        return 'swap';
+      } else if (index === 1) {
+        return 'fee';
+      } else {
+        return 'refund';
+      }
+    }
+    return 'unknown';
+  }
+
+  /**
    * Fetch and decode internal transactions from a broker contract call.
    * Parses internal transfers to identify swap payouts, commission payments, and refunds.
    *
@@ -1749,47 +1789,14 @@ export class EthereumPlugin implements ChainPlugin {
 
       console.log(`[${this.chainId}] Found ${brokerTransfers.length} outgoing broker transfers`);
 
-      // Classify transfers based on position and patterns
-      // Pattern for broker operations:
-      // - swapNative/swapERC20: [recipient (swap), feeRecipient (commission), payback (surplus)]
-      // - revertNative/revertERC20: [feeRecipient (commission), payback (refund)]
-      // - refundNative/refundERC20: [feeRecipient (commission), payback (refund)]
-
-      return brokerTransfers.map((tx, index) => {
-        let type: 'swap' | 'fee' | 'refund' | 'unknown' = 'unknown';
-
-        if (brokerTransfers.length === 1) {
-          // Single transfer - could be swap-only or refund-only (no commission)
-          type = 'refund';
-        } else if (brokerTransfers.length === 2) {
-          // Two transfers: first is fee, second is refund (revert pattern)
-          // OR first is swap, second is fee (swap pattern without surplus)
-          if (index === 0) {
-            // First transfer - assume fee for revert, or swap for successful deal
-            // We can't determine definitively without more context
-            // Default to 'fee' as it's more common in two-transfer scenarios
-            type = 'fee';
-          } else if (index === 1) {
-            type = 'refund';
-          }
-        } else if (brokerTransfers.length >= 3) {
-          // Three or more transfers: swap (recipient), fee (feeRecipient), refund/surplus (payback)
-          if (index === 0) {
-            type = 'swap';
-          } else if (index === 1) {
-            type = 'fee';
-          } else {
-            type = 'refund';
-          }
-        }
-
-        return {
-          from: tx.from,
-          to: tx.to,
-          value: tx.value,
-          type
-        };
-      });
+      // Classify transfers based on position
+      // Pattern: [swap, fee, refund] for 3+ transfers, [fee, refund] for 2, [refund] for 1
+      return brokerTransfers.map((tx, index) => ({
+        from: tx.from,
+        to: tx.to,
+        value: tx.value,
+        type: this.classifyTransferByPosition(index, brokerTransfers.length)
+      }));
     } catch (error) {
       console.error(`[${this.chainId}] Error fetching internal transactions for ${txHash}:`, error);
       return [];
@@ -1834,16 +1841,13 @@ export class EthereumPlugin implements ChainPlugin {
 
       console.log(`[${this.chainId}] Found ${transfers.length} ERC20 transfers`);
 
-      // Get the broker contract address for filtering
-      const brokerAddress = (await this.brokerContract.getAddress()).toLowerCase();
+      // Filter to only include non-zero transfers
+      // Note: When querying by txHash, all transfers are already from this specific
+      // broker transaction. The broker uses escrow delegation (transferFrom), so
+      // transfers come FROM escrow address, not broker address.
+      const brokerTransfers = transfers.filter(tx => BigInt(tx.value) > 0n);
 
-      // Filter to only include transfers FROM the broker contract (outgoing transfers)
-      const brokerTransfers = transfers.filter(tx =>
-        tx.from.toLowerCase() === brokerAddress &&
-        BigInt(tx.value) > 0n
-      );
-
-      console.log(`[${this.chainId}] Found ${brokerTransfers.length} outgoing broker ERC20 transfers`);
+      console.log(`[${this.chainId}] Found ${brokerTransfers.length} ERC20 transfers in broker transaction`);
 
       // Get token decimals for formatting
       const tokenDecimalsMap = new Map<string, number>();
@@ -1874,37 +1878,9 @@ export class EthereumPlugin implements ChainPlugin {
         }
       }
 
-      // Classify transfers based on position (same logic as internal transactions)
-      // Pattern for broker operations:
-      // - swapERC20: [recipient (swap), feeRecipient (commission), payback (surplus)]
-      // - revertERC20: [feeRecipient (commission), payback (refund)]
-      // - refundERC20: [feeRecipient (commission), payback (refund)]
-
+      // Classify transfers based on position
+      // Pattern: [swap, fee, refund] for 3+ transfers, [fee, refund] for 2, [refund] for 1
       return brokerTransfers.map((tx, index) => {
-        let type: 'swap' | 'fee' | 'refund' | 'unknown' = 'unknown';
-
-        if (brokerTransfers.length === 1) {
-          // Single transfer - refund-only (no commission)
-          type = 'refund';
-        } else if (brokerTransfers.length === 2) {
-          // Two transfers: first is fee, second is refund (revert pattern)
-          // OR first is swap, second is fee (swap pattern without surplus)
-          if (index === 0) {
-            type = 'fee';
-          } else if (index === 1) {
-            type = 'refund';
-          }
-        } else if (brokerTransfers.length >= 3) {
-          // Three or more transfers: swap, fee, refund/surplus
-          if (index === 0) {
-            type = 'swap';
-          } else if (index === 1) {
-            type = 'fee';
-          } else {
-            type = 'refund';
-          }
-        }
-
         const decimals = tokenDecimalsMap.get(tx.tokenAddress) || 18;
         const symbol = tokenSymbolMap.get(tx.tokenAddress);
 
@@ -1916,7 +1892,7 @@ export class EthereumPlugin implements ChainPlugin {
           tokenAddress: tx.tokenAddress,
           tokenSymbol: symbol,
           tokenDecimals: decimals,
-          type
+          type: this.classifyTransferByPosition(index, brokerTransfers.length)
         };
       });
     } catch (error) {

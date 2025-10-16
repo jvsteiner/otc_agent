@@ -14,6 +14,7 @@ import { runMigrations } from './db/migrate';
 import { RpcServer } from './api/rpc-server';
 import { Engine } from './engine/Engine';
 import { PluginManager, ChainConfig } from '@otc-broker/chains';
+import { RecoveryManager } from './services/RecoveryManager';
 
 /**
  * Main entry point for the backend server.
@@ -117,18 +118,43 @@ async function main() {
 
   // Initialize engine
   const engine = new Engine(db, pluginManager);
-  
+
+  // Initialize Recovery Manager
+  const recoveryManager = new RecoveryManager({
+    db,
+    chainPlugins: pluginManager.getAllPlugins(),
+    // Gas funding: Automatically uses TANK_WALLET_PRIVATE_KEY from env if available
+    // Falls back to TankManager if provided, or operates without gas funding
+    recoveryInterval: parseInt(process.env.RECOVERY_INTERVAL || '300000'), // 5 minutes default
+    maxAttempts: parseInt(process.env.RECOVERY_MAX_ATTEMPTS || '3'),
+    stuckThreshold: parseInt(process.env.RECOVERY_STUCK_THRESHOLD || '300000'), // 5 minutes
+    failedTxThreshold: parseInt(process.env.RECOVERY_FAILED_TX_THRESHOLD || '600000'), // 10 minutes
+  });
+
   // Start RPC server
   const rpcServer = new RpcServer(db, pluginManager);
   const port = parseInt(process.env.PORT || '8080');
   rpcServer.start(port);
-  
+
   // Start engine loop
   await engine.start();
-  
+
+  // Start recovery manager
+  await recoveryManager.start();
+  console.log('Recovery Manager started');
+
   // Graceful shutdown
-  process.on('SIGINT', () => {
+  process.on('SIGINT', async () => {
     console.log('Shutting down...');
+    await recoveryManager.stop();
+    engine.stop();
+    db.close();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', async () => {
+    console.log('Received SIGTERM, shutting down gracefully...');
+    await recoveryManager.stop();
     engine.stop();
     db.close();
     process.exit(0);

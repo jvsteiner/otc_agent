@@ -1949,6 +1949,10 @@ export class Engine {
     // Determine if this is ERC20 or native
     const assetConfig = parseAssetCode(item.asset, item.chainId);
     const currency = assetConfig?.contractAddress; // undefined for native
+    const decimals = assetConfig?.decimals; // Token decimals
+
+    console.log(`[BrokerSwap] DEBUG: Asset: ${item.asset}, Currency: ${currency}, Decimals: ${decimals}`);
+    console.log(`[BrokerSwap] DEBUG: AssetConfig:`, assetConfig);
 
     try {
       const result = await (plugin as any).swapViaBroker({
@@ -1960,6 +1964,7 @@ export class Engine {
         amount: item.amount,
         fees: item.fees,
         currency: currency,
+        decimals: decimals,
       });
 
       // Update queue item status (reuse plugin variable from beginning of method)
@@ -2013,6 +2018,7 @@ export class Engine {
     // Determine if this is ERC20 or native
     const assetConfig = parseAssetCode(item.asset, item.chainId);
     const currency = assetConfig?.contractAddress; // undefined for native
+    const decimals = assetConfig?.decimals; // Token decimals
 
     try {
       const result = await (plugin as any).revertViaBroker({
@@ -2022,6 +2028,7 @@ export class Engine {
         feeRecipient: item.feeRecipient,
         fees: item.fees,
         currency: currency,
+        decimals: decimals,
       });
 
       // Update queue item status (reuse plugin variable from beginning of method)
@@ -2075,6 +2082,7 @@ export class Engine {
     // Determine if this is ERC20 or native
     const assetConfig = parseAssetCode(item.asset, item.chainId);
     const currency = assetConfig?.contractAddress; // undefined for native
+    const decimals = assetConfig?.decimals; // Token decimals
 
     try {
       const result = await (plugin as any).refundViaBroker({
@@ -2084,6 +2092,7 @@ export class Engine {
         feeRecipient: item.feeRecipient,
         fees: item.fees,
         currency: currency,
+        decimals: decimals,
       });
 
       // Update queue item status (reuse plugin variable from beginning of method)

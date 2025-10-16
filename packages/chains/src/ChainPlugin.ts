@@ -106,6 +106,7 @@ export interface BrokerSwapParams {
   amount: string;           // Swap amount (decimal string)
   fees: string;             // Commission amount (decimal string)
   currency?: string;        // Token contract address (undefined for native)
+  decimals?: number;        // Token decimals (for ERC20 tokens)
 }
 
 /**
@@ -119,6 +120,7 @@ export interface BrokerRevertParams {
   feeRecipient: string;     // Address to receive commission
   fees: string;             // Commission amount (decimal string)
   currency?: string;        // Token contract address (undefined for native)
+  decimals?: number;        // Token decimals (for ERC20 tokens)
 }
 
 /**
@@ -133,6 +135,7 @@ export interface BrokerRefundParams {
   feeRecipient: string;     // Address to receive commission
   fees: string;             // Commission amount (decimal string)
   currency?: string;        // Token contract address (undefined for native)
+  decimals?: number;        // Token decimals (for ERC20 tokens)
 }
 
 /**
@@ -258,6 +261,16 @@ export interface ChainPlugin {
    * @returns The operator's blockchain address
    */
   getOperatorAddress(): string;
+
+  /**
+   * Check if broker contract is approved to spend ERC20 tokens from an address.
+   * Used to verify if approval transaction is needed before attempting broker operations.
+   *
+   * @param escrowAddress - The address holding ERC20 tokens
+   * @param tokenAddress - The ERC20 token contract address
+   * @returns True if broker has sufficient allowance (> 0), false otherwise
+   */
+  checkBrokerApproval?(escrowAddress: string, tokenAddress: string): Promise<boolean>;
 
   /**
    * Approve broker contract to spend ERC20 tokens from an escrow address.
