@@ -2,10 +2,12 @@
  * @fileoverview Main entry point for the OTC Broker Engine backend server.
  * Initializes the database, plugin manager, RPC server, and processing engine.
  * Manages the lifecycle of all backend components including graceful shutdown.
+ * Supports both HTTP and HTTPS with automatic SSL certificate detection.
  */
 
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import * as https from 'https';
 
 // Load .env from project root
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
@@ -15,6 +17,9 @@ import { RpcServer } from './api/rpc-server';
 import { Engine } from './engine/Engine';
 import { PluginManager, ChainConfig } from '@otc-broker/chains';
 import { RecoveryManager } from './services/RecoveryManager';
+import { loadSslCertificates, getSslSetupInfo } from './config/ssl-loader';
+import { getServerConfig, validateServerConfig, logServerConfig, applyServerConfig } from './config/server-config';
+import { HttpRedirectServer } from './services/http-redirect';
 
 /**
  * Main entry point for the backend server.
@@ -165,15 +170,77 @@ async function main() {
     failedTxThreshold: parseInt(process.env.RECOVERY_FAILED_TX_THRESHOLD || '600000'), // 10 minutes
   });
 
-  // Start RPC server
+  // Initialize RPC server (don't start yet - we need to configure HTTP/HTTPS first)
   const rpcServer = new RpcServer(db, pluginManager);
 
-  // Determine port: production mode defaults to 80, dev mode defaults to 8080
-  const defaultPort = restrictions.enabled ? '80' : '8080';
-  const port = parseInt(process.env.PORT || defaultPort);
+  // Load SSL certificates from .ssl directory
+  const projectRoot = path.resolve(__dirname, '../../..');
+  const sslResult = loadSslCertificates(projectRoot);
 
-  console.log(`Starting server on port ${port} (${restrictions.enabled ? 'production' : 'development'} mode)`);
-  rpcServer.start(port);
+  if (sslResult.success) {
+    console.log('✓ SSL certificates loaded successfully');
+  } else if (sslResult.error) {
+    console.warn(`⚠️  ${sslResult.error}`);
+  } else if (sslResult.info) {
+    console.log(`ℹ️  ${sslResult.info}`);
+  }
+
+  // Get server configuration based on SSL availability and production mode
+  const serverConfig = getServerConfig(sslResult.success, restrictions.enabled);
+
+  // Validate and log configuration
+  validateServerConfig(serverConfig);
+  logServerConfig(serverConfig);
+
+  // Apply BASE_URL to environment
+  applyServerConfig(serverConfig);
+
+  // Track redirect server for cleanup
+  let redirectServer: HttpRedirectServer | null = null;
+
+  // Start the appropriate server based on configuration
+  if (serverConfig.sslEnabled && sslResult.config) {
+    // HTTPS mode with SSL certificates
+    console.log('Starting HTTPS server with SSL...');
+
+    // Create HTTPS server with SSL configuration
+    const httpsServer = https.createServer(
+      {
+        key: sslResult.config.key,
+        cert: sslResult.config.cert,
+        ca: sslResult.config.ca,
+      },
+      rpcServer.getApp()
+    );
+
+    // Start HTTPS server
+    httpsServer.listen(serverConfig.port, () => {
+      console.log(`✓ HTTPS server listening on port ${serverConfig.port}`);
+    });
+
+    // Attach RPC server to HTTPS instance
+    rpcServer.start(httpsServer);
+
+    // Start HTTP to HTTPS redirect server on port 80
+    console.log('Starting HTTP redirect server...');
+    redirectServer = new HttpRedirectServer({
+      httpPort: serverConfig.httpRedirectPort,
+      httpsBaseUrl: serverConfig.baseUrl,
+      preservePath: true,
+      permanent: true,
+    });
+
+    // Start redirect server (with error handling for permission issues)
+    redirectServer.start().catch(error => {
+      console.warn('⚠️  Failed to start HTTP redirect server - continuing without HTTP redirect');
+      console.warn('   HTTPS server is still running normally');
+      redirectServer = null; // Clear reference if failed to start
+    });
+  } else {
+    // HTTP mode (development or production without SSL)
+    console.log(`Starting HTTP server on port ${serverConfig.port}...`);
+    rpcServer.start(serverConfig.port);
+  }
 
   // Start engine loop
   await engine.start();
@@ -187,6 +254,10 @@ async function main() {
     console.log('Shutting down...');
     await recoveryManager.stop();
     engine.stop();
+    rpcServer.stop();
+    if (redirectServer) {
+      await redirectServer.stop();
+    }
     db.close();
     process.exit(0);
   });
@@ -195,6 +266,10 @@ async function main() {
     console.log('Received SIGTERM, shutting down gracefully...');
     await recoveryManager.stop();
     engine.stop();
+    rpcServer.stop();
+    if (redirectServer) {
+      await redirectServer.stop();
+    }
     db.close();
     process.exit(0);
   });

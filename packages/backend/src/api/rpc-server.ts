@@ -71,6 +71,7 @@ export class RpcServer {
   private payoutRepo: PayoutRepository;
   private pluginManager: PluginManager;
   private emailService: EmailService;
+  private server: any | null = null; // HTTP or HTTPS server instance
 
   // Internal transaction retry cache
   private internalTxCache: Map<string, InternalTxRetryState> = new Map();
@@ -92,6 +93,14 @@ export class RpcServer {
 
     this.setupRoutes();
     this.startRetryWorker();
+  }
+
+  /**
+   * Gets the Express application instance.
+   * Useful for attaching to an external HTTP/HTTPS server.
+   */
+  getApp(): express.Application {
+    return this.app;
   }
 
   /**
@@ -6260,10 +6269,32 @@ export class RpcServer {
     return age < 600000; // 10 minutes
   }
 
-  start(port: number) {
-    this.app.listen(port, () => {
-      console.log(`RPC server listening on port ${port}`);
-    });
+  /**
+   * Starts the RPC server.
+   * Can either create a new HTTP server or attach to an existing server instance.
+   *
+   * @param portOrServer - Port number to create HTTP server, or existing server instance
+   *
+   * @example
+   * // Simple HTTP server
+   * rpcServer.start(8080);
+   *
+   * @example
+   * // HTTPS server
+   * const httpsServer = https.createServer(sslConfig, rpcServer.getApp());
+   * rpcServer.start(httpsServer);
+   */
+  start(portOrServer: number | any): void {
+    if (typeof portOrServer === 'number') {
+      // Create new HTTP server
+      this.server = this.app.listen(portOrServer, () => {
+        console.log(`✓ RPC server listening on port ${portOrServer}`);
+      });
+    } else {
+      // Use existing server instance (HTTP or HTTPS)
+      this.server = portOrServer;
+      console.log('✓ RPC server attached to existing server instance');
+    }
   }
 
   /**
@@ -6271,5 +6302,11 @@ export class RpcServer {
    */
   stop(): void {
     this.stopRetryWorker();
+
+    if (this.server) {
+      this.server.close(() => {
+        console.log('✓ RPC server stopped');
+      });
+    }
   }
 }
