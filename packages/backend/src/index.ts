@@ -27,7 +27,41 @@ import { RecoveryManager } from './services/RecoveryManager';
 async function main() {
   console.log('Starting OTC Broker Engine... (v2)'); // Force reload
   console.log('Electrum URL:', process.env.UNICITY_ELECTRUM || 'not set, using default');
-  
+
+  // Show production mode status
+  const productionConfig = await import('./config/production-config');
+  const restrictions = productionConfig.getProductionRestrictions();
+  if (restrictions.enabled) {
+    console.log('=====================================');
+    console.log('🔐 PRODUCTION MODE ENABLED');
+    console.log('-------------------------------------');
+    console.log('Allowed Chains:', restrictions.allowedChains === 'ALL' ? 'ALL CHAINS' : restrictions.allowedChains);
+    console.log('Allowed Assets:', restrictions.allowedAssets === 'ALL' ? 'ALL ASSETS' :
+      Array.isArray(restrictions.allowedAssets) && restrictions.allowedAssets.length > 10 ?
+        `${restrictions.allowedAssets.slice(0, 10).join(', ')}... (${restrictions.allowedAssets.length} total)` :
+        restrictions.allowedAssets);
+    console.log('Max Amounts:', restrictions.maxAmounts === 'NO LIMITS' ? 'NO LIMITS' : restrictions.maxAmounts);
+    console.log('=====================================');
+  } else {
+    console.log('🔓 Development mode - no production restrictions');
+  }
+
+  // Determine database path: production uses separate database
+  // This prevents dev and production from interfering with each other
+  let dbPath: string;
+  if (restrictions.enabled) {
+    // Production mode: use DB_PATH_PRODUCTION
+    dbPath = process.env.DB_PATH_PRODUCTION || './data/otc-production.db';
+    console.log(`Using production database: ${dbPath}`);
+  } else {
+    // Development mode: use DB_PATH
+    dbPath = process.env.DB_PATH || './data/otc.db';
+    console.log(`Using development database: ${dbPath}`);
+  }
+
+  // Override DB_PATH for initialization
+  process.env.DB_PATH = dbPath;
+
   // Initialize database
   const db = initDatabase();
   runMigrations(db);
@@ -133,7 +167,12 @@ async function main() {
 
   // Start RPC server
   const rpcServer = new RpcServer(db, pluginManager);
-  const port = parseInt(process.env.PORT || '8080');
+
+  // Determine port: production mode defaults to 80, dev mode defaults to 8080
+  const defaultPort = restrictions.enabled ? '80' : '8080';
+  const port = parseInt(process.env.PORT || defaultPort);
+
+  console.log(`Starting server on port ${port} (${restrictions.enabled ? 'production' : 'development'} mode)`);
   rpcServer.start(port);
 
   // Start engine loop

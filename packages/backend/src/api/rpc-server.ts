@@ -11,6 +11,7 @@ import { DB } from '../db/database';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import * as crypto from 'crypto';
 import { EmailService } from '../services/email';
+import * as productionConfig from '../config/production-config';
 
 interface CreateDealParams {
   alice: DealAssetSpec;
@@ -166,14 +167,29 @@ export class RpcServer {
   }
 
   private async createDeal(params: CreateDealParams) {
+    // Production mode validation - check restrictions before anything else
+    const productionConfig = await import('../config/production-config');
+
+    if (productionConfig.isProductionMode()) {
+      console.log('🔐 Validating deal against production restrictions...');
+      try {
+        // Validate chains and assets are allowed, and amounts are within limits
+        productionConfig.validateDealAmounts(params.alice, params.bob);
+        console.log('✅ Deal passed production validation');
+      } catch (error: any) {
+        console.warn(`Production validation failed: ${error.message}`);
+        throw error; // Re-throw with the user-friendly error message
+      }
+    }
+
     // Validate assets using the asset registry
     const aliceAsset = parseAssetCode(params.alice.asset, params.alice.chainId);
     const bobAsset = parseAssetCode(params.bob.asset, params.bob.chainId);
-    
+
     if (!aliceAsset) {
       throw new Error(`Invalid or unsupported asset: ${params.alice.asset} on chain ${params.alice.chainId}`);
     }
-    
+
     if (!bobAsset) {
       throw new Error(`Invalid or unsupported asset: ${params.bob.asset} on chain ${params.bob.chainId}`);
     }
@@ -999,14 +1015,36 @@ export class RpcServer {
    */
   private renderCreateDealPage(): string {
     const registry = getAssetRegistry();
-    const chains = registry.supportedChains;
-    const assets = registry.assets;
-    
+    const isProduction = productionConfig.isProductionMode();
+
+    // Filter chains based on production mode
+    let chains = registry.supportedChains;
+    if (isProduction) {
+      chains = chains.filter((chain: any) => productionConfig.isChainAllowed(chain.chainId as ChainId));
+    }
+
+    // Filter assets based on production mode
+    let assets = registry.assets;
+    if (isProduction) {
+      assets = assets.filter((asset: any) => {
+        const assetCode = formatAssetCode(asset);
+        return productionConfig.isChainAllowed(asset.chainId as ChainId) &&
+               productionConfig.isAssetAllowed(assetCode as AssetCode, asset.chainId as ChainId);
+      });
+    }
+
     // Group assets by chain for easier access in JavaScript
     const assetsByChain: Record<string, any[]> = {};
     chains.forEach((chain: any) => {
       assetsByChain[chain.chainId] = assets.filter((a: any) => a.chainId === chain.chainId);
     });
+
+    // Defensive filter: Remove chains with zero allowed assets (prevents showing unusable chains)
+    if (isProduction) {
+      chains = chains.filter((chain: any) =>
+        assetsByChain[chain.chainId] && assetsByChain[chain.chainId].length > 0
+      );
+    }
 
     return `
       <!DOCTYPE html>
@@ -1034,6 +1072,18 @@ export class RpcServer {
             border-bottom: 1px solid #667eea;
             padding-bottom: 6px;
             margin: 0 0 10px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+          }
+          .dev-badge {
+            background: #f59e0b;
+            color: white;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
           }
           h3 {
             font-size: 14px;
@@ -1215,7 +1265,10 @@ export class RpcServer {
       </head>
       <body>
         <div class="container">
-          <h1>Create OTC Asset Swap Deal</h1>
+          <h1>
+            <span>Create OTC Asset Swap Deal</span>
+            ${!isProduction ? '<span class="dev-badge">⚠️ DEVELOPMENT</span>' : ''}
+          </h1>
           
           <!-- Modal for showing deal links -->
           <div id="dealModal" class="modal">

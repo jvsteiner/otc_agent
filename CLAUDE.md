@@ -11,7 +11,8 @@ Generic OTC (Over-The-Counter) Broker Engine for swapping assets between two par
 - **Language**: TypeScript with Node.js 18+
 - **Database**: better-sqlite3 with WAL mode enabled
 - **Architecture**: Monorepo with packages structure using npm workspaces
-- **Required chains**: Unicity (mandatory), EVM chains (ETH/Polygon)
+- **Required chains**: Unicity (mandatory)
+- **Supported EVM chains**: Ethereum, Polygon, Sepolia (testnet), BSC
 - **Optional chains**: Solana, Bitcoin
 
 ## Development Commands
@@ -27,6 +28,11 @@ npm run build
 # Run development server (hot-reload)
 npm run dev
 
+# Run production server
+npm run prod
+# Or use the production script with auto-restart
+./run-prod.sh
+
 # Run database migrations
 npm run db:migrate
 ```
@@ -39,6 +45,9 @@ npm test
 # Run tests in a specific package
 npm test --workspace=packages/core
 npm test --workspace=packages/backend
+
+# Run E2E tests (playwright-jsonrpc)
+npm test --workspace=packages/playwright-jsonrpc
 
 # Run specific test file
 npm test packages/core/test/specific-test.test.ts
@@ -69,8 +78,11 @@ forge test -vv        # Standard
 forge test -vvv       # Traces for failures
 forge test -vvvv      # All traces
 
-# Run specific test
-forge test --match-test testSwap
+# Run specific test contract
+forge test --match-contract UnicitySwapBrokerTest
+
+# Run specific test function
+forge test --match-test test_SwapERC20_Success
 
 # Gas report
 forge test --gas-report
@@ -80,18 +92,43 @@ forge coverage
 
 # Deploy contracts
 forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
+
+# Install contract dependencies
+forge install
 ```
 
 ## Core Architecture
 
 ### Package Structure
 - `packages/core`: Core types, invariants, state helpers, decimal math via decimal.js
+  - `src/types.ts`: Central type definitions (Deal, Party, Stage, etc.)
+  - `src/decimal.ts`: Decimal math helpers - ALWAYS use for amounts
+  - `src/invariants.ts`: Deal validation logic and stage transition rules
+  - `src/assetConfig.ts`: Asset metadata (decimals, known assets)
+
 - `packages/chains`: ChainPlugin interface and adapters (Unicity, EVM, Solana, BTC)
+  - `src/ChainPlugin.ts`: Core interface all chain adapters implement
+  - `src/evm/`: Ethereum-compatible chain implementations
+  - `src/unicity/`: Unicity blockchain adapter (UTXO-based)
+
 - `packages/backend`: JSON-RPC server, engine loop (30s), notifier, DAL
+  - `src/index.ts`: Main entry point, starts HTTP server and engine
+  - `src/engine/Engine.ts`: Deal processor and queue processor loops
+  - `src/engine/TankManager.ts`: Gas funding system for EVM chains
+  - `src/db/`: Database layer with repositories (deals, deposits, queue, etc.)
+  - `src/api/rpc-server.ts`: JSON-RPC endpoint implementations
+
 - `packages/web`: Static/SSR minimal pages for deal creation and personal pages
+
 - `packages/tools`: Scripts, simulators, seeding utilities
+
 - `packages/playwright-jsonrpc`: E2E testing microservice for JSON-RPC API testing
+  - Full-stack integration tests that verify deal flow scenarios
+
 - `contracts/`: Solidity smart contracts (Foundry project) for on-chain escrow verification
+  - `src/UnicitySwapEscrow.sol`: Core escrow contract
+  - `src/UnicitySwapBroker.sol`: Broker contract with signature verification
+  - `test/`: Comprehensive test suite with security tests
 
 ### Database Schema
 SQLite database with key tables:
@@ -190,9 +227,13 @@ Required environment variables (.env file):
 ```bash
 # Server
 PORT=8080
-DB_PATH=./data/otc.db
 BASE_URL=http://localhost:8080
 LOG_LEVEL=info
+
+# Database
+# Development mode uses DB_PATH, production mode uses DB_PATH_PRODUCTION
+DB_PATH=./data/otc.db
+DB_PATH_PRODUCTION=./data/otc-production.db  # For production deployments
 
 # Hot Wallet Seed (for generating escrow addresses)
 HOT_WALLET_SEED=<secure-seed-phrase>
@@ -215,12 +256,29 @@ ETH_RPC=http://localhost:8545
 ETH_CONFIRMATIONS=3
 ETH_COLLECT_CONFIRMS=3
 ETH_OPERATOR_ADDRESS=0x<operator-address>
+ETH_BROKER_ADDRESS=0x<deployed-broker-contract>
+ETH_FEEPAYER_KEYREF=feepayer_eth
 
 # Polygon Configuration (optional)
 POLYGON_RPC=https://polygon-rpc.com
 POLYGON_CONFIRMATIONS=64
 POLYGON_COLLECT_CONFIRMS=64
 POLYGON_OPERATOR_ADDRESS=0x<operator-address>
+POLYGON_BROKER_ADDRESS=0x<deployed-broker-contract>
+POLYGONSCAN_API_KEY=<api-key>
+
+# Sepolia Testnet Configuration (optional, for testing)
+SEPOLIA_RPC=https://eth-sepolia.g.alchemy.com/v2/<key>
+SEPOLIA_CONFIRMATIONS=3
+SEPOLIA_COLLECT_CONFIRMS=3
+SEPOLIA_OPERATOR_ADDRESS=0x<operator-address>
+SEPOLIA_BROKER_ADDRESS=0x<deployed-broker-contract>
+
+# BSC Configuration (optional)
+BSC_RPC=https://bnb-mainnet.g.alchemy.com/v2/<key>
+BSC_CONFIRMATIONS=12
+BSC_COLLECT_CONFIRMS=12
+BSC_OPERATOR_ADDRESS=0x<operator-address>
 
 # Email Configuration (optional)
 EMAIL_ENABLED=false
@@ -270,7 +328,15 @@ E2E test scenarios that MUST pass:
 
 ## Important Constraints
 
-- NEVER use JavaScript floats for amounts - use decimal.js exclusively
+### Decimal Handling (CRITICAL)
+- **NEVER use JavaScript floats for amounts** - use decimal.js exclusively via packages/core/src/decimal.ts
+- All amount calculations must use the `dec()` helper function
+- Store amounts as strings in database and JSON to preserve precision
+- Use `dec.floor()` for commission calculations to avoid over-charging
+- Asset amounts have specific decimal places (ETH: 18, USDC: 6, etc.) - respect these in calculations
+- Example: `dec(amount).times(0.003).floor().toFixed()` for 0.3% commission
+
+### Other Critical Constraints
 - Maintain idempotency at every boundary (plan, submit, notify)
 - Unicity Plugin is MANDATORY in v1
 - All deposits must be explicitly tracked - never rely on balance queries alone
@@ -279,6 +345,7 @@ E2E test scenarios that MUST pass:
 - Escrow addresses are HD-derived (BIP32/44) from HOT_WALLET_SEED
 - All transaction queue items must be persisted to `queue_items` table before submission
 - Gas refunds must complete before marking deal as fully closed
+- Queue processing for UTXO chains must be phased to prevent UTXO conflicts
 
 ## Smart Contracts (contracts/)
 
@@ -288,19 +355,30 @@ The project includes production-grade Solidity contracts for on-chain escrow ver
 - **UnicitySwapEscrow**: Core escrow contract with state machine (COLLECTION → SWAP → COMPLETED/REVERTED)
 - **UnicitySwapEscrowFactory**: Factory for deploying escrow instances with CREATE2 support
 - **UnicitySwapEscrowBeacon**: Optional upgradeable proxy pattern
+- **UnicitySwapBroker**: Broker contract for managing multiple escrows with signature verification
 
 ### Key Contract Features
-- Operator-controlled swap execution
+- Operator-controlled swap execution via ECDSA signature verification
 - Atomic state transitions with re-entrancy protection
 - Multi-currency support (native ETH and ERC20)
-- Immutable security-critical parameters
+- Immutable security-critical parameters (operator, amounts, addresses)
 - Gas-optimized operations (~138k gas for swap)
+- State verification and inspection via view functions
+- Surplus handling and refund mechanisms
 
 ### Contract Development
 - Built with Foundry (Solidity 0.8.24)
 - Comprehensive test suite (39+ tests including fuzz and security tests)
 - OpenZeppelin dependencies for security (ReentrancyGuard, SafeERC20)
+- Security audit completed (see contracts/audit/AUDIT_REPORT.md)
 - See contracts/README.md for detailed API and usage examples
+
+### Integration with Backend
+The backend can optionally deploy on-chain escrow contracts for EVM chains:
+- Configure via `*_BROKER_ADDRESS` environment variables
+- Operator signs swap execution commands
+- On-chain verification provides additional security layer
+- Smart contract state mirrors off-chain deal state machine
 
 ## Debugging & Development Tools
 
@@ -316,8 +394,44 @@ sqlite3 ./data/otc.db "SELECT * FROM queue_items WHERE dealId='<deal-id>';"
 sqlite3 ./data/otc.db "SELECT * FROM escrow_deposits WHERE dealId='<deal-id>';"
 ```
 
+### Utility Scripts (in root directory)
+```bash
+# Check deal status via RPC
+node check_deal_status.mjs <deal-id>
+
+# Check tank wallet balance
+./check_tank_balance.mjs
+
+# Generate tank wallet
+node generate_tank_wallet.mjs
+
+# Test deposit detection
+./test-deposit-detection.js
+
+# Test ERC20 parsing
+node test-erc20-parsing.js
+
+# Test broker flow
+./test-broker-flow.js
+```
+
 ### Common Issues
 - **Stuck transactions**: Check queue_items table for PENDING items without submittedTx
 - **Missing confirmations**: Verify chain RPC endpoints are accessible
 - **Reorg handling**: Check if collectConfirms threshold is sufficient for chain
 - **Gas refund failures**: Verify tank wallet has sufficient native currency balance
+- **ERC20 deposits not detected**: Check if token contract address is correctly formatted (ERC20:0x...)
+- **Nonce collisions**: Review accounts table for account state, queue processing is sequential per account
+
+## Additional Documentation
+
+Important reference documents in the repository:
+- `ARCHITECTURE.md`: Detailed system architecture and data flow diagrams
+- `OTC_BROKER_BIGDOC_v1.0.md`: Original specification document
+- `QUICK_START.md`: Quick setup guide
+- `TODO.md`: Current development tasks and roadmap
+- `FUTURE_FEATURES.md`: Planned enhancements
+- `KEY_EXPORT_GUIDE.md`: Guide for exporting private keys from escrow addresses
+- `SECURITY_AUDIT_REPORT_OPERATOR_KEY.md`: Security audit findings
+- `contracts/README.md`: Detailed smart contract documentation
+- `ref_materials/`: Additional reference materials and documentation

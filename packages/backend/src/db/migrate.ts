@@ -321,6 +321,52 @@ export function runMigrations(db: DB): void {
             }
             console.log('Migration already applied, continuing...');
           }
+        }
+        // Special handling for gas bump tracking migration
+        else if (file === '006_add_gas_bump_tracking.sql') {
+          try {
+            console.log('Running migration: 006_add_gas_bump_tracking.sql');
+
+            // Check if queue_items table exists
+            const queueTableExists = db.prepare(
+              "SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='queue_items'"
+            ).get() as { count: number };
+
+            if (queueTableExists.count > 0) {
+              // Add gas bump tracking columns if they don't exist
+              const gasBumpColumns = ['lastSubmitAt', 'originalNonce', 'lastGasPrice', 'gasBumpAttempts'];
+              for (const col of gasBumpColumns) {
+                const checkColumn = db.prepare(
+                  "SELECT COUNT(*) as count FROM pragma_table_info('queue_items') WHERE name = ?"
+                ).get(col) as { count: number };
+
+                if (checkColumn.count === 0) {
+                  console.log(`  Adding ${col} column to queue_items`);
+                  if (col === 'lastSubmitAt') {
+                    db.exec('ALTER TABLE queue_items ADD COLUMN lastSubmitAt TEXT');
+                  } else if (col === 'originalNonce') {
+                    db.exec('ALTER TABLE queue_items ADD COLUMN originalNonce INTEGER');
+                  } else if (col === 'lastGasPrice') {
+                    db.exec('ALTER TABLE queue_items ADD COLUMN lastGasPrice TEXT');
+                  } else if (col === 'gasBumpAttempts') {
+                    db.exec('ALTER TABLE queue_items ADD COLUMN gasBumpAttempts INTEGER DEFAULT 0');
+                  }
+                }
+              }
+
+              // Create index for finding stuck transactions
+              db.exec('CREATE INDEX IF NOT EXISTS idx_queue_stuck ON queue_items(status, lastSubmitAt) WHERE status = \'SUBMITTED\'');
+
+              console.log('Gas bump tracking migration completed successfully');
+            } else {
+              console.log('  queue_items table does not exist yet, skipping');
+            }
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
+              throw err;
+            }
+            console.log('Migration already applied, continuing...');
+          }
         } else {
           db.exec(migration);
         }
