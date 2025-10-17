@@ -1479,7 +1479,6 @@ export class RpcServer {
               <li><strong>Cross-chain:</strong> Swap assets across different blockchains (ETH, Polygon, Unicity, etc.)</li>
               <li><strong>Transparent:</strong> Track deal status in real-time</li>
               <li><strong>Fair pricing:</strong> You set your own exchange rates</li>
-              <li><strong>Small commission:</strong> Only 0.3% for known assets, paid from surplus</li>
             </ul>
 
             <div class="callout callout-warning">
@@ -1592,7 +1591,6 @@ export class RpcServer {
             <ul>
               <li>Deal moves to <span class="state-badge state-reverted">REVERTED</span> state</li>
               <li>Your deposit is automatically refunded to your receiving address</li>
-              <li>Commission is not charged for failed deals</li>
               <li>Check the "Refund Status" section on your tracking page</li>
             </ul>
           </section>
@@ -1807,14 +1805,6 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
               <li>Timer resumes to give parties time to re-deposit</li>
             </ul>
 
-            <h4>4. Commission Fairness</h4>
-            <p>Commission is never deducted from your trade amount:</p>
-            <ul>
-              <li>You receive <strong>exactly</strong> the amount you expect</li>
-              <li>Commission (0.3% for known assets) is paid from surplus</li>
-              <li>If a deal reverts, <strong>no commission is charged</strong></li>
-            </ul>
-
             <h3>Best Practices</h3>
 
             <div class="callout callout-warning">
@@ -1890,15 +1880,6 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
             <h4>Q: What's the minimum/maximum swap amount?</h4>
             <p>A: Limits depend on the specific deployment configuration. Check the deal creation page for current limits. Production deployments typically enforce reasonable minimums to ensure swaps are economically viable after gas costs.</p>
 
-            <h4>Q: How much does it cost?</h4>
-            <p>A: Commission rates:</p>
-            <ul>
-              <li><strong>Known assets (BTC, ETH, USDT, etc.):</strong> 0.3% (30 basis points)</li>
-              <li><strong>Unknown ERC-20/SPL tokens:</strong> $10 USD equivalent in native currency</li>
-              <li><strong>Commission is paid from surplus</strong>, never deducted from your trade amount</li>
-              <li><strong>No commission on failed/reverted deals</strong></li>
-            </ul>
-
             <h4>Q: Can I cancel a deal?</h4>
             <p>A: Not directly once you've deposited, but:</p>
             <ul>
@@ -1913,7 +1894,6 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
             <ul>
               <li>Deal enters REVERTED state</li>
               <li>Your deposit is automatically refunded to your receiving address</li>
-              <li>No commission is charged</li>
             </ul>
 
             <h4>Q: Can I do multiple swaps simultaneously?</h4>
@@ -2241,6 +2221,32 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
       );
     }
 
+    // Build asset limits map for production mode
+    const assetLimitsMap: Record<string, string> = {};
+    if (isProduction) {
+      const restrictions = productionConfig.getProductionRestrictions();
+      if (restrictions.maxAmounts !== 'NO LIMITS') {
+        const maxAmounts = restrictions.maxAmounts as Record<string, string>;
+
+        // Map assets to their limits
+        // Key format: "ALPHA@UNICITY", "MATIC@POLYGON", "ERC20:0xc2132...@POLYGON"
+        assets.forEach((asset: any) => {
+          const assetCode = formatAssetCode(asset);
+          const fullAssetCode = `${assetCode}@${asset.chainId}`;
+
+          // Check if this asset has a limit
+          // Try by symbol first (for native assets)
+          if (asset.native && maxAmounts[asset.assetSymbol.toUpperCase()]) {
+            assetLimitsMap[fullAssetCode] = `${maxAmounts[asset.assetSymbol.toUpperCase()]} ${asset.assetSymbol}`;
+          }
+          // For ERC20 tokens, check by token symbol (e.g., USDT)
+          else if (asset.type === 'ERC20' && maxAmounts[asset.assetSymbol.toUpperCase()]) {
+            assetLimitsMap[fullAssetCode] = `${maxAmounts[asset.assetSymbol.toUpperCase()]} ${asset.assetSymbol}`;
+          }
+        });
+      }
+    }
+
     return `
       <!DOCTYPE html>
       <html>
@@ -2492,6 +2498,22 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
             margin-top: 20px;
             width: 100%;
           }
+          .limit-info {
+            background: #E3F2FD;
+            border: 1px solid #2196F3;
+            border-radius: 4px;
+            padding: 8px 12px;
+            margin-top: 8px;
+            font-size: 12px;
+            color: #1976D2;
+            display: none;
+          }
+          .limit-icon {
+            margin-right: 6px;
+          }
+          .limit-text strong {
+            color: #0D47A1;
+          }
         </style>
       </head>
       <body>
@@ -2594,6 +2616,12 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                 <div class="form-group">
                   <label for="amountA">Amount</label>
                   <input name="amountA" id="amountA" type="number" step="0.00000001" placeholder="0.00" required>
+
+                  <!-- Limit display for Asset A -->
+                  <div class="limit-info" id="assetALimit">
+                    <span class="limit-icon">ℹ️</span>
+                    <span class="limit-text">Maximum swap amount: <strong id="limitValueA"></strong></span>
+                  </div>
                 </div>
               </div>
               
@@ -2628,6 +2656,12 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                 <div class="form-group">
                   <label for="amountB">Amount</label>
                   <input name="amountB" id="amountB" type="number" step="0.00000001" placeholder="0.00" required>
+
+                  <!-- Limit display for Asset B -->
+                  <div class="limit-info" id="assetBLimit">
+                    <span class="limit-icon">ℹ️</span>
+                    <span class="limit-text">Maximum swap amount: <strong id="limitValueB"></strong></span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2648,7 +2682,11 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
           // Asset registry data
           const assetsByChain = ${JSON.stringify(assetsByChain)};
           const chains = ${JSON.stringify(chains)};
-          
+
+          // Production mode and asset limits
+          const productionMode = ${isProduction};
+          const assetLimits = ${JSON.stringify(assetLimitsMap)};
+
           function updateAssetDropdown(side) {
             const chainSelect = document.getElementById('chain' + side);
             const assetSelect = document.getElementById('asset' + side);
@@ -2735,26 +2773,54 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
             const assetSelect = document.getElementById('asset' + side);
             const displayLink = document.getElementById('assetDisplay' + side);
             const selectedOption = assetSelect.options[assetSelect.selectedIndex];
-            
+
             if (selectedOption && selectedOption.dataset.asset) {
               const asset = JSON.parse(selectedOption.dataset.asset);
-              
+
               displayLink.querySelector('.asset-icon').textContent = asset.icon;
               displayLink.querySelector('.asset-name').textContent = asset.assetName;
-              
+
               let details = asset.assetSymbol + ' • ';
               if (asset.native) {
                 details += 'Native Asset';
               } else {
                 details += asset.type;
                 if (asset.contractAddress) {
-                  details += ' • ' + asset.contractAddress.substring(0, 6) + '...' + 
+                  details += ' • ' + asset.contractAddress.substring(0, 6) + '...' +
                             asset.contractAddress.substring(asset.contractAddress.length - 4);
                 }
               }
               displayLink.querySelector('.asset-details').textContent = details;
               displayLink.href = getAssetUrl(asset);
               displayLink.style.display = 'flex';
+
+              // Update limit display
+              updateLimitDisplay(asset, side);
+            }
+          }
+
+          function updateLimitDisplay(asset, side) {
+            const limitElement = document.getElementById('asset' + side + 'Limit');
+            const valueElement = document.getElementById('limitValue' + side);
+
+            // Only show limits in production mode
+            if (!productionMode) {
+              limitElement.style.display = 'none';
+              return;
+            }
+
+            // Build the asset code key: "ALPHA@UNICITY", "ERC20:0xabc...@POLYGON"
+            const assetCode = formatAssetCode(asset);
+            const fullAssetCode = assetCode + '@' + asset.chainId;
+
+            // Check if this asset has a limit
+            const limit = assetLimits[fullAssetCode];
+
+            if (limit) {
+              valueElement.textContent = limit;
+              limitElement.style.display = 'block';
+            } else {
+              limitElement.style.display = 'none';
             }
           }
           
