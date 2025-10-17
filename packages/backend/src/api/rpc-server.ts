@@ -164,6 +164,10 @@ export class RpcServer {
       res.send(this.renderCreateDealPage());
     });
 
+    this.app.get('/instructions', (req, res) => {
+      res.send(this.renderInstructionsPage());
+    });
+
     this.app.get('/d/:dealId/a/:token', (req, res) => {
       const { dealId, token } = req.params;
       res.send(this.renderPartyPage(dealId, token, 'ALICE'));
@@ -1007,6 +1011,1188 @@ export class RpcServer {
   }
 
   /**
+   * Renders the comprehensive "How to Use" instructions page.
+   *
+   * This page provides detailed guidance for using the Unicity OTC Swap Service including:
+   * - Overview of the service
+   * - Step-by-step guides for Alice and Bob
+   * - Deal states explanation
+   * - Timeline expectations
+   * - Security information
+   * - FAQ and troubleshooting
+   *
+   * @returns {string} Complete HTML page with embedded CSS and JavaScript
+   */
+  private renderInstructionsPage(): string {
+    return `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>How to Use - Unicity OTC Swap</title>
+        <style>
+          * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+          }
+
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            font-size: 15px;
+          }
+
+          /* Main Navigation */
+          .main-nav {
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+          }
+
+          .nav-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+
+          .nav-logo {
+            font-size: 18px;
+            font-weight: 700;
+            color: #667eea;
+          }
+
+          .nav-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+          }
+
+          .nav-links a {
+            color: #555;
+            text-decoration: none;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 6px;
+            transition: all 0.2s;
+            font-size: 14px;
+          }
+
+          .nav-links a:hover {
+            background: #f0f4ff;
+            color: #667eea;
+          }
+
+          /* Hero Section */
+          .hero {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 60px 20px;
+            text-align: center;
+          }
+
+          .hero h1 {
+            font-size: 42px;
+            margin-bottom: 15px;
+            font-weight: 800;
+          }
+
+          .hero p {
+            font-size: 20px;
+            opacity: 0.95;
+            max-width: 700px;
+            margin: 0 auto;
+          }
+
+          /* Section Navigation */
+          .section-nav {
+            background: white;
+            border-bottom: 1px solid #e5e7eb;
+            position: sticky;
+            top: 65px;
+            z-index: 90;
+            overflow-x: auto;
+            white-space: nowrap;
+            -webkit-overflow-scrolling: touch;
+          }
+
+          .section-nav-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            gap: 5px;
+          }
+
+          .section-nav a {
+            display: inline-block;
+            padding: 15px 20px;
+            color: #555;
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 14px;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+          }
+
+          .section-nav a:hover,
+          .section-nav a.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+          }
+
+          /* Main Content */
+          .content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+          }
+
+          .section {
+            background: white;
+            border-radius: 10px;
+            padding: 40px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          }
+
+          .section h2 {
+            font-size: 32px;
+            color: #333;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 3px solid #667eea;
+          }
+
+          .section h3 {
+            font-size: 24px;
+            color: #444;
+            margin: 30px 0 15px;
+          }
+
+          .section h4 {
+            font-size: 18px;
+            color: #555;
+            margin: 20px 0 10px;
+          }
+
+          .section p {
+            margin-bottom: 15px;
+            line-height: 1.8;
+          }
+
+          .section ul, .section ol {
+            margin: 15px 0 15px 25px;
+          }
+
+          .section li {
+            margin-bottom: 10px;
+            line-height: 1.7;
+          }
+
+          /* Call-out Boxes */
+          .callout {
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid;
+          }
+
+          .callout-info {
+            background: #e3f2fd;
+            border-color: #2196F3;
+          }
+
+          .callout-warning {
+            background: #fff3e0;
+            border-color: #FF9800;
+          }
+
+          .callout-success {
+            background: #e8f5e9;
+            border-color: #4CAF50;
+          }
+
+          .callout-tip {
+            background: #f3e5f5;
+            border-color: #9C27B0;
+          }
+
+          .callout-title {
+            font-weight: 700;
+            font-size: 16px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+          }
+
+          /* Deal State Badges */
+          .state-badge {
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 13px;
+            color: white;
+            margin: 5px 5px 5px 0;
+          }
+
+          .state-created { background: #2196F3; }
+          .state-collection { background: #FF9800; }
+          .state-waiting { background: #FFC107; color: #333; }
+          .state-swap { background: #9C27B0; }
+          .state-closed { background: #4CAF50; }
+          .state-reverted { background: #F44336; }
+
+          /* Code Blocks */
+          code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 13px;
+            color: #d32f2f;
+          }
+
+          pre {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 15px 0;
+          }
+
+          pre code {
+            background: none;
+            color: inherit;
+            padding: 0;
+          }
+
+          /* Tables */
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+          }
+
+          th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+          }
+
+          th {
+            background: #f9fafb;
+            font-weight: 600;
+            color: #555;
+          }
+
+          /* Step Numbers */
+          .step-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            background: #667eea;
+            color: white;
+            border-radius: 50%;
+            font-weight: 700;
+            margin-right: 10px;
+          }
+
+          /* Footer */
+          .footer {
+            background: #1e293b;
+            color: white;
+            padding: 40px 20px;
+            text-align: center;
+            margin-top: 60px;
+          }
+
+          .footer h3 {
+            margin-bottom: 15px;
+          }
+
+          .footer a {
+            color: #667eea;
+            text-decoration: none;
+          }
+
+          .footer a:hover {
+            text-decoration: underline;
+          }
+
+          /* Back to Top Button */
+          .back-to-top {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #667eea;
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transition: all 0.3s;
+            z-index: 80;
+            font-size: 24px;
+          }
+
+          .back-to-top:hover {
+            background: #5a67d8;
+            transform: translateY(-5px);
+          }
+
+          .back-to-top.show {
+            display: flex;
+          }
+
+          /* Responsive Design */
+          @media (max-width: 768px) {
+            body {
+              font-size: 16px;
+            }
+
+            .hero h1 {
+              font-size: 32px;
+            }
+
+            .hero p {
+              font-size: 18px;
+            }
+
+            .section {
+              padding: 25px 20px;
+            }
+
+            .section h2 {
+              font-size: 26px;
+            }
+
+            .section h3 {
+              font-size: 20px;
+            }
+
+            .nav-links {
+              gap: 10px;
+            }
+
+            .nav-links a {
+              padding: 6px 10px;
+              font-size: 13px;
+            }
+
+            .section-nav {
+              top: 55px;
+            }
+
+            .section-nav a {
+              padding: 12px 15px;
+              font-size: 13px;
+            }
+
+            .back-to-top {
+              width: 44px;
+              height: 44px;
+              bottom: 20px;
+              right: 20px;
+            }
+          }
+
+          /* Smooth Scroll */
+          html {
+            scroll-behavior: smooth;
+          }
+        </style>
+      </head>
+      <body>
+        <!-- Main Navigation -->
+        <nav class="main-nav">
+          <div class="nav-container">
+            <span class="nav-logo">Unicity OTC Swap</span>
+            <div class="nav-links">
+              <a href="/instructions">How to Use</a>
+              <a href="/">Create Deal</a>
+            </div>
+          </div>
+        </nav>
+
+        <!-- Hero Section -->
+        <header class="hero">
+          <h1>How to Use Unicity OTC Swap</h1>
+          <p>Your complete guide to secure, trustless cross-chain asset swaps</p>
+        </header>
+
+        <!-- Section Navigation -->
+        <nav class="section-nav">
+          <div class="section-nav-container">
+            <a href="#overview">Overview</a>
+            <a href="#alice-guide">Alice's Guide</a>
+            <a href="#bob-guide">Bob's Guide</a>
+            <a href="#deal-states">Deal States</a>
+            <a href="#timeline">Timeline</a>
+            <a href="#security">Security</a>
+            <a href="#faq">FAQ</a>
+            <a href="#troubleshooting">Troubleshooting</a>
+            <a href="#support">Support</a>
+          </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+          <!-- Overview Section -->
+          <section id="overview" class="section">
+            <h2>What is Unicity OTC Swap?</h2>
+            <p>Unicity OTC Swap is a trustless, non-custodial broker service that enables secure asset exchanges between two parties across different blockchain networks. Unlike traditional exchanges, there are no liquidity pools, order books, or third-party custody—just a direct peer-to-peer swap facilitated by smart escrow mechanisms.</p>
+
+            <h3>How It Works</h3>
+            <p>The service operates with two parties:</p>
+            <ul>
+              <li><strong>Alice (Asset A Seller):</strong> Wants to sell Asset A and receive Asset B</li>
+              <li><strong>Bob (Asset B Seller):</strong> Wants to sell Asset B and receive Asset A</li>
+            </ul>
+
+            <div class="callout callout-info">
+              <div class="callout-title">Key Concept</div>
+              <p>Both parties deposit their assets into secure escrow addresses. Once both deposits are confirmed, the broker atomically swaps the assets, ensuring neither party can lose funds without receiving their expected assets.</p>
+            </div>
+
+            <h3>Why Use Unicity OTC Swap?</h3>
+            <ul>
+              <li><strong>Trustless:</strong> No need to trust a counterparty or exchange</li>
+              <li><strong>Non-custodial:</strong> You maintain control until the swap executes</li>
+              <li><strong>Cross-chain:</strong> Swap assets across different blockchains (ETH, Polygon, Unicity, etc.)</li>
+              <li><strong>Transparent:</strong> Track deal status in real-time</li>
+              <li><strong>Fair pricing:</strong> You set your own exchange rates</li>
+              <li><strong>Small commission:</strong> Only 0.3% for known assets, paid from surplus</li>
+            </ul>
+
+            <div class="callout callout-warning">
+              <div class="callout-title">Important Note</div>
+              <p>Always verify deposit addresses before sending funds. The service generates unique escrow addresses for each deal. Double-check you're using the correct address provided on your personal tracking page.</p>
+            </div>
+          </section>
+
+          <!-- Alice's Guide -->
+          <section id="alice-guide" class="section">
+            <h2>Alice's Guide: Asset A Seller</h2>
+            <p>As Alice, you're initiating or participating in a deal where you'll sell Asset A and receive Asset B. Follow these steps:</p>
+
+            <h3>Step 1: Create or Receive a Deal</h3>
+            <p><strong>Option A: Create a new deal</strong></p>
+            <ol>
+              <li>Visit the <a href="/" style="color: #667eea;">Create Deal page</a></li>
+              <li>Select your asset (Asset A) - chain, asset type, and amount</li>
+              <li>Select Bob's asset (Asset B) - chain, asset type, and amount</li>
+              <li>Set the timeout period (typically 30-60 minutes)</li>
+              <li>Click "Create Deal"</li>
+              <li>Save your personal tracking link (Asset A Seller Link)</li>
+            </ol>
+
+            <p><strong>Option B: Receive an invitation</strong></p>
+            <ol>
+              <li>Bob creates the deal and shares the Asset A Seller link with you</li>
+              <li>Open your personal tracking link</li>
+            </ol>
+
+            <div class="callout callout-tip">
+              <div class="callout-title">Pro Tip</div>
+              <p>Bookmark your personal tracking link immediately! This is your portal to monitor and interact with the deal. The link contains a secure token unique to your role.</p>
+            </div>
+
+            <h3>Step 2: Fill in Your Details</h3>
+            <ol>
+              <li>Open your personal tracking page (Asset A Seller Link)</li>
+              <li>Enter your receiving address for Asset B (where you want to receive the swapped asset)</li>
+              <li>Optionally enter your email for status notifications</li>
+              <li>Click "Submit Details"</li>
+            </ol>
+
+            <div class="callout callout-warning">
+              <div class="callout-title">Critical: Verify Your Receiving Address</div>
+              <p>Double-check your receiving address! This is where Asset B will be sent after the swap. If you provide an incorrect address, you may lose your swapped assets permanently.</p>
+            </div>
+
+            <h3>Step 3: Wait for Bob to Submit Details</h3>
+            <p>The deal remains in <span class="state-badge state-created">CREATED</span> state until Bob also submits his details. Once both parties have submitted:</p>
+            <ul>
+              <li>Deal moves to <span class="state-badge state-collection">COLLECTION</span> state</li>
+              <li>Countdown timer starts (e.g., 30 minutes)</li>
+              <li>Escrow deposit address is revealed</li>
+            </ul>
+
+            <h3>Step 4: Send Your Deposit</h3>
+            <p>Once in <span class="state-badge state-collection">COLLECTION</span> state:</p>
+            <ol>
+              <li>Copy the escrow deposit address shown on your tracking page</li>
+              <li>Send <strong>EXACTLY</strong> the specified amount of Asset A to this address</li>
+              <li>Send in a <strong>single transaction</strong> (don't split into multiple sends)</li>
+              <li>Wait for blockchain confirmations</li>
+            </ol>
+
+            <div class="callout callout-info">
+              <div class="callout-title">About Confirmations</div>
+              <p>Different chains require different confirmation counts:</p>
+              <ul style="margin-top: 10px;">
+                <li><strong>Ethereum:</strong> 3 confirmations (~45 seconds)</li>
+                <li><strong>Polygon:</strong> 64 confirmations (~2-3 minutes)</li>
+                <li><strong>Unicity:</strong> 6 confirmations (~1 minute)</li>
+              </ul>
+            </div>
+
+            <h3>Step 5: Wait for Confirmations</h3>
+            <p>After both you and Bob deposit funds:</p>
+            <ul>
+              <li>Deal moves to <span class="state-badge state-waiting">WAITING</span> state</li>
+              <li>Countdown timer suspends (you won't lose time during confirmations)</li>
+              <li>System waits for required blockchain confirmations on both deposits</li>
+              <li>Your tracking page shows confirmation progress</li>
+            </ul>
+
+            <h3>Step 6: Automatic Swap Execution</h3>
+            <p>Once both deposits reach required confirmations:</p>
+            <ul>
+              <li>Deal moves to <span class="state-badge state-swap">SWAP</span> state</li>
+              <li>Countdown timer is removed permanently</li>
+              <li>Broker executes the swap automatically</li>
+              <li>Asset B is sent to your receiving address</li>
+              <li>Asset A is sent to Bob's receiving address</li>
+            </ul>
+
+            <h3>Step 7: Receive Your Assets</h3>
+            <ul>
+              <li>Deal moves to <span class="state-badge state-closed">CLOSED</span> state</li>
+              <li>Check your wallet for the received Asset B</li>
+              <li>Transaction hashes are displayed on your tracking page</li>
+              <li>The swap is complete!</li>
+            </ul>
+
+            <div class="callout callout-success">
+              <div class="callout-title">Success!</div>
+              <p>Congratulations! You've successfully completed a cross-chain OTC swap. Your Asset B should now be in your wallet.</p>
+            </div>
+
+            <h3>What If Something Goes Wrong?</h3>
+            <p>If the deal times out or encounters issues:</p>
+            <ul>
+              <li>Deal moves to <span class="state-badge state-reverted">REVERTED</span> state</li>
+              <li>Your deposit is automatically refunded to your receiving address</li>
+              <li>Commission is not charged for failed deals</li>
+              <li>Check the "Refund Status" section on your tracking page</li>
+            </ul>
+          </section>
+
+          <!-- Bob's Guide -->
+          <section id="bob-guide" class="section">
+            <h2>Bob's Guide: Asset B Seller</h2>
+            <p>As Bob, you're participating in a deal where you'll sell Asset B and receive Asset A. Your process is similar to Alice's:</p>
+
+            <h3>Step 1: Create or Receive a Deal</h3>
+            <p><strong>Option A: Create a new deal</strong></p>
+            <ol>
+              <li>Visit the <a href="/" style="color: #667eea;">Create Deal page</a></li>
+              <li>Select Alice's asset (Asset A) - chain, asset type, and amount</li>
+              <li>Select your asset (Asset B) - chain, asset type, and amount</li>
+              <li>Set the timeout period</li>
+              <li>Click "Create Deal"</li>
+              <li>Save your personal tracking link (Asset B Seller Link)</li>
+            </ol>
+
+            <p><strong>Option B: Receive an invitation</strong></p>
+            <ol>
+              <li>Alice creates the deal and shares the Asset B Seller link with you</li>
+              <li>Open your personal tracking link</li>
+            </ol>
+
+            <h3>Step 2: Fill in Your Details</h3>
+            <ol>
+              <li>Open your personal tracking page (Asset B Seller Link)</li>
+              <li>Enter your receiving address for Asset A (where you want to receive the swapped asset)</li>
+              <li>Optionally enter your email for notifications</li>
+              <li>Click "Submit Details"</li>
+            </ol>
+
+            <div class="callout callout-warning">
+              <div class="callout-title">Critical: Verify Your Receiving Address</div>
+              <p>Ensure your receiving address is correct for the Asset A chain. Cross-chain addresses are different (e.g., Ethereum addresses differ from Unicity addresses).</p>
+            </div>
+
+            <h3>Step 3: Wait for Alice to Submit Details</h3>
+            <p>Once both parties submit details, the deal moves to <span class="state-badge state-collection">COLLECTION</span> and the countdown begins.</p>
+
+            <h3>Step 4: Send Your Deposit</h3>
+            <ol>
+              <li>Copy the escrow deposit address from your tracking page</li>
+              <li>Send <strong>EXACTLY</strong> the specified amount of Asset B</li>
+              <li>Use a <strong>single transaction</strong></li>
+              <li>Wait for confirmations</li>
+            </ol>
+
+            <h3>Step 5-7: Confirmation, Swap, and Completion</h3>
+            <p>The remaining steps are identical to Alice's process:</p>
+            <ul>
+              <li><span class="state-badge state-waiting">WAITING</span>: Confirmations in progress</li>
+              <li><span class="state-badge state-swap">SWAP</span>: Broker executing swap</li>
+              <li><span class="state-badge state-closed">CLOSED</span>: Asset A received!</li>
+            </ul>
+
+            <div class="callout callout-tip">
+              <div class="callout-title">Pro Tip for Bob</div>
+              <p>If you're receiving the deal link from Alice, verify the amounts are correct before submitting your details. Once you deposit funds, the exchange rate is locked.</p>
+            </div>
+          </section>
+
+          <!-- Deal States -->
+          <section id="deal-states" class="section">
+            <h2>Understanding Deal States</h2>
+            <p>Every deal progresses through a series of states. Understanding these states helps you track progress and know what to expect:</p>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>State</th>
+                  <th>Description</th>
+                  <th>What Happens</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="state-badge state-created">CREATED</span></td>
+                  <td>Deal initialized</td>
+                  <td>Waiting for both Alice and Bob to submit their receiving addresses and details</td>
+                </tr>
+                <tr>
+                  <td><span class="state-badge state-collection">COLLECTION</span></td>
+                  <td>Collecting deposits</td>
+                  <td>Countdown timer active. Waiting for both parties to deposit funds to escrow addresses</td>
+                </tr>
+                <tr>
+                  <td><span class="state-badge state-waiting">WAITING</span></td>
+                  <td>Awaiting confirmations</td>
+                  <td>Funds received. Timer suspended. Waiting for blockchain confirmations before executing swap</td>
+                </tr>
+                <tr>
+                  <td><span class="state-badge state-swap">SWAP</span></td>
+                  <td>Executing swap</td>
+                  <td>Timer removed permanently. Broker is transferring assets. This cannot timeout</td>
+                </tr>
+                <tr>
+                  <td><span class="state-badge state-closed">CLOSED</span></td>
+                  <td>Successfully completed</td>
+                  <td>Swap complete! Both parties have received their assets</td>
+                </tr>
+                <tr>
+                  <td><span class="state-badge state-reverted">REVERTED</span></td>
+                  <td>Deal cancelled/timeout</td>
+                  <td>Deal failed or timed out. Deposits are automatically refunded to parties</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h3>State Transition Flow</h3>
+            <pre><code>CREATED
+   (Both parties submit details)
+COLLECTION
+   (Both parties deposit funds)
+WAITING
+   (Confirmations complete)
+SWAP
+   (Transfers complete)
+CLOSED
+
+Note: Any state can move to REVERTED if timeout occurs or issues arise</code></pre>
+
+            <div class="callout callout-info">
+              <div class="callout-title">Timer Behavior</div>
+              <ul style="margin-top: 10px;">
+                <li><strong>CREATED & COLLECTION:</strong> Timer counts down. If it reaches zero, deal reverts</li>
+                <li><strong>WAITING:</strong> Timer suspends. You don't lose time during confirmations</li>
+                <li><strong>SWAP:</strong> Timer removed permanently. Swap will complete regardless of time</li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- Timeline -->
+          <section id="timeline" class="section">
+            <h2>Expected Timeline</h2>
+            <p>Here's what to expect for timing during each stage of a typical deal:</p>
+
+            <h3>Deal Creation (Instant)</h3>
+            <ul>
+              <li>Creating a deal: &lt;1 second</li>
+              <li>Submitting party details: &lt;1 second</li>
+            </ul>
+
+            <h3>Collection Phase (User-dependent)</h3>
+            <ul>
+              <li>Depends on when both parties deposit</li>
+              <li>Typical timeout setting: 30-60 minutes</li>
+              <li>Best practice: Deposit as soon as deal enters COLLECTION</li>
+            </ul>
+
+            <h3>Confirmation Phase (Blockchain-dependent)</h3>
+            <ul>
+              <li><strong>Ethereum:</strong> 3 confirmations (approximately 45 seconds)</li>
+              <li><strong>Polygon:</strong> 64 confirmations (approximately 2-3 minutes)</li>
+              <li><strong>Unicity:</strong> 6 confirmations (approximately 1 minute)</li>
+              <li><strong>Solana:</strong> 32 confirmations (approximately 20 seconds)</li>
+            </ul>
+
+            <h3>Swap Execution (2-5 minutes)</h3>
+            <ul>
+              <li>Transaction construction: ~30 seconds</li>
+              <li>Broadcasting both transfers: ~30 seconds</li>
+              <li>Waiting for transfer confirmations: 1-4 minutes</li>
+            </ul>
+
+            <h3>Total Typical Duration</h3>
+            <div class="callout callout-success">
+              <div class="callout-title">Typical Complete Swap</div>
+              <p><strong>5-15 minutes</strong> from both deposits being sent to final asset receipt (assuming both parties deposit promptly)</p>
+            </div>
+
+            <div class="callout callout-warning">
+              <div class="callout-title">Plan for Buffer Time</div>
+              <p>Always set your timeout period with enough buffer. Recommended minimums:</p>
+              <ul style="margin-top: 10px;">
+                <li><strong>Fast swaps:</strong> 30 minutes (for active participants)</li>
+                <li><strong>Standard swaps:</strong> 60 minutes (recommended default)</li>
+                <li><strong>Large amounts:</strong> 90-120 minutes (extra caution time)</li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- Security -->
+          <section id="security" class="section">
+            <h2>Security & Best Practices</h2>
+
+            <h3>How Your Funds Are Protected</h3>
+
+            <h4>1. Non-Custodial Design</h4>
+            <p>The broker never takes custody of your funds in a way where they could be stolen:</p>
+            <ul>
+              <li>Escrow addresses are generated deterministically using HD wallets</li>
+              <li>The broker can only execute the swap according to the deal terms</li>
+              <li>If the deal fails, refunds are automatic and mandatory</li>
+            </ul>
+
+            <h4>2. Atomic Swap Guarantee</h4>
+            <p>Once both deposits are confirmed and locked:</p>
+            <ul>
+              <li>The swap will execute atomically (both transfers or neither)</li>
+              <li>Neither party can cancel or withdraw during SWAP state</li>
+              <li>Even if one transfer fails, it will be retried automatically</li>
+            </ul>
+
+            <h4>3. Reorg Protection</h4>
+            <p>The system protects against blockchain reorganizations:</p>
+            <ul>
+              <li>Confirmations are set above typical reorg depths</li>
+              <li>If a reorg invalidates deposits, deal reverts to COLLECTION</li>
+              <li>Timer resumes to give parties time to re-deposit</li>
+            </ul>
+
+            <h4>4. Commission Fairness</h4>
+            <p>Commission is never deducted from your trade amount:</p>
+            <ul>
+              <li>You receive <strong>exactly</strong> the amount you expect</li>
+              <li>Commission (0.3% for known assets) is paid from surplus</li>
+              <li>If a deal reverts, <strong>no commission is charged</strong></li>
+            </ul>
+
+            <h3>Best Practices</h3>
+
+            <div class="callout callout-warning">
+              <div class="callout-title">Essential Security Practices</div>
+              <ol style="margin-top: 10px;">
+                <li><strong>Verify deposit addresses:</strong> Always copy from your tracking page, never from external sources</li>
+                <li><strong>Double-check receiving addresses:</strong> One typo could mean permanent loss of funds</li>
+                <li><strong>Use exact amounts:</strong> Send precisely the amount shown. Extra funds may not be credited correctly</li>
+                <li><strong>Single transaction:</strong> Don't split deposits into multiple sends</li>
+                <li><strong>Bookmark your tracking link:</strong> You'll need it to monitor the deal</li>
+                <li><strong>Don't share your tracking token:</strong> Each link contains a secret token. Don't post it publicly</li>
+                <li><strong>Test with small amounts first:</strong> If you're new, try a small swap before large amounts</li>
+                <li><strong>Verify chain compatibility:</strong> Ensure your wallet supports the chains involved</li>
+              </ol>
+            </div>
+
+            <h3>What Could Go Wrong?</h3>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Issue</th>
+                  <th>Prevention</th>
+                  <th>Resolution</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Wrong deposit address</td>
+                  <td>Always copy from tracking page</td>
+                  <td>Funds may be unrecoverable; contact support</td>
+                </tr>
+                <tr>
+                  <td>Wrong receiving address</td>
+                  <td>Double-check before submitting</td>
+                  <td>Cannot be changed after submission</td>
+                </tr>
+                <tr>
+                  <td>Incorrect deposit amount</td>
+                  <td>Send exact amount shown</td>
+                  <td>May trigger refund if insufficient</td>
+                </tr>
+                <tr>
+                  <td>Deal timeout</td>
+                  <td>Deposit promptly, use adequate timeout</td>
+                  <td>Automatic refund to receiving address</td>
+                </tr>
+                <tr>
+                  <td>Blockchain congestion</td>
+                  <td>Use higher gas, set longer timeout</td>
+                  <td>Wait for confirmations or deal reverts</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <!-- FAQ -->
+          <section id="faq" class="section">
+            <h2>Frequently Asked Questions</h2>
+
+            <h3>General Questions</h3>
+
+            <h4>Q: What chains are supported?</h4>
+            <p>A: Currently supported chains include:</p>
+            <ul>
+              <li><strong>Unicity PoW</strong> (mandatory - at least one side must be Unicity)</li>
+              <li><strong>Ethereum</strong> (Mainnet and Sepolia testnet)</li>
+              <li><strong>Polygon</strong></li>
+              <li><strong>Base</strong></li>
+              <li>Additional chains can be added by the operator</li>
+            </ul>
+
+            <h4>Q: What's the minimum/maximum swap amount?</h4>
+            <p>A: Limits depend on the specific deployment configuration. Check the deal creation page for current limits. Production deployments typically enforce reasonable minimums to ensure swaps are economically viable after gas costs.</p>
+
+            <h4>Q: How much does it cost?</h4>
+            <p>A: Commission rates:</p>
+            <ul>
+              <li><strong>Known assets (BTC, ETH, USDT, etc.):</strong> 0.3% (30 basis points)</li>
+              <li><strong>Unknown ERC-20/SPL tokens:</strong> $10 USD equivalent in native currency</li>
+              <li><strong>Commission is paid from surplus</strong>, never deducted from your trade amount</li>
+              <li><strong>No commission on failed/reverted deals</strong></li>
+            </ul>
+
+            <h4>Q: Can I cancel a deal?</h4>
+            <p>A: Not directly once you've deposited, but:</p>
+            <ul>
+              <li>In <strong>CREATED</strong> state: Simply don't proceed (no funds involved)</li>
+              <li>In <strong>COLLECTION</strong> state: Wait for timeout and receive automatic refund</li>
+              <li>In <strong>WAITING/SWAP</strong> states: Cannot cancel (funds are locked for swap)</li>
+              <li>In <strong>REVERTED</strong> state: Refund is automatic</li>
+            </ul>
+
+            <h4>Q: What happens if only I deposit?</h4>
+            <p>A: If the other party doesn't deposit before timeout:</p>
+            <ul>
+              <li>Deal enters REVERTED state</li>
+              <li>Your deposit is automatically refunded to your receiving address</li>
+              <li>No commission is charged</li>
+            </ul>
+
+            <h4>Q: Can I do multiple swaps simultaneously?</h4>
+            <p>A: Yes! Each deal is independent. You can participate in multiple deals at the same time, each with its own tracking link.</p>
+
+            <h3>Technical Questions</h3>
+
+            <h4>Q: What if there's a blockchain reorg?</h4>
+            <p>A: The system handles reorgs gracefully:</p>
+            <ul>
+              <li>If a reorg happens before locking: Deal reverts from WAITING back to COLLECTION</li>
+              <li>Timer resumes to give parties time to re-deposit</li>
+              <li>After locking: Reorgs are extremely unlikely due to confirmation depths</li>
+            </ul>
+
+            <h4>Q: What are "confirmations"?</h4>
+            <p>A: Confirmations are the number of blocks added after your transaction block. More confirmations = more security against reorgs. Each chain has different confirmation requirements based on its security model.</p>
+
+            <h4>Q: Why did my transaction fail with "insufficient gas"?</h4>
+            <p>A: For EVM chains, you need native currency for gas:</p>
+            <ul>
+              <li>Sending ETH on Ethereum: Need extra ETH for gas</li>
+              <li>Sending USDT on Polygon: Need MATIC for gas</li>
+              <li>The escrow address may be funded with gas automatically (depends on configuration)</li>
+            </ul>
+
+            <h4>Q: What is the "tank wallet"?</h4>
+            <p>A: Some deployments use a "tank wallet" to automatically fund escrow addresses with gas for EVM chains. This is transparent to users—if enabled, the operator's tank pays for your gas and gets refunded after successful swaps.</p>
+
+            <h3>Troubleshooting Questions</h3>
+
+            <h4>Q: My deposit isn't showing up. What do I do?</h4>
+            <p>A: Check the following:</p>
+            <ol>
+              <li>Verify transaction was confirmed on-chain (use block explorer)</li>
+              <li>Ensure you sent to the correct escrow address</li>
+              <li>Confirm you sent the exact amount required</li>
+              <li>Wait for required confirmations (shown on tracking page)</li>
+              <li>If still not showing after confirmations, contact support with transaction hash</li>
+            </ol>
+
+            <h4>Q: The countdown timer hit zero. What happens?</h4>
+            <p>A: Deal enters REVERTED state:</p>
+            <ul>
+              <li>All deposits are automatically refunded</li>
+              <li>Check "Refund Status" section on your tracking page</li>
+              <li>Refunds go to the receiving address you specified</li>
+            </ul>
+
+            <h4>Q: Can I get help with a stuck deal?</h4>
+            <p>A: Yes! Contact support with:</p>
+            <ul>
+              <li>Your deal ID (shown on tracking page)</li>
+              <li>Current deal state</li>
+              <li>Your role (Alice or Bob)</li>
+              <li>Description of the issue</li>
+              <li>Transaction hashes if applicable</li>
+            </ul>
+          </section>
+
+          <!-- Troubleshooting -->
+          <section id="troubleshooting" class="section">
+            <h2>Troubleshooting Common Issues</h2>
+
+            <h3>Issue: Can't Access My Tracking Page</h3>
+            <p><strong>Symptoms:</strong> Lost my tracking link or it doesn't work</p>
+            <p><strong>Solutions:</strong></p>
+            <ul>
+              <li>Check browser history for the tracking URL</li>
+              <li>Search email for invitation with the link</li>
+              <li>If you know the deal ID and your token, reconstruct URL: <code>/d/{dealId}/a/{token}</code> or <code>/d/{dealId}/b/{token}</code></li>
+              <li>Contact support with any deal information you have</li>
+            </ul>
+
+            <h3>Issue: "Submit Details" Button Doesn't Work</h3>
+            <p><strong>Symptoms:</strong> Button is disabled or nothing happens when clicked</p>
+            <p><strong>Solutions:</strong></p>
+            <ul>
+              <li>Ensure you've filled in a valid receiving address for your chain</li>
+              <li>Check browser console for errors (F12 then Console tab)</li>
+              <li>Try a different browser</li>
+              <li>Verify you have internet connectivity</li>
+              <li>Wait a few seconds and try again (might be a temporary network issue)</li>
+            </ul>
+
+            <h3>Issue: Sent Wrong Amount</h3>
+            <p><strong>Symptoms:</strong> Deposited more or less than required amount</p>
+            <p><strong>Solutions:</strong></p>
+            <ul>
+              <li><strong>Less than required:</strong> Deal will likely timeout and refund</li>
+              <li><strong>More than required:</strong> Excess is treated as surplus and may be used for commission or refunded</li>
+              <li><strong>Prevention:</strong> Always send EXACTLY the amount shown</li>
+              <li>Contact support with transaction hash for assistance</li>
+            </ul>
+
+            <h3>Issue: Transaction Not Confirming</h3>
+            <p><strong>Symptoms:</strong> My transaction is stuck "pending"</p>
+            <p><strong>Solutions:</strong></p>
+            <ul>
+              <li><strong>Low gas price:</strong> For EVM chains, you can speed up the transaction by replacing it with higher gas</li>
+              <li><strong>Network congestion:</strong> Wait for congestion to clear</li>
+              <li><strong>Check block explorer:</strong> Verify transaction was actually broadcast</li>
+              <li>If deal times out before confirmation, you'll receive a refund</li>
+            </ul>
+
+            <h3>Issue: Deal Shows REVERTED</h3>
+            <p><strong>Symptoms:</strong> Deal state changed to REVERTED unexpectedly</p>
+            <p><strong>Reasons:</strong></p>
+            <ul>
+              <li>Countdown timer reached zero before both parties deposited</li>
+              <li>One party deposited insufficient amount</li>
+              <li>Blockchain reorg invalidated deposits and timeout occurred</li>
+            </ul>
+            <p><strong>Resolution:</strong></p>
+            <ul>
+              <li>Check "Refund Status" section on tracking page</li>
+              <li>Your deposit will be refunded automatically to your receiving address</li>
+              <li>Wait for refund confirmation (usually within minutes)</li>
+              <li>If refund doesn't arrive, contact support with deal ID</li>
+            </ul>
+
+            <h3>Issue: Refund Not Received</h3>
+            <p><strong>Symptoms:</strong> Deal reverted but refund hasn't arrived</p>
+            <p><strong>Solutions:</strong></p>
+            <ul>
+              <li>Check your receiving address in a block explorer</li>
+              <li>Verify you submitted the correct receiving address initially</li>
+              <li>Wait for network confirmations (may take a few minutes)</li>
+              <li>Check tracking page for refund transaction hash</li>
+              <li>If no refund after 30 minutes, contact support urgently</li>
+            </ul>
+
+            <h3>Issue: Swap Completed but Asset Not in Wallet</h3>
+            <p><strong>Symptoms:</strong> Deal shows CLOSED but I don't see my asset</p>
+            <p><strong>Solutions:</strong></p>
+            <ul>
+              <li><strong>Token not added to wallet:</strong> For ERC-20/SPL tokens, you may need to manually add the token contract to your wallet</li>
+              <li><strong>Check block explorer:</strong> Verify the transfer transaction was confirmed</li>
+              <li><strong>Wrong wallet:</strong> Ensure you're checking the wallet with the receiving address you provided</li>
+              <li><strong>Wallet sync issue:</strong> Try refreshing your wallet or switching networks</li>
+              <li>Copy the payout transaction hash from tracking page and look it up on block explorer</li>
+            </ul>
+
+            <h3>When to Contact Support</h3>
+            <div class="callout callout-warning">
+              <div class="callout-title">Contact Support Immediately If:</div>
+              <ul style="margin-top: 10px;">
+                <li>Funds haven't arrived 30+ minutes after CLOSED state</li>
+                <li>Refund hasn't arrived 30+ minutes after REVERTED state</li>
+                <li>You sent funds to the wrong address</li>
+                <li>The tracking page shows errors or unexpected behavior</li>
+                <li>You suspect any security issue with your deal</li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- Support -->
+          <section id="support" class="section">
+            <h2>Get Support</h2>
+            <p>Need help? We're here to assist you with any issues or questions about your OTC swap.</p>
+
+            <h3>Before Contacting Support</h3>
+            <ol>
+              <li>Check the FAQ and Troubleshooting sections above</li>
+              <li>Gather relevant information:
+                <ul>
+                  <li>Your deal ID</li>
+                  <li>Your role (Alice or Bob)</li>
+                  <li>Current deal state</li>
+                  <li>Transaction hashes (if applicable)</li>
+                  <li>Screenshots of any errors</li>
+                </ul>
+              </li>
+              <li>Check your tracking page for status updates</li>
+            </ol>
+
+            <h3>Contact Information</h3>
+            <div class="callout callout-info">
+              <div class="callout-title">Support Channels</div>
+              <p style="margin-top: 10px;">Contact the operator of this Unicity OTC Swap service instance for assistance. Support contact information is typically provided by your service operator.</p>
+              <p style="margin-top: 10px;">When contacting support, include your deal ID and a clear description of your issue.</p>
+            </div>
+
+            <h3>Response Times</h3>
+            <ul>
+              <li><strong>Critical issues</strong> (missing funds, security concerns): Within 1-2 hours</li>
+              <li><strong>High priority</strong> (deal stuck, timeout concerns): Within 4-6 hours</li>
+              <li><strong>General questions</strong> (how-to, clarifications): Within 24 hours</li>
+            </ul>
+
+            <div class="callout callout-tip">
+              <div class="callout-title">Self-Service Resources</div>
+              <p>Most issues can be resolved by:</p>
+              <ul style="margin-top: 10px;">
+                <li>Checking your tracking page for real-time status</li>
+                <li>Verifying transactions on block explorers</li>
+                <li>Reviewing this guide's FAQ and troubleshooting sections</li>
+                <li>Waiting for blockchain confirmations (be patient!)</li>
+              </ul>
+            </div>
+          </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+          <h3>Ready to Get Started?</h3>
+          <p style="margin: 15px 0;">Create your first trustless cross-chain swap today</p>
+          <a href="/" style="display: inline-block; background: #667eea; color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; font-weight: 600; margin-top: 10px;">Create a Deal</a>
+          <p style="margin-top: 30px; font-size: 14px; opacity: 0.7;">Unicity OTC Swap - Trustless Cross-Chain Asset Swaps</p>
+        </footer>
+
+        <!-- Back to Top Button -->
+        <div class="back-to-top" id="backToTop">^</div>
+
+        <!-- JavaScript for interactions -->
+        <script>
+          // Smooth scroll behavior for navigation
+          document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+              e.preventDefault();
+              const target = document.querySelector(this.getAttribute('href'));
+              if (target) {
+                const navHeight = document.querySelector('.main-nav').offsetHeight +
+                                 document.querySelector('.section-nav').offsetHeight;
+                const targetPosition = target.offsetTop - navHeight - 20;
+                window.scrollTo({
+                  top: targetPosition,
+                  behavior: 'smooth'
+                });
+              }
+            });
+          });
+
+          // Back to top button
+          const backToTop = document.getElementById('backToTop');
+          window.addEventListener('scroll', () => {
+            if (window.pageYOffset > 300) {
+              backToTop.classList.add('show');
+            } else {
+              backToTop.classList.remove('show');
+            }
+          });
+
+          backToTop.addEventListener('click', () => {
+            window.scrollTo({
+              top: 0,
+              behavior: 'smooth'
+            });
+          });
+
+          // Highlight active section in navigation
+          const sections = document.querySelectorAll('.section');
+          const navLinks = document.querySelectorAll('.section-nav a');
+
+          function highlightNavigation() {
+            const scrollPosition = window.pageYOffset + 200;
+
+            sections.forEach((section, index) => {
+              const sectionTop = section.offsetTop;
+              const sectionBottom = sectionTop + section.offsetHeight;
+
+              if (scrollPosition >= sectionTop && scrollPosition < sectionBottom) {
+                navLinks.forEach(link => link.classList.remove('active'));
+                if (navLinks[index]) {
+                  navLinks[index].classList.add('active');
+                }
+              }
+            });
+          }
+
+          window.addEventListener('scroll', highlightNavigation);
+          highlightNavigation(); // Initial call
+        </script>
+      </body>
+      </html>
+    `;
+  }
+
+  /**
    * Renders the main deal creation page.
    * This page allows users to create new OTC swap deals by selecting:
    * - Source and destination chains
@@ -1061,13 +2247,49 @@ export class RpcServer {
       <head>
         <title>Create OTC asset swap deal</title>
         <style>
-          body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             font-size: 13px;
-            max-width: 500px; 
+            max-width: 500px;
             margin: 10px auto;
             padding: 10px;
             background: #f5f5f5;
+          }
+          /* Main Navigation */
+          .main-nav {
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin: -10px -10px 15px -10px;
+            padding: 12px 15px;
+            border-radius: 6px 6px 0 0;
+          }
+          .nav-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          .nav-logo {
+            font-size: 14px;
+            font-weight: 700;
+            color: #667eea;
+          }
+          .nav-links {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+          }
+          .nav-links a {
+            color: #555;
+            text-decoration: none;
+            font-weight: 500;
+            padding: 6px 12px;
+            border-radius: 4px;
+            transition: all 0.2s;
+            font-size: 12px;
+          }
+          .nav-links a:hover {
+            background: #f0f4ff;
+            color: #667eea;
           }
           .container {
             background: white;
@@ -1273,6 +2495,17 @@ export class RpcServer {
         </style>
       </head>
       <body>
+        <!-- Main Navigation -->
+        <nav class="main-nav">
+          <div class="nav-container">
+            <span class="nav-logo">Unicity OTC Swap</span>
+            <div class="nav-links">
+              <a href="/instructions">How to Use</a>
+              <a href="/">Create Deal</a>
+            </div>
+          </div>
+        </nav>
+
         <div class="container">
           <h1>
             <span>Create OTC Asset Swap Deal</span>
@@ -2491,6 +3724,17 @@ export class RpcServer {
       </style>
     </head>
     <body>
+      <!-- Main Navigation -->
+      <nav class="main-nav">
+        <div class="nav-container">
+          <span class="nav-logo">Unicity OTC Swap</span>
+          <div class="nav-links">
+            <a href="/instructions#${party === 'ALICE' ? 'alice-guide' : 'bob-guide'}">How to Use</a>
+            <a href="/">Create Deal</a>
+          </div>
+        </div>
+      </nav>
+
       <div class="container">
         <h1>${partyIcon} ${partyLabel}</h1>
         <p style="color: #333; font-size: 16px; font-weight: 600; margin-top: -10px;">Deal: ${deal?.name || 'Unnamed Deal'}</p>
@@ -2733,8 +3977,45 @@ export class RpcServer {
           from { opacity: 0; transform: translateY(-10px); }
           to { opacity: 1; transform: translateY(0); }
         }
-        
+
         small { font-size: 9px !important; }
+
+        /* Main Navigation */
+        .main-nav {
+          background: white;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+          margin: -30px -20px 20px -20px;
+          padding: 15px 20px;
+          border-radius: 10px 10px 0 0;
+        }
+        .nav-container {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .nav-logo {
+          font-size: 16px;
+          font-weight: 700;
+          color: #667eea;
+        }
+        .nav-links {
+          display: flex;
+          gap: 15px;
+          align-items: center;
+        }
+        .nav-links a {
+          color: #555;
+          text-decoration: none;
+          font-weight: 500;
+          padding: 8px 14px;
+          border-radius: 5px;
+          transition: all 0.2s;
+          font-size: 13px;
+        }
+        .nav-links a:hover {
+          background: #f0f4ff;
+          color: #667eea;
+        }
       </style>
       
       <script>
