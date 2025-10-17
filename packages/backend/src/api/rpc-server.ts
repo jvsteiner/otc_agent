@@ -109,8 +109,8 @@ export class RpcServer {
    * Routes include:
    * - POST /rpc - Main JSON-RPC 2.0 endpoint for API calls
    * - GET / - Deal creation page (public)
-   * - GET /d/:dealId/a/:token - Party A (Alice) personal page
-   * - GET /d/:dealId/b/:token - Party B (Bob) personal page
+   * - GET /d/:dealId/a/:token - Party A (Seller A) personal page
+   * - GET /d/:dealId/b/:token - Party B (Seller B) personal page
    *
    * The web pages are served as server-rendered HTML with embedded JavaScript
    * that communicates back to the /rpc endpoint for all data operations.
@@ -1015,7 +1015,7 @@ export class RpcServer {
    *
    * This page provides detailed guidance for using the Unicity OTC Swap Service including:
    * - Overview of the service
-   * - Step-by-step guides for Alice and Bob
+   * - Step-by-step guides for Seller A and Seller B
    * - Deal states explanation
    * - Timeline expectations
    * - Security information
@@ -1442,8 +1442,8 @@ export class RpcServer {
         <nav class="section-nav">
           <div class="section-nav-container">
             <a href="#overview">Overview</a>
-            <a href="#alice-guide">Alice's Guide</a>
-            <a href="#bob-guide">Bob's Guide</a>
+            <a href="#alice-guide">Seller A's Guide</a>
+            <a href="#bob-guide">Seller B's Guide</a>
             <a href="#deal-states">Deal States</a>
             <a href="#timeline">Timeline</a>
             <a href="#security">Security</a>
@@ -1463,8 +1463,8 @@ export class RpcServer {
             <h3>How It Works</h3>
             <p>The service operates with two parties:</p>
             <ul>
-              <li><strong>Alice (Asset A Seller):</strong> Wants to sell Asset A and receive Asset B</li>
-              <li><strong>Bob (Asset B Seller):</strong> Wants to sell Asset B and receive Asset A</li>
+              <li><strong>Seller A (Asset A Seller):</strong> Wants to sell Asset A and receive Asset B</li>
+              <li><strong>Seller B (Asset B Seller):</strong> Wants to sell Asset B and receive Asset A</li>
             </ul>
 
             <div class="callout callout-info">
@@ -1487,17 +1487,17 @@ export class RpcServer {
             </div>
           </section>
 
-          <!-- Alice's Guide -->
+          <!-- Seller A's Guide -->
           <section id="alice-guide" class="section">
-            <h2>Alice's Guide: Asset A Seller</h2>
-            <p>As Alice, you're initiating or participating in a deal where you'll sell Asset A and receive Asset B. Follow these steps:</p>
+            <h2>Seller A's Guide: Asset A Seller</h2>
+            <p>As Seller A, you're initiating or participating in a deal where you'll sell Asset A and receive Asset B. Follow these steps:</p>
 
             <h3>Step 1: Create or Receive a Deal</h3>
             <p><strong>Option A: Create a new deal</strong></p>
             <ol>
               <li>Visit the <a href="/" style="color: #667eea;">Create Deal page</a></li>
               <li>Select your asset (Asset A) - chain, asset type, and amount</li>
-              <li>Select Bob's asset (Asset B) - chain, asset type, and amount</li>
+              <li>Select Seller B's asset (Asset B) - chain, asset type, and amount</li>
               <li>Set the timeout period (typically 30-60 minutes)</li>
               <li>Click "Create Deal"</li>
               <li>Save your personal tracking link (Asset A Seller Link)</li>
@@ -1505,7 +1505,7 @@ export class RpcServer {
 
             <p><strong>Option B: Receive an invitation</strong></p>
             <ol>
-              <li>Bob creates the deal and shares the Asset A Seller link with you</li>
+              <li>Seller B creates the deal and shares the Asset A Seller link with you</li>
               <li>Open your personal tracking link</li>
             </ol>
 
@@ -1527,8 +1527,8 @@ export class RpcServer {
               <p>Double-check your receiving address! This is where Asset B will be sent after the swap. If you provide an incorrect address, you may lose your swapped assets permanently.</p>
             </div>
 
-            <h3>Step 3: Wait for Bob to Submit Details</h3>
-            <p>The deal remains in <span class="state-badge state-created">CREATED</span> state until Bob also submits his details. Once both parties have submitted:</p>
+            <h3>Step 3: Wait for Seller B to Submit Details</h3>
+            <p>The deal remains in <span class="state-badge state-created">CREATED</span> state until Seller B also submits their details. Once both parties have submitted:</p>
             <ul>
               <li>Deal moves to <span class="state-badge state-collection">COLLECTION</span> state</li>
               <li>Countdown timer starts (e.g., 30 minutes)</li>
@@ -1555,7 +1555,7 @@ export class RpcServer {
             </div>
 
             <h3>Step 5: Wait for Confirmations</h3>
-            <p>After both you and Bob deposit funds:</p>
+            <p>After both you and Seller B deposit funds:</p>
             <ul>
               <li>Deal moves to <span class="state-badge state-waiting">WAITING</span> state</li>
               <li>Countdown timer suspends (you won't lose time during confirmations)</li>
@@ -1570,7 +1570,7 @@ export class RpcServer {
               <li>Countdown timer is removed permanently</li>
               <li>Broker executes the swap automatically</li>
               <li>Asset B is sent to your receiving address</li>
-              <li>Asset A is sent to Bob's receiving address</li>
+              <li>Asset A is sent to Seller B's receiving address</li>
             </ul>
 
             <h3>Step 7: Receive Your Assets</h3>
@@ -1595,16 +1595,16 @@ export class RpcServer {
             </ul>
           </section>
 
-          <!-- Bob's Guide -->
+          <!-- Seller B's Guide -->
           <section id="bob-guide" class="section">
-            <h2>Bob's Guide: Asset B Seller</h2>
-            <p>As Bob, you're participating in a deal where you'll sell Asset B and receive Asset A. Your process is similar to Alice's:</p>
+            <h2>Seller B's Guide: Asset B Seller</h2>
+            <p>As Seller B, you're participating in a deal where you'll sell Asset B and receive Asset A. Your process is similar to Seller A's:</p>
 
             <h3>Step 1: Create or Receive a Deal</h3>
             <p><strong>Option A: Create a new deal</strong></p>
             <ol>
               <li>Visit the <a href="/" style="color: #667eea;">Create Deal page</a></li>
-              <li>Select Alice's asset (Asset A) - chain, asset type, and amount</li>
+              <li>Select Seller A's asset (Asset A) - chain, asset type, and amount</li>
               <li>Select your asset (Asset B) - chain, asset type, and amount</li>
               <li>Set the timeout period</li>
               <li>Click "Create Deal"</li>
@@ -1613,7 +1613,7 @@ export class RpcServer {
 
             <p><strong>Option B: Receive an invitation</strong></p>
             <ol>
-              <li>Alice creates the deal and shares the Asset B Seller link with you</li>
+              <li>Seller A creates the deal and shares the Asset B Seller link with you</li>
               <li>Open your personal tracking link</li>
             </ol>
 
@@ -1630,7 +1630,7 @@ export class RpcServer {
               <p>Ensure your receiving address is correct for the Asset A chain. Cross-chain addresses are different (e.g., Ethereum addresses differ from Unicity addresses).</p>
             </div>
 
-            <h3>Step 3: Wait for Alice to Submit Details</h3>
+            <h3>Step 3: Wait for Seller A to Submit Details</h3>
             <p>Once both parties submit details, the deal moves to <span class="state-badge state-collection">COLLECTION</span> and the countdown begins.</p>
 
             <h3>Step 4: Send Your Deposit</h3>
@@ -1642,7 +1642,7 @@ export class RpcServer {
             </ol>
 
             <h3>Step 5-7: Confirmation, Swap, and Completion</h3>
-            <p>The remaining steps are identical to Alice's process:</p>
+            <p>The remaining steps are identical to Seller A's process:</p>
             <ul>
               <li><span class="state-badge state-waiting">WAITING</span>: Confirmations in progress</li>
               <li><span class="state-badge state-swap">SWAP</span>: Broker executing swap</li>
@@ -1650,8 +1650,8 @@ export class RpcServer {
             </ul>
 
             <div class="callout callout-tip">
-              <div class="callout-title">Pro Tip for Bob</div>
-              <p>If you're receiving the deal link from Alice, verify the amounts are correct before submitting your details. Once you deposit funds, the exchange rate is locked.</p>
+              <div class="callout-title">Pro Tip for Seller B</div>
+              <p>If you're receiving the deal link from Seller A, verify the amounts are correct before submitting your details. Once you deposit funds, the exchange rate is locked.</p>
             </div>
           </section>
 
@@ -1672,7 +1672,7 @@ export class RpcServer {
                 <tr>
                   <td><span class="state-badge state-created">CREATED</span></td>
                   <td>Deal initialized</td>
-                  <td>Waiting for both Alice and Bob to submit their receiving addresses and details</td>
+                  <td>Waiting for both Seller A and Seller B to submit their receiving addresses and details</td>
                 </tr>
                 <tr>
                   <td><span class="state-badge state-collection">COLLECTION</span></td>
@@ -1948,7 +1948,7 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
             <ul>
               <li>Your deal ID (shown on tracking page)</li>
               <li>Current deal state</li>
-              <li>Your role (Alice or Bob)</li>
+              <li>Your role (Seller A or Seller B)</li>
               <li>Description of the issue</li>
               <li>Transaction hashes if applicable</li>
             </ul>
@@ -2061,7 +2061,7 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
               <li>Gather relevant information:
                 <ul>
                   <li>Your deal ID</li>
-                  <li>Your role (Alice or Bob)</li>
+                  <li>Your role (Seller A or Seller B)</li>
                   <li>Current deal state</li>
                   <li>Transaction hashes (if applicable)</li>
                   <li>Screenshots of any errors</li>
@@ -2983,7 +2983,7 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
   }
 
   /**
-   * Renders the personal page for a deal party (Alice or Bob).
+   * Renders the personal page for a deal party (Seller A or Seller B).
    * This secure page is accessed via a unique token and provides:
    * - Deal summary and current status
    * - Wallet address collection form (payback and recipient)
@@ -5661,39 +5661,39 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                 return '<strong>Deal initialized - Setup Phase</strong><br>' +
                   '<br><strong>Current Status:</strong> Waiting for both parties to provide wallet addresses<br>' +
                   '<br><strong>Next Steps:</strong><br>' +
-                  '1. Alice (Asset Seller) needs to submit ' + aliceChain + ' wallet addresses<br>' +
-                  '2. Bob (Asset Buyer) needs to submit ' + bobChain + ' wallet addresses<br>' +
+                  '1. Seller A (Asset Seller) needs to submit ' + aliceChain + ' wallet addresses<br>' +
+                  '2. Seller B (Asset Buyer) needs to submit ' + bobChain + ' wallet addresses<br>' +
                   '3. Once both submit, timer will start and collection phase begins<br>' +
                   '4. Both parties will then deposit assets to their escrow addresses';
               } else if (hasAliceDetails && !hasBobDetails) {
                 return '<strong>Partially Ready - Waiting for Party B</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
-                  '✅ Alice (Party A) has submitted wallet addresses<br>' +
-                  '⏳ Waiting for Bob (Party B) to provide wallet addresses<br>' +
-                  '<br><strong>Bob needs to submit:</strong><br>' +
+                  '✅ Seller A (Party A) has submitted wallet addresses<br>' +
+                  '⏳ Waiting for Seller B (Party B) to provide wallet addresses<br>' +
+                  '<br><strong>Seller B needs to submit:</strong><br>' +
                   '• Payback address on ' + bobChain + ' (for refunds if deal fails)<br>' +
                   '• Recipient address on ' + aliceChain + ' (to receive ' + aliceAsset + ')<br>' +
                   '<br><strong>What happens next:</strong><br>' +
-                  '1. Bob needs to open their party link and submit details<br>' +
-                  '2. Once Bob submits, the 1-hour countdown timer will start<br>' +
+                  '1. Seller B needs to open their party link and submit details<br>' +
+                  '2. Once Seller B submits, the 1-hour countdown timer will start<br>' +
                   '3. Both parties must then deposit their assets:<br>' +
-                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' to ' + aliceChain + ' escrow<br>' +
-                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' to ' + bobChain + ' escrow<br>' +
+                  '   • Seller A will deposit ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' to ' + aliceChain + ' escrow<br>' +
+                  '   • Seller B will deposit ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' to ' + bobChain + ' escrow<br>' +
                   '4. After both fully fund, automatic swap will execute';
               } else if (!hasAliceDetails && hasBobDetails) {
                 return '<strong>Partially Ready - Waiting for Party A</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
-                  '✅ Bob (Party B) has submitted wallet addresses<br>' +
-                  '⏳ Waiting for Alice (Party A) to provide wallet addresses<br>' +
-                  '<br><strong>Alice needs to submit:</strong><br>' +
+                  '✅ Seller B (Party B) has submitted wallet addresses<br>' +
+                  '⏳ Waiting for Seller A (Party A) to provide wallet addresses<br>' +
+                  '<br><strong>Seller A needs to submit:</strong><br>' +
                   '• Payback address on ' + aliceChain + ' (for refunds if deal fails)<br>' +
                   '• Recipient address on ' + bobChain + ' (to receive ' + bobAsset + ')<br>' +
                   '<br><strong>What happens next:</strong><br>' +
-                  '1. Alice needs to open their party link and submit details<br>' +
-                  '2. Once Alice submits, the 1-hour countdown timer will start<br>' +
+                  '1. Seller A needs to open their party link and submit details<br>' +
+                  '2. Once Seller A submits, the 1-hour countdown timer will start<br>' +
                   '3. Both parties must then deposit their assets:<br>' +
-                  '   • Alice will deposit ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' to ' + aliceChain + ' escrow<br>' +
-                  '   • Bob will deposit ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' to ' + bobChain + ' escrow<br>' +
+                  '   • Seller A will deposit ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' to ' + aliceChain + ' escrow<br>' +
+                  '   • Seller B will deposit ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' to ' + bobChain + ' escrow<br>' +
                   '4. After both fully fund, automatic swap will execute';
               }
               return '<strong>Both parties ready!</strong><br>Transitioning to collection phase...';
@@ -5705,27 +5705,27 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
               if (aliceCollected < aliceExpected && bobCollected < bobExpected) {
                 return '<strong>Collection Phase Active - Both Parties Need to Deposit</strong><br>' +
                   '<br><strong>Current Funding Status:</strong><br>' +
-                  '• Alice: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' (' + alicePercent + '%) on ' + aliceChain + '<br>' +
-                  '• Bob: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' ' + bobAsset + ' (' + bobPercent + '%) on ' + bobChain + '<br>' +
+                  '• Seller A: ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' (' + alicePercent + '%) on ' + aliceChain + '<br>' +
+                  '• Seller B: ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' ' + bobAsset + ' (' + bobPercent + '%) on ' + bobChain + '<br>' +
                   '<br><strong>⚠️ Action Required:</strong><br>' +
                   'Both parties must deposit their full amounts to escrow addresses<br>' +
                   '⏱️ Timer is running - complete deposits before expiry!<br>' +
                   '<br><strong>What happens after funding:</strong><br>' +
                   'Once both parties reach 100%, automatic cross-chain swap executes';
               } else if (aliceCollected >= aliceExpected && bobCollected < bobExpected) {
-                return '<strong>Waiting for Bob - Alice Fully Funded!</strong><br>' +
+                return '<strong>Waiting for Seller B - Seller A Fully Funded!</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
-                  '✅ Alice has deposited ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + ' (100%)<br>' +
-                  '⏳ Bob has deposited ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + ' (' + bobPercent + '%)<br>' +
-                  '<br><strong>Bob needs to deposit:</strong> ' + (bobExpected - bobCollected).toFixed(4) + ' more ' + bobAsset + ' on ' + bobChain + '<br>' +
-                  '<br>Once Bob completes funding, the swap will execute automatically';
+                  '✅ Seller A has deposited ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + ' (100%)<br>' +
+                  '⏳ Seller B has deposited ' + bobCollected.toFixed(4) + '/' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + ' (' + bobPercent + '%)<br>' +
+                  '<br><strong>Seller B needs to deposit:</strong> ' + (bobExpected - bobCollected).toFixed(4) + ' more ' + bobAsset + ' on ' + bobChain + '<br>' +
+                  '<br>Once Seller B completes funding, the swap will execute automatically';
               } else if (aliceCollected < aliceExpected && bobCollected >= bobExpected) {
-                return '<strong>Waiting for Alice - Bob Fully Funded!</strong><br>' +
+                return '<strong>Waiting for Seller A - Seller B Fully Funded!</strong><br>' +
                   '<br><strong>Current Status:</strong><br>' +
-                  '⏳ Alice has deposited ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + ' (' + alicePercent + '%)<br>' +
-                  '✅ Bob has deposited ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + ' (100%)<br>' +
-                  '<br><strong>Alice needs to deposit:</strong> ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ' + aliceAsset + ' on ' + aliceChain + '<br>' +
-                  '<br>Once Alice completes funding, the swap will execute automatically';
+                  '⏳ Seller A has deposited ' + aliceCollected.toFixed(4) + '/' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + ' (' + alicePercent + '%)<br>' +
+                  '✅ Seller B has deposited ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + ' (100%)<br>' +
+                  '<br><strong>Seller A needs to deposit:</strong> ' + (aliceExpected - aliceCollected).toFixed(4) + ' more ' + aliceAsset + ' on ' + aliceChain + '<br>' +
+                  '<br>Once Seller A completes funding, the swap will execute automatically';
               } else {
                 // Check if we're waiting for confirmations
                 const sideALocked = dealData.sideAState?.locks?.tradeLockedAt && dealData.sideAState?.locks?.commissionLockedAt;
@@ -5735,8 +5735,8 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                   return '<strong>🎉 Both Parties Fully Funded!</strong><br>' +
                     '<br><strong>Status:</strong> ⏸️ Timer paused - waiting for confirmations<br>' +
                     '<br><strong>Current State:</strong><br>' +
-                    '✅ Alice has deposited required ' + aliceAsset + ' on ' + aliceChain + '<br>' +
-                    '✅ Bob has deposited required ' + bobAsset + ' on ' + bobChain + '<br>' +
+                    '✅ Seller A has deposited required ' + aliceAsset + ' on ' + aliceChain + '<br>' +
+                    '✅ Seller B has deposited required ' + bobAsset + ' on ' + bobChain + '<br>' +
                     '⏳ Waiting for blockchain confirmations<br>' +
                     '<br><strong>Note:</strong> The countdown timer is paused while funds are secured.<br>' +
                     'If a chain reorganization occurs and funds drop below requirements,<br>' +
@@ -5813,15 +5813,15 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                 const isBob = qi.to === dealData.bobDetails?.paybackAddress;
 
                 if (qi.purpose === 'SWAP_PAYOUT') {
-                  return (isAlice ? 'Alice' : isBob ? 'Bob' : 'Party') + ' receives';
+                  return (isAlice ? 'Seller A' : isBob ? 'Seller B' : 'Party') + ' receives';
                 } else if (qi.purpose === 'OP_COMMISSION') {
                   return 'Operator commission';
                 } else if (qi.purpose === 'GAS_REIMBURSEMENT') {
-                  return 'Gas reimbursement to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
+                  return 'Gas reimbursement to ' + (isAlice ? 'Seller A' : isBob ? 'Seller B' : 'party');
                 } else if (qi.purpose === 'SURPLUS_REFUND') {
-                  return 'Surplus refund to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
+                  return 'Surplus refund to ' + (isAlice ? 'Seller A' : isBob ? 'Seller B' : 'party');
                 } else if (qi.purpose === 'TIMEOUT_REFUND') {
-                  return 'Timeout refund to ' + (isAlice ? 'Alice' : isBob ? 'Bob' : 'party');
+                  return 'Timeout refund to ' + (isAlice ? 'Seller A' : isBob ? 'Seller B' : 'party');
                 } else if (qi.purpose === 'GAS_REFUND_TO_TANK') {
                   return 'Gas tank refund';
                 }
@@ -5901,8 +5901,8 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
               // Otherwise it's a successful swap
               return '<strong>Deal completed successfully!</strong><br>' +
                 'All assets have been swapped and delivered.<br>' +
-                'Alice received ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + '.<br>' +
-                'Bob received ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + '.';
+                'Seller A received ' + bobExpected.toFixed(4) + ' ' + bobAsset + ' on ' + bobChain + '.<br>' +
+                'Seller B received ' + aliceExpected.toFixed(4) + ' ' + aliceAsset + ' on ' + aliceChain + '.';
               
             case 'REVERTED':
               return '<strong>Deal cancelled/expired.</strong><br>' +
