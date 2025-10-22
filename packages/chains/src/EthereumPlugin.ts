@@ -1095,6 +1095,51 @@ export class EthereumPlugin implements ChainPlugin {
   }
 
   /**
+   * Get gas prices with enforced minimums for production reliability.
+   * Prevents stuck transactions by ensuring minimum gas price floors.
+   *
+   * @returns Gas price parameters for transaction submission
+   */
+  private async getSafeGasPrice() {
+    const feeData = await this.provider.getFeeData();
+
+    // Minimum gas prices for Ethereum mainnet
+    const MIN_GAS_PRICE_MAINNET = ethers.parseUnits('1', 'gwei'); // 1 gwei floor
+    const MIN_PRIORITY_FEE_MAINNET = ethers.parseUnits('0.1', 'gwei'); // 0.1 gwei tip
+    const DEFAULT_GAS_PRICE = ethers.parseUnits('50', 'gwei'); // Fallback
+
+    let gasPrice = feeData.gasPrice || DEFAULT_GAS_PRICE;
+    let priorityFee = feeData.maxPriorityFeePerGas || MIN_PRIORITY_FEE_MAINNET;
+    let baseFee = feeData.maxFeePerGas;
+
+    // Enforce minimums for Ethereum mainnet
+    if (this.chainId === 'ETH') {
+      // Ensure gas price is at least 1 gwei
+      if (gasPrice < MIN_GAS_PRICE_MAINNET) {
+        console.log(`[${this.chainId}] Gas price ${ethers.formatUnits(gasPrice, 'gwei')} gwei below minimum, using ${ethers.formatUnits(MIN_GAS_PRICE_MAINNET, 'gwei')} gwei`);
+        gasPrice = MIN_GAS_PRICE_MAINNET;
+      }
+
+      // Ensure priority fee is at least 0.1 gwei
+      if (priorityFee < MIN_PRIORITY_FEE_MAINNET) {
+        console.log(`[${this.chainId}] Priority fee ${ethers.formatUnits(priorityFee, 'gwei')} gwei below minimum, using ${ethers.formatUnits(MIN_PRIORITY_FEE_MAINNET, 'gwei')} gwei`);
+        priorityFee = MIN_PRIORITY_FEE_MAINNET;
+      }
+
+      // Calculate maxFeePerGas as baseFee + priorityFee
+      // Use the higher of: (1) provided maxFeePerGas, or (2) gasPrice + priorityFee
+      const calculatedMaxFee = gasPrice + priorityFee;
+      baseFee = (baseFee && baseFee > calculatedMaxFee) ? baseFee : calculatedMaxFee;
+    }
+
+    return {
+      gasPrice,
+      maxFeePerGas: baseFee,
+      maxPriorityFeePerGas: priorityFee
+    };
+  }
+
+  /**
    * Generate operator signature for native currency broker operations.
    * Signature binds all transaction parameters and the escrow address (msg.sender).
    *
@@ -1316,12 +1361,13 @@ export class EthereumPlugin implements ChainPlugin {
         { value: balance } // Use full balance for estimation
       );
 
-      // Get current gas price
-      const feeData = await this.provider.getFeeData();
-      const gasPrice = feeData.gasPrice || ethers.parseUnits('50', 'gwei');
+      // Get safe gas prices with enforced minimums
+      const gasPrices = await this.getSafeGasPrice();
 
       // Calculate gas cost with 20% safety buffer
-      const gasCostWithBuffer = estimatedGas * gasPrice * 12n / 10n;
+      // Use maxFeePerGas if available (EIP-1559), otherwise use gasPrice
+      const effectiveGasPrice = gasPrices.maxFeePerGas || gasPrices.gasPrice;
+      const gasCostWithBuffer = estimatedGas * effectiveGasPrice * 12n / 10n;
 
       // Calculate actual msg.value (balance MINUS gas reserve)
       const msgValue = balance - gasCostWithBuffer;
@@ -1343,6 +1389,20 @@ export class EthereumPlugin implements ChainPlugin {
         );
       }
 
+      // Build transaction options with EIP-1559 support
+      const txOptions: any = {
+        value: msgValue,  // Use calculated value, NOT full balance
+        gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
+      };
+
+      // Use EIP-1559 if supported (Ethereum mainnet post-merge)
+      if (gasPrices.maxFeePerGas && gasPrices.maxPriorityFeePerGas) {
+        txOptions.maxFeePerGas = gasPrices.maxFeePerGas;
+        txOptions.maxPriorityFeePerGas = gasPrices.maxPriorityFeePerGas;
+      } else {
+        txOptions.gasPrice = gasPrices.gasPrice;
+      }
+
       tx = await brokerWithSigner.swapNative(
         dealIdBytes32,
         params.payback,
@@ -1351,10 +1411,7 @@ export class EthereumPlugin implements ChainPlugin {
         amountWei,
         feesWei,
         signature,  // Operator signature
-        {
-          value: msgValue,  // Use calculated value, NOT full balance
-          gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
-        }
+        txOptions
       );
 
       console.log(
@@ -1472,12 +1529,13 @@ export class EthereumPlugin implements ChainPlugin {
         { value: balance } // Use full balance for estimation
       );
 
-      // Get current gas price
-      const feeData = await this.provider.getFeeData();
-      const gasPrice = feeData.gasPrice || ethers.parseUnits('50', 'gwei');
+      // Get safe gas prices with enforced minimums
+      const gasPrices = await this.getSafeGasPrice();
 
       // Calculate gas cost with 20% safety buffer
-      const gasCostWithBuffer = estimatedGas * gasPrice * 12n / 10n;
+      // Use maxFeePerGas if available (EIP-1559), otherwise use gasPrice
+      const effectiveGasPrice = gasPrices.maxFeePerGas || gasPrices.gasPrice;
+      const gasCostWithBuffer = estimatedGas * effectiveGasPrice * 12n / 10n;
 
       // Calculate actual msg.value (balance MINUS gas reserve)
       const msgValue = balance - gasCostWithBuffer;
@@ -1498,16 +1556,27 @@ export class EthereumPlugin implements ChainPlugin {
         );
       }
 
+      // Build transaction options with EIP-1559 support
+      const txOptions: any = {
+        value: msgValue,  // Use calculated value, NOT full balance
+        gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
+      };
+
+      // Use EIP-1559 if supported (Ethereum mainnet post-merge)
+      if (gasPrices.maxFeePerGas && gasPrices.maxPriorityFeePerGas) {
+        txOptions.maxFeePerGas = gasPrices.maxFeePerGas;
+        txOptions.maxPriorityFeePerGas = gasPrices.maxPriorityFeePerGas;
+      } else {
+        txOptions.gasPrice = gasPrices.gasPrice;
+      }
+
       tx = await brokerWithSigner.revertNative(
         dealIdBytes32,
         params.payback,
         params.feeRecipient,
         feesWei,
         signature,  // Operator signature
-        {
-          value: msgValue,  // Use calculated value, NOT full balance
-          gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
-        }
+        txOptions
       );
 
       console.log(
@@ -1608,12 +1677,13 @@ export class EthereumPlugin implements ChainPlugin {
         { value: balance } // Use full balance for estimation
       );
 
-      // Get current gas price
-      const feeData = await this.provider.getFeeData();
-      const gasPrice = feeData.gasPrice || ethers.parseUnits('50', 'gwei');
+      // Get safe gas prices with enforced minimums
+      const gasPrices = await this.getSafeGasPrice();
 
       // Calculate gas cost with 20% safety buffer
-      const gasCostWithBuffer = estimatedGas * gasPrice * 12n / 10n;
+      // Use maxFeePerGas if available (EIP-1559), otherwise use gasPrice
+      const effectiveGasPrice = gasPrices.maxFeePerGas || gasPrices.gasPrice;
+      const gasCostWithBuffer = estimatedGas * effectiveGasPrice * 12n / 10n;
 
       // Calculate actual msg.value (balance MINUS gas reserve)
       const msgValue = balance - gasCostWithBuffer;
@@ -1634,15 +1704,26 @@ export class EthereumPlugin implements ChainPlugin {
         );
       }
 
+      // Build transaction options with EIP-1559 support
+      const txOptions: any = {
+        value: msgValue,  // Use calculated value, NOT full balance
+        gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
+      };
+
+      // Use EIP-1559 if supported (Ethereum mainnet post-merge)
+      if (gasPrices.maxFeePerGas && gasPrices.maxPriorityFeePerGas) {
+        txOptions.maxFeePerGas = gasPrices.maxFeePerGas;
+        txOptions.maxPriorityFeePerGas = gasPrices.maxPriorityFeePerGas;
+      } else {
+        txOptions.gasPrice = gasPrices.gasPrice;
+      }
+
       tx = await brokerWithSigner.refundNative(
         dealIdBytes32,
         params.payback,
         params.feeRecipient,
         feesWei,
-        {
-          value: msgValue,  // Use calculated value, NOT full balance
-          gasLimit: estimatedGas * 11n / 10n  // 10% buffer on gas limit
-        }
+        txOptions
       );
 
       console.log(
