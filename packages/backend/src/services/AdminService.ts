@@ -29,7 +29,7 @@ export class AdminService {
     `);
 
     const rows = stmt.all() as any[];
-    return rows.map(row => JSON.parse(row.snapshot));
+    return rows.map(row => JSON.parse(row.json));
   }
 
   /**
