@@ -1617,9 +1617,10 @@ export class Engine {
     
     for (const senderKey of senders) {
       const [chainId, address] = senderKey.split('|');
-      
+
       // Get next pending item for this sender IN CURRENT PHASE
-      const nextItem = this.queueRepo.getNextPending(deal.id, address, currentPhase);
+      // CRITICAL: Pass chainId to avoid mixing queue items from different chains (e.g., EVM vs UTXO)
+      const nextItem = this.queueRepo.getNextPending(deal.id, address, currentPhase, chainId);
       if (!nextItem) continue;
       
       try {
@@ -1655,9 +1656,10 @@ export class Engine {
     
     for (const senderKey of senders) {
       const [chainId, address] = senderKey.split('|');
-      
+
       // Get next pending item for this sender (explicitly NULL phase for non-phased items)
-      const nextItem = this.queueRepo.getNextPending(deal.id, address, null);
+      // CRITICAL: Pass chainId to avoid mixing queue items from different chains (e.g., EVM vs UTXO)
+      const nextItem = this.queueRepo.getNextPending(deal.id, address, null, chainId);
       if (!nextItem) continue;
       
       try {

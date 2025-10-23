@@ -127,39 +127,70 @@ export class QueueRepository {
     return rows.map(row => this.mapRowToQueueItem(row));
   }
 
-  getNextPending(dealId: string, fromAddr: string, phase?: string | null): QueueItem | null {
+  getNextPending(dealId: string, fromAddr: string, phase?: string | null, chainId?: string): QueueItem | null {
     // If phase === null, explicitly get non-phased items
     // If phase is a string, get items from that phase
     // If phase is undefined, get all items
+    // If chainId is provided, filter by it to avoid mixing queue items from different chains
     let stmt;
     if (phase === null) {
-      stmt = this.db.prepare(`
-        SELECT * FROM queue_items
-        WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING' AND phase IS NULL
-        ORDER BY seq
-        LIMIT 1
-      `);
+      if (chainId) {
+        stmt = this.db.prepare(`
+          SELECT * FROM queue_items
+          WHERE dealId = ? AND fromAddr = ? AND chainId = ? AND status = 'PENDING' AND phase IS NULL
+          ORDER BY seq
+          LIMIT 1
+        `);
+      } else {
+        stmt = this.db.prepare(`
+          SELECT * FROM queue_items
+          WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING' AND phase IS NULL
+          ORDER BY seq
+          LIMIT 1
+        `);
+      }
     } else if (phase) {
-      stmt = this.db.prepare(`
-        SELECT * FROM queue_items
-        WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING' AND phase = ?
-        ORDER BY seq
-        LIMIT 1
-      `);
+      if (chainId) {
+        stmt = this.db.prepare(`
+          SELECT * FROM queue_items
+          WHERE dealId = ? AND fromAddr = ? AND chainId = ? AND status = 'PENDING' AND phase = ?
+          ORDER BY seq
+          LIMIT 1
+        `);
+      } else {
+        stmt = this.db.prepare(`
+          SELECT * FROM queue_items
+          WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING' AND phase = ?
+          ORDER BY seq
+          LIMIT 1
+        `);
+      }
     } else {
-      stmt = this.db.prepare(`
-        SELECT * FROM queue_items
-        WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING'
-        ORDER BY seq
-        LIMIT 1
-      `);
+      if (chainId) {
+        stmt = this.db.prepare(`
+          SELECT * FROM queue_items
+          WHERE dealId = ? AND fromAddr = ? AND chainId = ? AND status = 'PENDING'
+          ORDER BY seq
+          LIMIT 1
+        `);
+      } else {
+        stmt = this.db.prepare(`
+          SELECT * FROM queue_items
+          WHERE dealId = ? AND fromAddr = ? AND status = 'PENDING'
+          ORDER BY seq
+          LIMIT 1
+        `);
+      }
     }
-    
-    const row = phase && phase !== null
-      ? stmt.get(dealId, fromAddr, phase) as any
-      : stmt.get(dealId, fromAddr) as any;
+
+    // Build parameters array based on what's provided
+    const params = [dealId, fromAddr];
+    if (chainId) params.push(chainId);
+    if (phase && phase !== null) params.push(phase);
+
+    const row = stmt.get(...params) as any;
     if (!row) return null;
-    
+
     return this.mapRowToQueueItem(row);
   }
   
