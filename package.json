@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc --build packages/core/tsconfig.json packages/chains/tsconfig.json packages/backend/tsconfig.json packages/tools/tsconfig.json --force",
     "dev": "npm run dev --workspace=packages/backend",
+    "prod": "npm run build && npm run start --workspace=packages/backend",
     "test": "npm run test --workspaces",
     "lint": "eslint packages/*/src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
