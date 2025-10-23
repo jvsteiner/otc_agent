@@ -118,7 +118,10 @@ export class DealRepository {
       // If party_details table doesn't exist or error loading, continue with deal from JSON
       console.warn('Could not load party details from database:', error);
     }
-    
+
+    // Load events from database
+    deal.events = this.loadEvents(dealId);
+
     return deal;
   }
 
@@ -155,8 +158,24 @@ export class DealRepository {
       INSERT INTO events (dealId, t, msg)
       VALUES (?, ?, ?)
     `);
-    
+
     stmt.run(dealId, new Date().toISOString(), msg);
+  }
+
+  /**
+   * Loads events for a deal from the database.
+   * @param dealId - Deal identifier
+   * @returns Array of events sorted chronologically
+   */
+  private loadEvents(dealId: string): Array<{ t: string; msg: string }> {
+    const stmt = this.db.prepare(`
+      SELECT t, msg FROM events
+      WHERE dealId = ?
+      ORDER BY t ASC
+    `);
+
+    const rows = stmt.all(dealId) as Array<{ t: string; msg: string }>;
+    return rows;
   }
 
   getActiveDeals(): Deal[] {
@@ -217,7 +236,10 @@ export class DealRepository {
         // If party_details table doesn't exist or error loading, continue with deal from JSON
         console.warn('Could not load party details from database for deal', deal.id, ':', error);
       }
-      
+
+      // Load events from database
+      deal.events = this.loadEvents(deal.id);
+
       return deal;
     });
   }
@@ -282,7 +304,10 @@ export class DealRepository {
         // If party_details table doesn't exist or error loading, continue with deal from JSON
         console.warn('Could not load party details from database for deal', deal.id, ':', error);
       }
-      
+
+      // Load events from database
+      deal.events = this.loadEvents(deal.id);
+
       return deal;
     });
   }

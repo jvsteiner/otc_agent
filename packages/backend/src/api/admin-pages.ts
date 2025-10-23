@@ -710,6 +710,48 @@ export function renderDealDetailsPage(deal: Deal, balances: any): string {
             </div>
           </div>
         </div>
+
+        <!-- Event Log Section -->
+        <div class="row mt-4">
+          <div class="col-12">
+            <div class="card">
+              <div class="card-header">📜 Event Log</div>
+              <div class="card-body">
+                ${deal.events && deal.events.length > 0 ? `
+                  <div style="max-height: 600px; overflow-y: auto;">
+                    <table class="table table-sm" style="color: #e0e0e0; margin-bottom: 0;">
+                      <thead style="position: sticky; top: 0; background: #0f3460; z-index: 1;">
+                        <tr>
+                          <th style="width: 200px; color: #00d4ff; border-color: #2a4563;">Timestamp</th>
+                          <th style="color: #00d4ff; border-color: #2a4563;">Event</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${deal.events.map((event: { t: string; msg: string }) => `
+                          <tr>
+                            <td style="border-color: #2a4563; font-family: 'Courier New', monospace; font-size: 12px; color: #a0a0a0;">
+                              ${formatDate(event.t)}
+                            </td>
+                            <td style="border-color: #2a4563; font-size: 13px;">
+                              ${event.msg}
+                            </td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style="margin-top: 15px; padding: 10px; background: #16213e; border-radius: 6px; font-size: 12px; color: #a0a0a0;">
+                    <strong style="color: #00d4ff;">Total Events:</strong> ${deal.events.length}
+                  </div>
+                ` : `
+                  <p style="color: #6c757d; text-align: center; margin: 20px 0;">
+                    No events recorded for this deal yet.
+                  </p>
+                `}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </body>
     </html>
