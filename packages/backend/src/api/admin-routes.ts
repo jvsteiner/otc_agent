@@ -26,6 +26,13 @@ export function setupAdminRoutes(
   const adminService = new AdminService(db, pluginManager);
 
   /**
+   * GET /admin - Redirect to login or deals
+   */
+  app.get('/admin', requireAdmin, (req: Request, res: Response) => {
+    res.redirect('/admin/deals');
+  });
+
+  /**
    * GET /admin/login - Login page
    */
   app.get('/admin/login', (req: Request, res: Response) => {
