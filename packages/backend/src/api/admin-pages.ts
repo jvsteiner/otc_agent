@@ -633,16 +633,26 @@ export function renderDealDetailsPage(deal: Deal, balances: any): string {
                 <h6 style="color: #00d4ff; margin-bottom: 15px;">Alice Escrow</h6>
                 <div class="balance-display">
                   <div class="balance-label">Address: <code style="font-size: 11px;">${deal.escrowA?.address || 'Not generated'}</code></div>
-                  ${balances.aliceBalance !== undefined ? `
-                    <div class="balance-amount">${balances.aliceBalance} ${deal.alice.asset}</div>
+                  ${balances.alice ? `
+                    ${balances.alice.error ? `
+                      <div class="balance-label" style="color: #ff6b6b;">${balances.alice.error}</div>
+                    ` : `
+                      <div class="balance-amount">${balances.alice.totalConfirmed || '0'} ${deal.alice.asset}</div>
+                      <div class="balance-label" style="margin-top: 5px;">Deposits: ${balances.alice.deposits?.length || 0}</div>
+                    `}
                   ` : '<div class="balance-label" style="color: #6c757d;">Balance not available</div>'}
                 </div>
 
                 <h6 style="color: #00d4ff; margin: 20px 0 15px 0;">Bob Escrow</h6>
                 <div class="balance-display">
                   <div class="balance-label">Address: <code style="font-size: 11px;">${deal.escrowB?.address || 'Not generated'}</code></div>
-                  ${balances.bobBalance !== undefined ? `
-                    <div class="balance-amount">${balances.bobBalance} ${deal.bob.asset}</div>
+                  ${balances.bob ? `
+                    ${balances.bob.error ? `
+                      <div class="balance-label" style="color: #ff6b6b;">${balances.bob.error}</div>
+                    ` : `
+                      <div class="balance-amount">${balances.bob.totalConfirmed || '0'} ${deal.bob.asset}</div>
+                      <div class="balance-label" style="margin-top: 5px;">Deposits: ${balances.bob.deposits?.length || 0}</div>
+                    `}
                   ` : '<div class="balance-label" style="color: #6c757d;">Balance not available</div>'}
                 </div>
               </div>
