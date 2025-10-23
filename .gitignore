@@ -153,3 +153,9 @@ data/
 *.key
 *.crt
 *.cert
+
+# Deployment artifacts
+contracts/broadcast/
+contracts/out/
+contracts/cache/
+
