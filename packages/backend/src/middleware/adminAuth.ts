@@ -56,23 +56,27 @@ export async function adminLogin(req: Request, res: Response) {
     { expiresIn: process.env.ADMIN_SESSION_EXPIRY || '24h' }
   );
 
-  // Set HTTP-only cookie
+  // Set HTTP-only cookie with explicit path to work across all /admin/* routes
   res.cookie('admin_token', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    path: '/' // CRITICAL: Cookie must be available to all routes
   });
 
-  // Redirect to admin dashboard
-  return res.redirect('/admin/deals');
+  // Check if there's a return URL to redirect back to
+  const returnUrl = req.query.returnUrl as string;
+  const redirectTo = returnUrl && returnUrl.startsWith('/admin/') ? returnUrl : '/admin/deals';
+
+  return res.redirect(redirectTo);
 }
 
 /**
  * Logout endpoint - clears session cookie
  */
 export function adminLogout(req: Request, res: Response) {
-  res.clearCookie('admin_token');
+  res.clearCookie('admin_token', { path: '/' }); // Must match cookie path
   return res.redirect('/admin/login');
 }
 
@@ -84,7 +88,9 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
   const jwtSecret = process.env.ADMIN_JWT_SECRET || 'change-me-in-production';
 
   if (!token) {
-    return res.redirect('/admin/login');
+    // Preserve the original URL to redirect back after login
+    const returnUrl = encodeURIComponent(req.originalUrl);
+    return res.redirect(`/admin/login?returnUrl=${returnUrl}`);
   }
 
   try {
@@ -92,8 +98,10 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
     req.admin = decoded;
     next();
   } catch (error) {
-    res.clearCookie('admin_token');
-    return res.redirect('/admin/login');
+    res.clearCookie('admin_token', { path: '/' }); // Must match cookie path
+    // Preserve the original URL to redirect back after login
+    const returnUrl = encodeURIComponent(req.originalUrl);
+    return res.redirect(`/admin/login?returnUrl=${returnUrl}`);
   }
 }
 
@@ -114,7 +122,7 @@ export function requireAdminAPI(req: AuthenticatedRequest, res: Response, next: 
     req.admin = decoded;
     next();
   } catch (error) {
-    res.clearCookie('admin_token');
+    res.clearCookie('admin_token', { path: '/' }); // Must match cookie path
     res.status(401).json({ error: 'Invalid or expired session' });
   }
 }
