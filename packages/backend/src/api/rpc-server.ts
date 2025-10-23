@@ -5,6 +5,7 @@
  */
 
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import { Deal, DealAssetSpec, PartyDetails, DealStage, CommissionMode, CommissionRequirement, EscrowAccountRef, AssetCode, ChainId, getAssetRegistry, formatAssetCode, parseAssetCode, generateDealName, validateDealName, calculateCommission, getAssetMetadata, sumAmounts } from '@otc-broker/core';
 import { DealRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { DB } from '../db/database';
@@ -12,6 +13,7 @@ import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import * as crypto from 'crypto';
 import { EmailService } from '../services/email';
 import * as productionConfig from '../config/production-config';
+import { setupAdminRoutes } from './admin-routes';
 
 interface CreateDealParams {
   alice: DealAssetSpec;
@@ -85,6 +87,7 @@ export class RpcServer {
   constructor(private db: DB, pluginManager: PluginManager) {
     this.app = express();
     this.app.use(express.json());
+    this.app.use(cookieParser());
     this.dealRepo = new DealRepository(db);
     this.queueRepo = new QueueRepository(db);
     this.payoutRepo = new PayoutRepository(db);
@@ -92,6 +95,10 @@ export class RpcServer {
     this.emailService = new EmailService(db);
 
     this.setupRoutes();
+
+    // Setup admin dashboard routes
+    setupAdminRoutes(this.app, db, pluginManager);
+
     this.startRetryWorker();
   }
 
