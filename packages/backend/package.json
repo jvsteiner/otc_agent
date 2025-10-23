@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
     "test": "vitest",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts",
+    "admin:setup": "tsx scripts/setup-admin.ts"
   },
   "dependencies": {
     "@otc-broker/chains": "1.0.0",
