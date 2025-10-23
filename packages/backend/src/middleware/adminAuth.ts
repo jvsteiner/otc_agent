@@ -64,11 +64,8 @@ export async function adminLogin(req: Request, res: Response) {
     maxAge: 24 * 60 * 60 * 1000 // 24 hours
   });
 
-  return res.json({
-    success: true,
-    email,
-    message: 'Login successful'
-  });
+  // Redirect to admin dashboard
+  return res.redirect('/admin/deals');
 }
 
 /**
@@ -76,7 +73,7 @@ export async function adminLogin(req: Request, res: Response) {
  */
 export function adminLogout(req: Request, res: Response) {
   res.clearCookie('admin_token');
-  return res.json({ success: true, message: 'Logged out' });
+  return res.redirect('/admin/login');
 }
 
 /**
