@@ -2522,6 +2522,12 @@ export class Engine {
 
                 console.log(`[ESCROW MONITOR] Stuck native currency transaction marked COMPLETED - will create fresh refund`);
 
+                // CRITICAL FIX: Don't create GAS_REFUND_TO_TANK for UTXO chains (UNICITY)
+                if (deal.alice.chainId === 'UNICITY') {
+                  console.log(`[ESCROW MONITOR] Skipping fresh GAS_REFUND_TO_TANK for UNICITY - no gas funding on UTXO chains`);
+                  return; // Exit early
+                }
+
                 // Create new gas refund with fresh nonce
                 // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
                 const returnAddress = this.getTankAddress() || deal.aliceDetails.paybackAddress;
@@ -2550,22 +2556,31 @@ export class Engine {
           if (!alreadyQueued) {
             // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
             // because parties never send native currency in token deals - it only comes from tank for gas
-            const returnAddress = this.getTankAddress() || deal.aliceDetails.paybackAddress;
-            const purpose = 'GAS_REFUND_TO_TANK';
 
-            console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Alice's escrow ${escrowAddress}`);
-            console.log(`[ESCROW MONITOR] Returning to tank wallet (${returnAddress})`);
-            
-            this.queueRepo.enqueue({
-              dealId: deal.id,
-              chainId: deal.alice.chainId,
-              from: deal.escrowA,
-              to: returnAddress,
-              asset: nativeAsset,
-              amount: currentNativeBalance, // Use actual current balance
-              purpose: purpose,
-            });
-            this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} gas from Alice's escrow to tank wallet`);
+            // CRITICAL FIX: Don't create GAS_REFUND_TO_TANK for UTXO chains (UNICITY)
+            // UTXO chains don't receive gas funding from the tank, and the tank address is EVM-only
+            if (deal.alice.chainId === 'UNICITY') {
+              console.log(`[ESCROW MONITOR] Skipping GAS_REFUND_TO_TANK for UNICITY - no gas funding on UTXO chains`);
+              console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} in Alice's escrow, but this is user funds, not tank gas`);
+              // For UNICITY, native currency should be returned to user via normal refund, not to tank
+            } else {
+              const returnAddress = this.getTankAddress() || deal.aliceDetails.paybackAddress;
+              const purpose = 'GAS_REFUND_TO_TANK';
+
+              console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Alice's escrow ${escrowAddress}`);
+              console.log(`[ESCROW MONITOR] Returning to tank wallet (${returnAddress})`);
+
+              this.queueRepo.enqueue({
+                dealId: deal.id,
+                chainId: deal.alice.chainId,
+                from: deal.escrowA,
+                to: returnAddress,
+                asset: nativeAsset,
+                amount: currentNativeBalance, // Use actual current balance
+                purpose: purpose,
+              });
+              this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} gas from Alice's escrow to tank wallet`);
+            }
           }
         }
       }
@@ -2737,6 +2752,12 @@ export class Engine {
 
                 console.log(`[ESCROW MONITOR] Stuck native currency transaction marked COMPLETED - will create fresh refund`);
 
+                // CRITICAL FIX: Don't create GAS_REFUND_TO_TANK for UTXO chains (UNICITY)
+                if (deal.bob.chainId === 'UNICITY') {
+                  console.log(`[ESCROW MONITOR] Skipping fresh GAS_REFUND_TO_TANK for UNICITY - no gas funding on UTXO chains`);
+                  return; // Exit early
+                }
+
                 // Create new gas refund with fresh nonce
                 // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
                 const returnAddress = this.getTankAddress() || deal.bobDetails.paybackAddress;
@@ -2765,22 +2786,31 @@ export class Engine {
           if (!alreadyQueued) {
             // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
             // because parties never send native currency in token deals - it only comes from tank for gas
-            const returnAddress = this.getTankAddress() || deal.bobDetails.paybackAddress;
-            const purpose = 'GAS_REFUND_TO_TANK';
 
-            console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Bob's escrow ${escrowAddress}`);
-            console.log(`[ESCROW MONITOR] Returning to tank wallet (${returnAddress})`);
-            
-            this.queueRepo.enqueue({
-              dealId: deal.id,
-              chainId: deal.bob.chainId,
-              from: deal.escrowB,
-              to: returnAddress,
-              asset: nativeAsset,
-              amount: currentNativeBalance,
-              purpose: purpose,
-            });
-            this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} gas from Bob's escrow to tank wallet`);
+            // CRITICAL FIX: Don't create GAS_REFUND_TO_TANK for UTXO chains (UNICITY)
+            // UTXO chains don't receive gas funding from the tank, and the tank address is EVM-only
+            if (deal.bob.chainId === 'UNICITY') {
+              console.log(`[ESCROW MONITOR] Skipping GAS_REFUND_TO_TANK for UNICITY - no gas funding on UTXO chains`);
+              console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} in Bob's escrow, but this is user funds, not tank gas`);
+              // For UNICITY, native currency should be returned to user via normal refund, not to tank
+            } else {
+              const returnAddress = this.getTankAddress() || deal.bobDetails.paybackAddress;
+              const purpose = 'GAS_REFUND_TO_TANK';
+
+              console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Bob's escrow ${escrowAddress}`);
+              console.log(`[ESCROW MONITOR] Returning to tank wallet (${returnAddress})`);
+
+              this.queueRepo.enqueue({
+                dealId: deal.id,
+                chainId: deal.bob.chainId,
+                from: deal.escrowB,
+                to: returnAddress,
+                asset: nativeAsset,
+                amount: currentNativeBalance,
+                purpose: purpose,
+              });
+              this.dealRepo.addEvent(deal.id, `Auto-returning ${currentNativeBalance} ${nativeAsset} gas from Bob's escrow to tank wallet`);
+            }
           }
         }
       }
