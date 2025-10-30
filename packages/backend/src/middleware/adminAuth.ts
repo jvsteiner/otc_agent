@@ -49,19 +49,29 @@ export async function adminLogin(req: Request, res: Response) {
     return res.status(500).json({ error: 'Authentication error' });
   }
 
-  // Create JWT token
+  // Parse session expiry - support both seconds (3600) and time strings ('24h')
+  const sessionExpiry = process.env.ADMIN_SESSION_EXPIRY || '24h';
+  const sessionExpiryMs = typeof sessionExpiry === 'string' && /^\d+$/.test(sessionExpiry)
+    ? parseInt(sessionExpiry) * 1000  // If numeric string, treat as seconds and convert to ms
+    : 24 * 60 * 60 * 1000;             // Otherwise use default 24h in ms
+
+  // Create JWT token with matching expiry
   const token = (jwt.sign as any)(
     { email, loginAt: new Date().toISOString() },
     jwtSecret,
-    { expiresIn: process.env.ADMIN_SESSION_EXPIRY || '24h' }
+    {
+      expiresIn: typeof sessionExpiry === 'string' && /^\d+$/.test(sessionExpiry)
+        ? parseInt(sessionExpiry)  // JWT expects seconds for numeric values
+        : sessionExpiry            // Or time strings like '24h'
+    }
   );
 
-  // Set HTTP-only cookie with explicit path to work across all /admin/* routes
+  // Set HTTP-only cookie with MATCHING expiry
   res.cookie('admin_token', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    sameSite: 'lax',  // Changed from 'strict' for better compatibility
+    maxAge: sessionExpiryMs,  // Now dynamically matches JWT expiry
     path: '/' // CRITICAL: Cookie must be available to all routes
   });
 
@@ -76,7 +86,11 @@ export async function adminLogin(req: Request, res: Response) {
  * Logout endpoint - clears session cookie
  */
 export function adminLogout(req: Request, res: Response) {
-  res.clearCookie('admin_token', { path: '/' }); // Must match cookie path
+  res.clearCookie('admin_token', {
+    path: '/',
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax'  // Must match set options exactly
+  });
   return res.redirect('/admin/login');
 }
 
@@ -98,7 +112,14 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
     req.admin = decoded;
     next();
   } catch (error) {
-    res.clearCookie('admin_token', { path: '/' }); // Must match cookie path
+    // Log JWT verification errors to help debug session issues
+    console.warn(`[AdminAuth] JWT verification failed for ${req.originalUrl}:`, error instanceof Error ? error.message : 'Unknown error');
+
+    res.clearCookie('admin_token', {
+      path: '/',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    });
     // Preserve the original URL to redirect back after login
     const returnUrl = encodeURIComponent(req.originalUrl);
     return res.redirect(`/admin/login?returnUrl=${returnUrl}`);
@@ -122,7 +143,13 @@ export function requireAdminAPI(req: AuthenticatedRequest, res: Response, next: 
     req.admin = decoded;
     next();
   } catch (error) {
-    res.clearCookie('admin_token', { path: '/' }); // Must match cookie path
+    console.warn(`[AdminAuth] API JWT verification failed:`, error instanceof Error ? error.message : 'Unknown error');
+
+    res.clearCookie('admin_token', {
+      path: '/',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    });
     res.status(401).json({ error: 'Invalid or expired session' });
   }
 }
