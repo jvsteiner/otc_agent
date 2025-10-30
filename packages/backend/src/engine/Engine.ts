@@ -2178,8 +2178,8 @@ export class Engine {
 
         const balance = depositsView.totalConfirmed;
 
-        // If balance > 0, there are leftover funds
-        if (parseFloat(balance) > 0) {
+        // If balance > 0, there are leftover funds (use decimal comparison)
+        if (compareAmounts(balance, '0') > 0) {
           console.log(`[LateDeposit] Found ${balance} ${side.spec.asset} in ${side.party} escrow for closed deal ${deal.id.slice(0, 8)}...`);
 
           // Check if we already have a pending BROKER_REFUND for this escrow
@@ -2379,19 +2379,20 @@ export class Engine {
         );
         
         console.log(`[Engine] Balance check result: ${currentBalance} ${aliceAsset}`);
-      
-      const remainingBalance = parseFloat(currentBalance);
-      if (remainingBalance > 0.000001) { // Small threshold to avoid dust
+
+      // Use decimal comparison for balance check (avoid float precision loss)
+      if (compareAmounts(currentBalance, '0.000001') > 0) { // Small threshold to avoid dust
         // Check if we already have a pending or submitted return for this escrow
         const existingQueues = this.queueRepo.getByDeal(deal.id)
           .filter(q => q.from.address === escrowAddress &&
                       q.asset === aliceAsset &&
                       (q.status === 'PENDING' || q.status === 'SUBMITTED'));
 
-        // Check if we already have a queue item for approximately this amount
-        const alreadyQueued = existingQueues.some(q =>
-          Math.abs(parseFloat(q.amount) - remainingBalance) < 0.01 // Within 0.01 ALPHA
-        );
+        // Check if we already have a queue item for approximately this amount (use decimal comparison)
+        const alreadyQueued = existingQueues.some(q => {
+          const diff = subtractAmounts(q.amount, currentBalance);
+          return compareAmounts(new Decimal(diff).abs().toString(), '0.01') < 0; // Within 0.01 ALPHA
+        });
 
         if (alreadyQueued) {
           // There's already a PENDING/SUBMITTED queue item
@@ -2457,7 +2458,7 @@ export class Engine {
             aliceAsset
           );
         } else {
-          console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${aliceAsset} in Alice's escrow ${escrowAddress}`);
+          console.log(`[ESCROW MONITOR] Found ${currentBalance} ${aliceAsset} in Alice's escrow ${escrowAddress}`);
 
           // Ensure gas for ERC-20 refund if needed
           const funded = await this.ensureGasForRefund(
@@ -2497,8 +2498,8 @@ export class Engine {
           nativeAsset
         );
 
-        const nativeBalance = parseFloat(currentNativeBalance);
-        if (nativeBalance > 0.000001) {
+        // Use decimal comparison for native balance check (avoid float precision loss)
+        if (compareAmounts(currentNativeBalance, '0.000001') > 0) {
           const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
             .filter(q => q.from.address === escrowAddress &&
                         q.asset === nativeAsset &&
@@ -2553,9 +2554,11 @@ export class Engine {
             }
           }
 
-          const alreadyQueued = existingNativeQueues.some(q =>
-            Math.abs(parseFloat(q.amount) - nativeBalance) < 0.01
-          );
+          // Use decimal comparison to check if amount already queued
+          const alreadyQueued = existingNativeQueues.some(q => {
+            const diff = subtractAmounts(q.amount, currentNativeBalance);
+            return compareAmounts(new Decimal(diff).abs().toString(), '0.01') < 0;
+          });
 
           if (!alreadyQueued) {
             // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
@@ -2565,13 +2568,13 @@ export class Engine {
             // UTXO chains don't receive gas funding from the tank, and the tank address is EVM-only
             if (deal.alice.chainId === 'UNICITY') {
               console.log(`[ESCROW MONITOR] Skipping GAS_REFUND_TO_TANK for UNICITY - no gas funding on UTXO chains`);
-              console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} in Alice's escrow, but this is user funds, not tank gas`);
+              console.log(`[ESCROW MONITOR] Found ${currentNativeBalance} ${nativeAsset} in Alice's escrow, but this is user funds, not tank gas`);
               // For UNICITY, native currency should be returned to user via normal refund, not to tank
             } else {
               const returnAddress = this.getTankAddress() || deal.aliceDetails.paybackAddress;
               const purpose = 'GAS_REFUND_TO_TANK';
 
-              console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Alice's escrow ${escrowAddress}`);
+              console.log(`[ESCROW MONITOR] Found ${currentNativeBalance} ${nativeAsset} (native) in Alice's escrow ${escrowAddress}`);
               console.log(`[ESCROW MONITOR] Returning to tank wallet (${returnAddress})`);
 
               this.queueRepo.enqueue({
@@ -2605,15 +2608,18 @@ export class Engine {
         escrowAddress,
         bobAsset
       );
-      
-      const remainingBalance = parseFloat(currentBalance);
-      if (remainingBalance > 0.000001) { // Small threshold to avoid dust
+
+      // Use decimal comparison for balance check (avoid float precision loss)
+      if (compareAmounts(currentBalance, '0.000001') > 0) { // Small threshold to avoid dust
         // Check if we already have a pending or submitted return for this escrow
         const existingQueues = this.queueRepo.getByDeal(deal.id)
-          .filter(q => q.from.address === escrowAddress &&
-                      q.asset === bobAsset &&
-                      (q.status === 'PENDING' || q.status === 'SUBMITTED') &&
-                      Math.abs(parseFloat(q.amount) - remainingBalance) < 0.01);
+          .filter(q => {
+            if (q.from.address !== escrowAddress || q.asset !== bobAsset) return false;
+            if (q.status !== 'PENDING' && q.status !== 'SUBMITTED') return false;
+            // Use decimal comparison for amount matching
+            const diff = subtractAmounts(q.amount, currentBalance);
+            return compareAmounts(new Decimal(diff).abs().toString(), '0.01') < 0; // Within 0.01
+          });
 
         if (existingQueues.length > 0) {
           // There's already a PENDING/SUBMITTED queue item, but we need to check if it's stuck
@@ -2679,7 +2685,7 @@ export class Engine {
             bobAsset
           );
         } else {
-          console.log(`[ESCROW MONITOR] Found ${remainingBalance} ${bobAsset} in Bob's escrow ${escrowAddress}`);
+          console.log(`[ESCROW MONITOR] Found ${currentBalance} ${bobAsset} in Bob's escrow ${escrowAddress}`);
           console.log(`[ESCROW MONITOR] Bob's payback address: ${deal.bobDetails.paybackAddress}`);
           console.log(`[ESCROW MONITOR] Bob's recipient address: ${deal.bobDetails.recipientAddress}`);
 
@@ -2727,8 +2733,8 @@ export class Engine {
           nativeAsset
         );
 
-        const nativeBalance = parseFloat(currentNativeBalance);
-        if (nativeBalance > 0.000001) {
+        // Use decimal comparison for native balance check (avoid float precision loss)
+        if (compareAmounts(currentNativeBalance, '0.000001') > 0) {
           const existingNativeQueues = this.queueRepo.getByDeal(deal.id)
             .filter(q => q.from.address === escrowAddress &&
                         q.asset === nativeAsset &&
@@ -2783,9 +2789,11 @@ export class Engine {
             }
           }
 
-          const alreadyQueued = existingNativeQueues.some(q =>
-            Math.abs(parseFloat(q.amount) - nativeBalance) < 0.01
-          );
+          // Use decimal comparison to check if amount already queued
+          const alreadyQueued = existingNativeQueues.some(q => {
+            const diff = subtractAmounts(q.amount, currentNativeBalance);
+            return compareAmounts(new Decimal(diff).abs().toString(), '0.01') < 0;
+          });
 
           if (!alreadyQueued) {
             // CRITICAL: For non-native assets (ERC-20/SPL), ALL native currency goes to tank
@@ -2795,13 +2803,13 @@ export class Engine {
             // UTXO chains don't receive gas funding from the tank, and the tank address is EVM-only
             if (deal.bob.chainId === 'UNICITY') {
               console.log(`[ESCROW MONITOR] Skipping GAS_REFUND_TO_TANK for UNICITY - no gas funding on UTXO chains`);
-              console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} in Bob's escrow, but this is user funds, not tank gas`);
+              console.log(`[ESCROW MONITOR] Found ${currentNativeBalance} ${nativeAsset} in Bob's escrow, but this is user funds, not tank gas`);
               // For UNICITY, native currency should be returned to user via normal refund, not to tank
             } else {
               const returnAddress = this.getTankAddress() || deal.bobDetails.paybackAddress;
               const purpose = 'GAS_REFUND_TO_TANK';
 
-              console.log(`[ESCROW MONITOR] Found ${nativeBalance} ${nativeAsset} (native) in Bob's escrow ${escrowAddress}`);
+              console.log(`[ESCROW MONITOR] Found ${currentNativeBalance} ${nativeAsset} (native) in Bob's escrow ${escrowAddress}`);
               console.log(`[ESCROW MONITOR] Returning to tank wallet (${returnAddress})`);
 
               this.queueRepo.enqueue({
