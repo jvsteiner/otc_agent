@@ -367,11 +367,13 @@ export class UnicityPlugin implements ChainPlugin {
       if (confirms >= minConf) {
         // Get transaction details for block time
         const tx = await this.electrumRequest('blockchain.transaction.get', [utxo.tx_hash, true]);
-        
+
         deposits.push({
           txid: utxo.tx_hash,
           index: utxo.tx_pos,
-          amount: new Decimal(utxo.value).div(100000000).toFixed(8), // Convert from satoshis using Decimal for precision
+          // Convert bigint satoshis to ALPHA string using Decimal for precision
+          // CRITICAL: utxo.value is now bigint - convert to string first
+          amount: new Decimal(utxo.value.toString()).div(100000000).toFixed(8),
           asset: 'ALPHA@UNICITY', // Fully qualified asset name
           blockHeight: utxo.height,
           blockTime: new Date(tx.time * 1000).toISOString(),
@@ -455,11 +457,13 @@ export class UnicityPlugin implements ChainPlugin {
     }
     
     // Convert amount to satoshis using Decimal for precision
-    const amountSatoshis = new Decimal(amount).mul(100000000).floor().toNumber();
+    // CRITICAL: Convert to bigint instead of number to support large amounts
+    const amountSatoshisBigInt = BigInt(new Decimal(amount).mul(100000000).floor().toFixed(0));
 
     // Check if we're trying to send the entire balance (for escrow returns)
-    const totalAvailable = utxos.reduce((sum: number, utxo: UTXO) => sum + utxo.value, 0);
-    const totalAvailableAlpha = new Decimal(totalAvailable).div(100000000).toFixed(8);
+    // CRITICAL: utxo.value is now bigint - use BigInt arithmetic
+    const totalAvailable = utxos.reduce((sum: bigint, utxo: UTXO) => sum + utxo.value, 0n);
+    const totalAvailableAlpha = new Decimal(totalAvailable.toString()).div(100000000).toFixed(8);
 
     // For UNICITY: each transaction can only use ONE input UTXO
     // If we need to send from multiple UTXOs, we need multiple transactions
@@ -474,29 +478,29 @@ export class UnicityPlugin implements ChainPlugin {
       }
       
       // Process UTXOs one by one, sending each to the recipient
-      let totalSent = 0;
+      let totalSent = 0n; // Use BigInt for total
       const txids: string[] = [];
-      
+
       for (let i = 0; i < utxos.length; i++) {
         const utxo = utxos[i];
         console.log(`[UNICITY] Processing UTXO ${i + 1}/${utxos.length}: ${utxo.value} satoshis`);
-        
+
         // Calculate fee for this single-input transaction
         const feeRate = 1; // 1 satoshi per byte
         const baseSize = 10 + 34; // overhead + 1 output (no change since we're sending all)
         const inputSize = 148;
         const estimatedSize = baseSize + inputSize;
-        const fee = Math.ceil(estimatedSize * feeRate);
-        
+        const fee = BigInt(Math.ceil(estimatedSize * feeRate));
+
         // Amount to send from this UTXO (minus fee)
         const sendAmount = utxo.value - fee;
         
-        if (sendAmount <= 0) {
+        if (sendAmount <= 0n) {
           console.log(`[UNICITY] Skipping dust UTXO ${utxo.tx_hash}:${utxo.tx_pos} (value ${utxo.value} <= fee ${fee})`);
           continue;
         }
-        
-        console.log(`[UNICITY] Sending ${new Decimal(sendAmount).div(100000000).toFixed(8)} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
+
+        console.log(`[UNICITY] Sending ${new Decimal(sendAmount.toString()).div(100000000).toFixed(8)} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
 
         // Build and sign transaction for this single UTXO
         const { hex: rawTx, txid } = buildAndSignSegWitTransaction(
@@ -530,7 +534,7 @@ export class UnicityPlugin implements ChainPlugin {
         throw new Error('Failed to send any transactions');
       }
       
-      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${new Decimal(totalSent).div(100000000).toFixed(8)} ALPHA`);
+      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${new Decimal(totalSent.toString()).div(100000000).toFixed(8)} ALPHA`);
       
       // Return all transaction IDs for proper tracking
       return {
@@ -548,41 +552,43 @@ export class UnicityPlugin implements ChainPlugin {
       console.log(`[UNICITY] Available UTXOs: ${utxos.length}`);
       
       // Sort UTXOs by value (largest first for efficiency)
-      const sortedUtxos = [...utxos].sort((a, b) => b.value - a.value);
-      
+      // CRITICAL: Use BigInt subtraction for comparison
+      const sortedUtxos = [...utxos].sort((a, b) => Number(b.value - a.value));
+
       const txids: string[] = [];
-      let totalSent = 0;
-      let remainingAmount = amountSatoshis;
+      let totalSent = 0n; // Use BigInt
+      let remainingAmount = amountSatoshisBigInt; // Use the bigint version
       
-      for (let i = 0; i < sortedUtxos.length && remainingAmount > 0; i++) {
+      for (let i = 0; i < sortedUtxos.length && remainingAmount > 0n; i++) {
         const utxo = sortedUtxos[i];
-        
+
         // Calculate fee for this transaction
         const baseSize = 10 + 34 + 34; // overhead + 1 output + 1 change output
         const inputSize = 148;
         const estimatedSize = baseSize + inputSize;
-        const fee = Math.ceil(estimatedSize * feeRate);
-        
+        const fee = BigInt(Math.ceil(estimatedSize * feeRate));
+
         // Skip if UTXO is too small to cover fees
         if (utxo.value <= fee) {
           console.log(`[UNICITY] Skipping dust UTXO ${utxo.tx_hash}:${utxo.tx_pos} (value ${utxo.value} <= fee ${fee})`);
           continue;
         }
-        
+
         // Determine how much to send from this UTXO
         const availableFromUtxo = utxo.value - fee;
-        const sendAmount = Math.min(remainingAmount, availableFromUtxo);
-        
-        console.log(`[UNICITY] Sending ${new Decimal(sendAmount).div(100000000).toFixed(8)} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
+        // Use bigint min function (compare and return smaller)
+        const sendAmount = remainingAmount < availableFromUtxo ? remainingAmount : availableFromUtxo;
 
-        // Build outputs
-        const outputs: Array<{ address: string; value: number }> = [
+        console.log(`[UNICITY] Sending ${new Decimal(sendAmount.toString()).div(100000000).toFixed(8)} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
+
+        // Build outputs (CRITICAL: value must be bigint)
+        const outputs: Array<{ address: string; value: bigint }> = [
           { address: to, value: sendAmount }
         ];
-        
+
         // Add change output if there's leftover after sending and fees
         const change = utxo.value - sendAmount - fee;
-        if (change > 546) { // dust threshold
+        if (change > 546n) { // dust threshold (as bigint)
           outputs.push({ address: from.address, value: change });
         }
         
@@ -619,11 +625,11 @@ export class UnicityPlugin implements ChainPlugin {
         throw new Error('Failed to send any transactions');
       }
       
-      if (remainingAmount > 0) {
-        throw new Error(`Insufficient funds: could only send ${new Decimal(totalSent).div(100000000).toFixed(8)} ALPHA out of ${amount} ALPHA requested`);
+      if (remainingAmount > 0n) {
+        throw new Error(`Insufficient funds: could only send ${new Decimal(totalSent.toString()).div(100000000).toFixed(8)} ALPHA out of ${amount} ALPHA requested`);
       }
       
-      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${new Decimal(totalSent).div(100000000).toFixed(8)} ALPHA`);
+      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${new Decimal(totalSent.toString()).div(100000000).toFixed(8)} ALPHA`);
       
       // Return all transaction IDs for proper tracking
       return {

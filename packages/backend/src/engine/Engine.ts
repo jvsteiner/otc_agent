@@ -2278,8 +2278,10 @@ export class Engine {
         }
         
         // Sum up UTXO values (in satoshis)
-        const totalSatoshis = utxos.reduce((sum: number, utxo: any) => sum + utxo.value, 0);
-        const totalAlpha = (totalSatoshis / 100000000).toString();
+        // CRITICAL: utxo.value is now bigint - use BigInt arithmetic
+        const totalSatoshis = utxos.reduce((sum: bigint, utxo: any) => sum + BigInt(utxo.value), 0n);
+        // Convert bigint satoshis to ALPHA string (avoiding float arithmetic)
+        const totalAlpha = (Number(totalSatoshis) / 100000000).toString();
         
         console.log(`[Engine] Unicity escrow ${escrowAddress} has ${utxos.length} UTXOs, total: ${totalAlpha} ALPHA`);
         return totalAlpha;

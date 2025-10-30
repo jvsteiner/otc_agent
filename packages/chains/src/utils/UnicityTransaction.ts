@@ -14,7 +14,7 @@ import { bech32 } from 'bech32';
 export interface UTXO {
   tx_hash: string;
   tx_pos: number;
-  value: number; // in satoshis
+  value: bigint; // in satoshis - MUST be bigint to support full uint64 range (max 18.4 quintillion satoshis)
   height: number;
 }
 
@@ -23,7 +23,7 @@ export interface UTXO {
  */
 interface TxOutput {
   address: string;
-  value: number; // in satoshis
+  value: bigint; // in satoshis - MUST be bigint to support full uint64 range
 }
 
 /**
@@ -143,28 +143,28 @@ export function buildAndSignSegWitTransaction(
   const privateKeyBytes = Buffer.from(privateKeyHex, 'hex');
   const publicKeyBytes = Buffer.from(secp256k1.publicKeyCreate(privateKeyBytes, true));
   
-  // Calculate total input value
-  const totalInput = utxos.reduce((sum, utxo) => sum + utxo.value, 0);
-  
-  // Calculate total output value
-  const totalOutput = outputs.reduce((sum, out) => sum + out.value, 0);
-  
+  // Calculate total input value (using BigInt for precision)
+  const totalInput = utxos.reduce((sum, utxo) => sum + utxo.value, 0n);
+
+  // Calculate total output value (using BigInt for precision)
+  const totalOutput = outputs.reduce((sum, out) => sum + out.value, 0n);
+
   // Estimate transaction size (approximate)
   // Base size: ~10 bytes overhead + (148 bytes per input) + (34 bytes per output)
   const estimatedSize = 10 + (utxos.length * 148) + ((outputs.length + 1) * 34); // +1 for change output
-  const fee = Math.ceil(estimatedSize * feeRate);
-  
-  // Calculate change
+  const fee = BigInt(Math.ceil(estimatedSize * feeRate));
+
+  // Calculate change (BigInt arithmetic)
   const change = totalInput - totalOutput - fee;
   
   // If changeAddress is empty, we're sending all funds (minus fees already calculated)
   // In this case, we don't check for insufficient funds as fees are already deducted
-  if (changeAddress && change < 0) {
+  if (changeAddress && change < 0n) {
     throw new Error('Insufficient funds: total input less than output + fees');
   }
-  
+
   // Add change output if significant (more than dust threshold) and changeAddress provided
-  const dustThreshold = 546; // satoshis
+  const dustThreshold = 546n; // satoshis (as bigint)
   if (changeAddress && change > dustThreshold) {
     outputs.push({
       address: changeAddress,
@@ -209,9 +209,11 @@ export function buildAndSignSegWitTransaction(
   for (const output of outputs) {
     // Amount (8 bytes, little-endian)
     const amount = Buffer.allocUnsafe(8);
-    // JavaScript can't handle 64-bit integers directly, so we need to be careful
-    amount.writeUInt32LE(output.value & 0xffffffff, 0);
-    amount.writeUInt32LE(Math.floor(output.value / 0x100000000), 4);
+    // Use BigInt for proper 64-bit integer handling (no precision loss)
+    // Extract lower 32 bits with bitwise AND
+    amount.writeUInt32LE(Number(output.value & 0xffffffffn), 0);
+    // Extract upper 32 bits with right shift
+    amount.writeUInt32LE(Number(output.value >> 32n), 4);
     tx = Buffer.concat([tx, amount]);
     
     // Script pubkey
@@ -298,10 +300,11 @@ function createNonWitnessData(utxos: UTXO[], outputs: TxOutput[]): Buffer {
   
   // Outputs
   for (const output of outputs) {
-    // Amount
+    // Amount (8 bytes, little-endian)
     const amount = Buffer.allocUnsafe(8);
-    amount.writeUInt32LE(output.value & 0xffffffff, 0);
-    amount.writeUInt32LE(Math.floor(output.value / 0x100000000), 4);
+    // Use BigInt for proper 64-bit integer handling (no precision loss)
+    amount.writeUInt32LE(Number(output.value & 0xffffffffn), 0);
+    amount.writeUInt32LE(Number(output.value >> 32n), 4);
     data = Buffer.concat([data, amount]);
     
     // Script pubkey
@@ -323,7 +326,7 @@ function createBIP143SignatureHash(
   utxos: UTXO[],
   outputs: TxOutput[],
   inputIndex: number,
-  amount: number,
+  amount: bigint,
   publicKey: Buffer
 ): Buffer {
   let preimage = Buffer.alloc(0);
@@ -378,8 +381,9 @@ function createBIP143SignatureHash(
   
   // 6. amount (8 bytes, little-endian)
   const amountBuffer = Buffer.allocUnsafe(8);
-  amountBuffer.writeUInt32LE(amount & 0xffffffff, 0);
-  amountBuffer.writeUInt32LE(Math.floor(amount / 0x100000000), 4);
+  // Use BigInt for proper 64-bit integer handling (no precision loss)
+  amountBuffer.writeUInt32LE(Number(amount & 0xffffffffn), 0);
+  amountBuffer.writeUInt32LE(Number(amount >> 32n), 4);
   preimage = Buffer.concat([preimage, amountBuffer]);
   
   // 7. nSequence (4 bytes, little-endian)
@@ -389,8 +393,9 @@ function createBIP143SignatureHash(
   let outputsBuffer = Buffer.alloc(0);
   for (const output of outputs) {
     const outputAmount = Buffer.allocUnsafe(8);
-    outputAmount.writeUInt32LE(output.value & 0xffffffff, 0);
-    outputAmount.writeUInt32LE(Math.floor(output.value / 0x100000000), 4);
+    // Use BigInt for proper 64-bit integer handling (no precision loss)
+    outputAmount.writeUInt32LE(Number(output.value & 0xffffffffn), 0);
+    outputAmount.writeUInt32LE(Number(output.value >> 32n), 4);
     outputsBuffer = Buffer.concat([outputsBuffer, outputAmount]);
     
     const scriptPubKey = createScriptPubKey(output.address);
@@ -420,14 +425,14 @@ function createBIP143SignatureHash(
  */
 export function selectUTXOs(
   availableUtxos: UTXO[],
-  targetAmount: number,
+  targetAmount: bigint,
   feeRate: number = 1
-): { selectedUtxos: UTXO[]; totalValue: number; estimatedFee: number } {
+): { selectedUtxos: UTXO[]; totalValue: bigint; estimatedFee: bigint } {
   // Sort UTXOs by value (largest first for efficiency)
-  const sortedUtxos = [...availableUtxos].sort((a, b) => b.value - a.value);
-  
+  const sortedUtxos = [...availableUtxos].sort((a, b) => Number(b.value - a.value));
+
   const selectedUtxos: UTXO[] = [];
-  let totalValue = 0;
+  let totalValue = 0n;
   
   // Estimate base transaction size
   const baseSize = 10 + 34; // overhead + 1 output
@@ -437,17 +442,17 @@ export function selectUTXOs(
   for (const utxo of sortedUtxos) {
     selectedUtxos.push(utxo);
     totalValue += utxo.value;
-    
+
     // Calculate estimated fee with current inputs
     const estimatedSize = baseSize + (selectedUtxos.length * inputSize) + changeOutputSize;
-    const estimatedFee = Math.ceil(estimatedSize * feeRate);
-    
-    // Check if we have enough
+    const estimatedFee = BigInt(Math.ceil(estimatedSize * feeRate));
+
+    // Check if we have enough (BigInt comparison)
     if (totalValue >= targetAmount + estimatedFee) {
       return { selectedUtxos, totalValue, estimatedFee };
     }
   }
-  
+
   // Not enough UTXOs
   throw new Error('Insufficient UTXOs to cover amount and fees');
 }
