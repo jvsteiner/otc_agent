@@ -570,10 +570,12 @@ export class EthereumPlugin implements ChainPlugin {
     // For demo purposes, using fixed rates
     // In production, this should fetch from Chainlink or another oracle
     const ethPriceUSD = this.chainId === 'POLYGON' ? 0.8 : 2000; // MATIC vs ETH
-    const nativeAmount = parseFloat(usd) / ethPriceUSD;
-    
+    // Use Decimal for precise USD to native conversion (CRITICAL for commission calculations)
+    const { Decimal } = await import('@otc-broker/core');
+    const nativeAmount = new Decimal(usd).div(ethPriceUSD).toFixed(8);
+
     return {
-      nativeAmount: nativeAmount.toFixed(8),
+      nativeAmount: nativeAmount,
       quote: {
         pair: this.chainId === 'POLYGON' ? 'MATIC/USD' : 'ETH/USD',
         price: ethPriceUSD.toString(),

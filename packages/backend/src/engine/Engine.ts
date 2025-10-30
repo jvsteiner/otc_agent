@@ -2280,8 +2280,8 @@ export class Engine {
         // Sum up UTXO values (in satoshis)
         // CRITICAL: utxo.value is now bigint - use BigInt arithmetic
         const totalSatoshis = utxos.reduce((sum: bigint, utxo: any) => sum + BigInt(utxo.value), 0n);
-        // Convert bigint satoshis to ALPHA string (avoiding float arithmetic)
-        const totalAlpha = (Number(totalSatoshis) / 100000000).toString();
+        // Convert bigint satoshis to ALPHA string using Decimal for exact precision
+        const totalAlpha = new Decimal(totalSatoshis.toString()).div(100000000).toString();
         
         console.log(`[Engine] Unicity escrow ${escrowAddress} has ${utxos.length} UTXOs, total: ${totalAlpha} ALPHA`);
         return totalAlpha;
@@ -2292,11 +2292,11 @@ export class Engine {
           const nativeAsset = chainId === 'POLYGON' ? 'MATIC' : 'ETH';
           
           if (asset === nativeAsset || asset === `${nativeAsset}@${chainId}`) {
-            // Get native balance
+            // Get native balance - use Decimal for precision (avoid Number division)
             const provider = (plugin as any).provider;
             if (provider) {
               const balance = await provider.getBalance(escrowAddress);
-              const ethBalance = (Number(balance) / 1e18).toString();
+              const ethBalance = new Decimal(balance.toString()).div(new Decimal(10).pow(18)).toString();
               console.log(`[Engine] ${chainId} escrow ${escrowAddress} has ${ethBalance} ${nativeAsset}`);
               return ethBalance;
             }
@@ -2310,11 +2310,12 @@ export class Engine {
               const { Contract } = await import('ethers');
               const contract = new Contract(tokenAddress, abi, provider);
               const balance = await contract.balanceOf(escrowAddress);
-              
+
               // Assume 6 decimals for USDT/USDC (common stablecoins)
               // This should ideally check the token's decimals
               const decimals = 6; // TODO: Get actual decimals from contract
-              const tokenBalance = (Number(balance) / Math.pow(10, decimals)).toString();
+              // Use Decimal for precision (avoid Number division that loses precision)
+              const tokenBalance = new Decimal(balance.toString()).div(new Decimal(10).pow(decimals)).toString();
               console.log(`[Engine] ${chainId} escrow ${escrowAddress} has ${tokenBalance} of token ${tokenAddress}`);
               return tokenBalance;
             }
@@ -3519,21 +3520,21 @@ export class Engine {
       // Get current gas price from network
       const currentGasPrice = await (plugin as any).getCurrentGasPrice();
 
-      // Calculate new gas price (20% higher)
+      // Calculate new gas price (20% higher) using Decimal for precision
       let newGasPrice: any = {};
       if (currentGasPrice.gasPrice) {
-        const oldPrice = parseFloat(item.lastGasPrice || currentGasPrice.gasPrice);
-        const bumpedPrice = oldPrice * 1.2;
+        const oldPrice = new Decimal(item.lastGasPrice || currentGasPrice.gasPrice);
+        const bumpedPrice = oldPrice.mul(1.2);
         newGasPrice.gasPrice = bumpedPrice.toFixed(2);
-        console.log(`[QueueProcessor] Bumping gas price from ${oldPrice} to ${bumpedPrice} gwei`);
+        console.log(`[QueueProcessor] Bumping gas price from ${oldPrice.toString()} to ${bumpedPrice.toString()} gwei`);
       } else if (currentGasPrice.maxFeePerGas) {
-        // EIP-1559
-        const oldMaxFee = parseFloat(item.lastGasPrice || currentGasPrice.maxFeePerGas);
-        const bumpedMaxFee = oldMaxFee * 1.2;
-        const bumpedPriority = parseFloat(currentGasPrice.maxPriorityFeePerGas!) * 1.2;
+        // EIP-1559 - use Decimal for exact calculations
+        const oldMaxFee = new Decimal(item.lastGasPrice || currentGasPrice.maxFeePerGas);
+        const bumpedMaxFee = oldMaxFee.mul(1.2);
+        const bumpedPriority = new Decimal(currentGasPrice.maxPriorityFeePerGas!).mul(1.2);
         newGasPrice.maxFeePerGas = bumpedMaxFee.toFixed(2);
         newGasPrice.maxPriorityFeePerGas = bumpedPriority.toFixed(2);
-        console.log(`[QueueProcessor] Bumping EIP-1559 fees: maxFee ${bumpedMaxFee}, priority ${bumpedPriority} gwei`);
+        console.log(`[QueueProcessor] Bumping EIP-1559 fees: maxFee ${bumpedMaxFee.toString()}, priority ${bumpedPriority.toString()} gwei`);
       }
 
       // Get the escrow account with key
