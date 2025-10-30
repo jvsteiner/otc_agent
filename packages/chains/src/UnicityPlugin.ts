@@ -552,8 +552,8 @@ export class UnicityPlugin implements ChainPlugin {
       console.log(`[UNICITY] Available UTXOs: ${utxos.length}`);
       
       // Sort UTXOs by value (largest first for efficiency)
-      // CRITICAL: Use BigInt subtraction for comparison
-      const sortedUtxos = [...utxos].sort((a, b) => Number(b.value - a.value));
+      // CRITICAL: Convert to Number before subtraction to avoid BigInt mixing error
+      const sortedUtxos = [...utxos].sort((a, b) => Number(b.value) - Number(a.value));
 
       const txids: string[] = [];
       let totalSent = 0n; // Use BigInt

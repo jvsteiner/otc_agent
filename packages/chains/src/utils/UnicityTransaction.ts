@@ -429,7 +429,7 @@ export function selectUTXOs(
   feeRate: number = 1
 ): { selectedUtxos: UTXO[]; totalValue: bigint; estimatedFee: bigint } {
   // Sort UTXOs by value (largest first for efficiency)
-  const sortedUtxos = [...availableUtxos].sort((a, b) => Number(b.value - a.value));
+  const sortedUtxos = [...availableUtxos].sort((a, b) => Number(b.value) - Number(a.value));
 
   const selectedUtxos: UTXO[] = [];
   let totalValue = 0n;
