@@ -14,6 +14,7 @@ import * as crypto from 'crypto';
 import { EmailService } from '../services/email';
 import * as productionConfig from '../config/production-config';
 import { setupAdminRoutes } from './admin-routes';
+import { validateAmountString } from '../utils/validation';
 
 interface CreateDealParams {
   alice: DealAssetSpec;
@@ -187,6 +188,15 @@ export class RpcServer {
   }
 
   private async createDeal(params: CreateDealParams) {
+    // SECURITY: Validate amount strings first to prevent injection attacks
+    try {
+      validateAmountString(params.alice.amount, 'alice.amount');
+      validateAmountString(params.bob.amount, 'bob.amount');
+    } catch (error: any) {
+      console.warn(`Amount validation failed: ${error.message}`);
+      throw error;
+    }
+
     // Production mode validation - check restrictions before anything else
     const productionConfig = await import('../config/production-config');
 
@@ -4531,11 +4541,14 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
             let confirmedBalance = 0;
             let unconfirmedBalance = 0;
             const utxoList = [];
-            
+
             if (Array.isArray(utxos)) {
               for (const utxo of utxos) {
-                const valueInAlpha = (utxo.value || 0) / 100000000;
-                
+                // CRITICAL: utxo.value may come as number or bigint from Electrum
+                // Convert to bigint safely, then to number for ALPHA calculation
+                const valueSatoshis = typeof utxo.value === 'bigint' ? utxo.value : BigInt(utxo.value || 0);
+                const valueInAlpha = Number(valueSatoshis) / 100000000;
+
                 // height 0 means mempool (unconfirmed)
                 if (utxo.height === 0) {
                   unconfirmedBalance += valueInAlpha;
