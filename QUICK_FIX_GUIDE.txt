@@ -1,0 +1,67 @@
+================================================================================
+  INCIDENT FIX - QUICK REFERENCE CARD
+  OTC Backend Infinite Error Loop
+  Date: 2025-10-30
+================================================================================
+
+PROBLEM:
+--------
+12 stuck transactions retrying every 30 seconds for ~76 days
+2.6 MILLION errors accumulated
+596 MB database (bloated)
+
+ROOT CAUSE:
+-----------
+UNICITY chain trying to send to EVM addresses (0x...)
+Impossible operation → infinite retry loop
+
+FIX (5 MINUTES):
+----------------
+cd /home/vrogojin/otc_agent
+node apply-incident-fix.js
+
+Type "yes" when prompted.
+
+WHAT IT DOES:
+-------------
+1. Shows you the 12 stuck items
+2. Marks them as FAILED in database
+3. Logs the fix for audit trail
+4. Verifies success
+
+THEN RESTART BACKEND:
+---------------------
+pkill -f "node.*backend"
+npm run prod
+
+VERIFY (Wait 10 minutes):
+-------------------------
+Check logs for NO MORE "No UTXOs available" errors
+System should be running normally
+
+IF SCRIPT FAILS:
+----------------
+Use manual SQL (see INCIDENT_FIX.sql)
+Or read full report: INCIDENT_REPORT_2025-10-30.md
+
+SUCCESS CRITERIA:
+-----------------
+✓ 12 items marked as FAILED
+✓ No new error logs appearing
+✓ System performance normal
+✓ Queue processing clean
+
+CONFIDENCE: HIGH
+No risk to production swaps
+Simple database update
+Reversible if needed
+
+READ MORE:
+----------
+EXECUTIVE_SUMMARY.md - Plain English explanation
+INCIDENT_REPORT_2025-10-30.md - Full technical details
+INCIDENT_RESPONSE_SUMMARY.md - Answers to all 5 questions
+
+================================================================================
+BOTTOM LINE: Run the script, restart backend, you're done.
+================================================================================
