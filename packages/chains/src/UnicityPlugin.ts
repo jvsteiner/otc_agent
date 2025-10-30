@@ -7,7 +7,7 @@
 import WebSocket from 'ws';
 import * as crypto from 'crypto';
 import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx } from './ChainPlugin';
-import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts } from '@otc-broker/core';
+import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts, Decimal, isAmountGte } from '@otc-broker/core';
 import { generateDeterministicKey, deriveChildPrivateKey, privateKeyToAddress } from './utils/UnicityAddress';
 import { buildAndSignSegWitTransaction, selectUTXOs, UTXO } from './utils/UnicityTransaction';
 import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
@@ -371,7 +371,7 @@ export class UnicityPlugin implements ChainPlugin {
         deposits.push({
           txid: utxo.tx_hash,
           index: utxo.tx_pos,
-          amount: (utxo.value / 100000000).toString(), // Convert from satoshis
+          amount: new Decimal(utxo.value).div(100000000).toFixed(8), // Convert from satoshis using Decimal for precision
           asset: 'ALPHA@UNICITY', // Fully qualified asset name
           blockHeight: utxo.height,
           blockTime: new Date(tx.time * 1000).toISOString(),
@@ -408,8 +408,8 @@ export class UnicityPlugin implements ChainPlugin {
     // For Unicity, we'll use a manual price or could integrate with an oracle
     // This is a placeholder - real implementation would fetch from price feed
     const alphaPrice = '0.50'; // $0.50 per ALPHA
-    const usdAmount = parseFloat(usd);
-    const alphaAmount = (usdAmount / parseFloat(alphaPrice)).toFixed(8);
+    // Use Decimal for precise USD to ALPHA conversion
+    const alphaAmount = new Decimal(usd).div(alphaPrice).toFixed(8);
     
     return {
       nativeAmount: alphaAmount,
@@ -454,17 +454,17 @@ export class UnicityPlugin implements ChainPlugin {
       throw new Error('No UTXOs available for spending');
     }
     
-    // Convert amount to satoshis
-    const amountSatoshis = Math.floor(parseFloat(amount) * 100000000);
-    
+    // Convert amount to satoshis using Decimal for precision
+    const amountSatoshis = new Decimal(amount).mul(100000000).floor().toNumber();
+
     // Check if we're trying to send the entire balance (for escrow returns)
     const totalAvailable = utxos.reduce((sum: number, utxo: UTXO) => sum + utxo.value, 0);
-    const totalAvailableAlpha = totalAvailable / 100000000;
-    
+    const totalAvailableAlpha = new Decimal(totalAvailable).div(100000000).toFixed(8);
+
     // For UNICITY: each transaction can only use ONE input UTXO
     // If we need to send from multiple UTXOs, we need multiple transactions
-    
-    if (Math.abs(totalAvailableAlpha - parseFloat(amount)) < 0.000001) {
+
+    if (new Decimal(totalAvailableAlpha).minus(amount).abs().lte('0.00000001')) {
       // We're trying to send ALL funds from ALL UTXOs
       // We'll need to create multiple transactions, one per UTXO
       console.log(`[UNICITY] Sending entire balance from ${utxos.length} UTXOs requires ${utxos.length} transactions`);
@@ -496,8 +496,8 @@ export class UnicityPlugin implements ChainPlugin {
           continue;
         }
         
-        console.log(`[UNICITY] Sending ${sendAmount / 100000000} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
-        
+        console.log(`[UNICITY] Sending ${new Decimal(sendAmount).div(100000000).toFixed(8)} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
+
         // Build and sign transaction for this single UTXO
         const { hex: rawTx, txid } = buildAndSignSegWitTransaction(
           [utxo],
@@ -530,7 +530,7 @@ export class UnicityPlugin implements ChainPlugin {
         throw new Error('Failed to send any transactions');
       }
       
-      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${totalSent / 100000000} ALPHA`);
+      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${new Decimal(totalSent).div(100000000).toFixed(8)} ALPHA`);
       
       // Return all transaction IDs for proper tracking
       return {
@@ -573,8 +573,8 @@ export class UnicityPlugin implements ChainPlugin {
         const availableFromUtxo = utxo.value - fee;
         const sendAmount = Math.min(remainingAmount, availableFromUtxo);
         
-        console.log(`[UNICITY] Sending ${sendAmount / 100000000} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
-        
+        console.log(`[UNICITY] Sending ${new Decimal(sendAmount).div(100000000).toFixed(8)} ALPHA from UTXO ${utxo.tx_hash}:${utxo.tx_pos}`);
+
         // Build outputs
         const outputs: Array<{ address: string; value: number }> = [
           { address: to, value: sendAmount }
@@ -620,10 +620,10 @@ export class UnicityPlugin implements ChainPlugin {
       }
       
       if (remainingAmount > 0) {
-        throw new Error(`Insufficient funds: could only send ${totalSent / 100000000} ALPHA out of ${amount} ALPHA requested`);
+        throw new Error(`Insufficient funds: could only send ${new Decimal(totalSent).div(100000000).toFixed(8)} ALPHA out of ${amount} ALPHA requested`);
       }
       
-      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${totalSent / 100000000} ALPHA`);
+      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${new Decimal(totalSent).div(100000000).toFixed(8)} ALPHA`);
       
       // Return all transaction IDs for proper tracking
       return {
@@ -653,11 +653,9 @@ export class UnicityPlugin implements ChainPlugin {
       1,
     );
     
-    const available = parseFloat(deposits.totalConfirmed);
-    const required = parseFloat(minNative);
-    
-    if (available < required) {
-      throw new Error(`Insufficient ALPHA for fees: have ${available}, need ${required}`);
+    // Use decimal-safe comparison instead of float arithmetic
+    if (!isAmountGte(deposits.totalConfirmed, minNative)) {
+      throw new Error(`Insufficient ALPHA for fees: have ${deposits.totalConfirmed}, need ${minNative}`);
     }
   }
 
