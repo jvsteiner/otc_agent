@@ -5,7 +5,7 @@
  * Runs on a 30-second interval with an independent 5-second queue processor.
  */
 
-import { Deal, QueueItem, AssetCode, ChainId, EscrowAccountRef, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts, parseAssetCode } from '@otc-broker/core';
+import { Deal, QueueItem, AssetCode, ChainId, EscrowAccountRef, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts, parseAssetCode, compareAmounts, Decimal } from '@otc-broker/core';
 import { DB } from '../db/database';
 import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { AccountRepository } from '../db/repositories/AccountRepository';
@@ -1046,7 +1046,7 @@ export class Engine {
       // Queue operator commissions (only for non-broker chains)
       // Broker handles commissions atomically in the swap transaction
 
-      if (!canUseBrokerForAlice && deal.escrowA && parseFloat(sideACommission) > 0) {
+      if (!canUseBrokerForAlice && deal.escrowA && compareAmounts(sideACommission, '0') > 0) {
         const commAsset = deal.commissionPlan.sideA.currency === 'ASSET'
           ? deal.alice.asset
           : getNativeAsset(deal.alice.chainId);
@@ -1065,7 +1065,7 @@ export class Engine {
         });
       }
 
-      if (!canUseBrokerForBob && deal.escrowB && parseFloat(sideBCommission) > 0) {
+      if (!canUseBrokerForBob && deal.escrowB && compareAmounts(sideBCommission, '0') > 0) {
         const commAsset = deal.commissionPlan.sideB.currency === 'ASSET'
           ? deal.bob.asset
           : getNativeAsset(deal.bob.chainId);
@@ -1102,11 +1102,11 @@ export class Engine {
             escrowSide: deal.gasReimbursement.escrowSide
           });
 
-          // Verify escrow has sufficient balance for reimbursement
+          // Verify escrow has sufficient balance for reimbursement (use decimal comparison)
           const tokenBalance = escrowSideState?.collectedByAsset[deal.gasReimbursement.token] || '0';
-          const reimbursementAmount = parseFloat(deal.gasReimbursement.calculation.tokenAmount);
+          const reimbursementAmount = deal.gasReimbursement.calculation.tokenAmount;
 
-          if (parseFloat(tokenBalance) >= reimbursementAmount) {
+          if (isAmountGte(tokenBalance, reimbursementAmount)) {
             const tankAddress = this.getTankAddress();
 
             if (!tankAddress) {
@@ -1149,26 +1149,27 @@ export class Engine {
       // Queue surplus refunds (anything left after swap and commission)
       // This ensures we return any overpayments to the users
       if (deal.escrowA && deal.aliceDetails) {
-        // Calculate total outgoing from escrow A
-        const swapAmount = parseFloat(deal.alice.amount);
-        const commissionAmount = parseFloat(sideACommission);
-        const totalNeeded = swapAmount + commissionAmount;
-        
-        // Get total deposits
-        const totalDeposited = deal.sideAState?.deposits
+        // Use decimal-safe helpers for precision (CRITICAL: avoid float arithmetic)
+        const depositAmounts = deal.sideAState?.deposits
           ?.filter(d => d.asset === deal.alice.asset)
-          .reduce((sum, d) => sum + parseFloat(d.amount), 0) || 0;
-        
-        // If there's surplus, queue a refund
-        const surplus = totalDeposited - totalNeeded;
-        if (surplus > 0.000001) { // Small threshold to avoid dust
+          .map(d => d.amount) || [];
+        const totalDeposited = depositAmounts.length > 0 ? sumAmounts(depositAmounts) : '0';
+
+        // Calculate total needed using decimal addition
+        const totalNeeded = sumAmounts([deal.alice.amount, sideACommission]);
+
+        // Calculate surplus using decimal subtraction (maintains precision)
+        const surplus = subtractAmounts(totalDeposited, totalNeeded);
+
+        // If there's surplus, queue a refund (use decimal comparison)
+        if (compareAmounts(surplus, '0.000001') > 0) { // Small threshold to avoid dust
           this.queueRepo.enqueue({
             dealId: deal.id,
             chainId: deal.alice.chainId,
             from: deal.escrowA,
             to: deal.aliceDetails.paybackAddress,  // Use payback address for refunds!
             asset: deal.alice.asset,
-            amount: surplus.toString(),
+            amount: surplus, // Already a string from subtractAmounts
             purpose: 'SURPLUS_REFUND',
             // For Unicity, assign to phase 3 (after commission)
             phase: deal.alice.chainId === 'UNICITY' ? 'PHASE_3_REFUND' : undefined,
@@ -1177,26 +1178,27 @@ export class Engine {
       }
       
       if (deal.escrowB && deal.bobDetails) {
-        // Calculate total outgoing from escrow B
-        const swapAmount = parseFloat(deal.bob.amount);
-        const commissionAmount = parseFloat(sideBCommission);
-        const totalNeeded = swapAmount + commissionAmount;
-        
-        // Get total deposits
-        const totalDeposited = deal.sideBState?.deposits
+        // Use decimal-safe helpers for precision (CRITICAL: avoid float arithmetic)
+        const depositAmounts = deal.sideBState?.deposits
           ?.filter(d => d.asset === deal.bob.asset)
-          .reduce((sum, d) => sum + parseFloat(d.amount), 0) || 0;
-        
-        // If there's surplus, queue a refund
-        const surplus = totalDeposited - totalNeeded;
-        if (surplus > 0.000001) { // Small threshold to avoid dust
+          .map(d => d.amount) || [];
+        const totalDeposited = depositAmounts.length > 0 ? sumAmounts(depositAmounts) : '0';
+
+        // Calculate total needed using decimal addition
+        const totalNeeded = sumAmounts([deal.bob.amount, sideBCommission]);
+
+        // Calculate surplus using decimal subtraction (maintains precision)
+        const surplus = subtractAmounts(totalDeposited, totalNeeded);
+
+        // If there's surplus, queue a refund (use decimal comparison)
+        if (compareAmounts(surplus, '0.000001') > 0) { // Small threshold to avoid dust
           this.queueRepo.enqueue({
             dealId: deal.id,
             chainId: deal.bob.chainId,
             from: deal.escrowB,
             to: deal.bobDetails.paybackAddress,  // Use payback address for refunds!
             asset: deal.bob.asset,
-            amount: surplus.toString(),
+            amount: surplus, // Already a string from subtractAmounts
             purpose: 'SURPLUS_REFUND',
             // For Unicity, assign to phase 3 (after commission)
             phase: deal.bob.chainId === 'UNICITY' ? 'PHASE_3_REFUND' : undefined,
@@ -1415,7 +1417,7 @@ export class Engine {
     // Check Alice's deposits for ERC-20 tokens that need gas
     if (deal.escrowA && deal.aliceDetails && deal.sideAState) {
       for (const [asset, amount] of Object.entries(deal.sideAState.collectedByAsset)) {
-        if (parseFloat(amount) > 0) {
+        if (compareAmounts(amount, '0') > 0) {
           gasFundingTasks.push(
             this.ensureGasForRefund(
               deal.escrowA.address,
@@ -1439,7 +1441,7 @@ export class Engine {
     // Check Bob's deposits for ERC-20 tokens that need gas
     if (deal.escrowB && deal.bobDetails && deal.sideBState) {
       for (const [asset, amount] of Object.entries(deal.sideBState.collectedByAsset)) {
-        if (parseFloat(amount) > 0) {
+        if (compareAmounts(amount, '0') > 0) {
           gasFundingTasks.push(
             this.ensureGasForRefund(
               deal.escrowB.address,
@@ -1475,10 +1477,11 @@ export class Engine {
 
       // Queue refunds for all confirmed deposits
       if (deal.escrowA && deal.aliceDetails && deal.sideAState) {
-        const totalCollected = Object.entries(deal.sideAState.collectedByAsset)
-          .reduce((sum, [_, amt]) => sum + parseFloat(amt), 0);
+        // Use decimal-safe summation for total collected
+        const collectedAmounts = Object.values(deal.sideAState.collectedByAsset);
+        const totalCollected = collectedAmounts.length > 0 ? sumAmounts(collectedAmounts) : '0';
 
-        if (totalCollected > 0 && canUseBrokerForAlice) {
+        if (compareAmounts(totalCollected, '0') > 0 && canUseBrokerForAlice) {
           // Use broker for atomic revert (refund + commission)
           const sideACommission = this.calculateCommissionAmount(deal, 'A');
           const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
@@ -1500,7 +1503,7 @@ export class Engine {
         } else {
           // Fall back to individual refund queue items
           for (const [asset, amount] of Object.entries(deal.sideAState.collectedByAsset)) {
-            if (parseFloat(amount) > 0) {
+            if (compareAmounts(amount, '0') > 0) {
               this.queueRepo.enqueue({
                 dealId: deal.id,
                 chainId: deal.alice.chainId,
@@ -1516,10 +1519,11 @@ export class Engine {
       }
 
       if (deal.escrowB && deal.bobDetails && deal.sideBState) {
-        const totalCollected = Object.entries(deal.sideBState.collectedByAsset)
-          .reduce((sum, [_, amt]) => sum + parseFloat(amt), 0);
+        // Use decimal-safe summation for total collected
+        const collectedAmounts = Object.values(deal.sideBState.collectedByAsset);
+        const totalCollected = collectedAmounts.length > 0 ? sumAmounts(collectedAmounts) : '0';
 
-        if (totalCollected > 0 && canUseBrokerForBob) {
+        if (compareAmounts(totalCollected, '0') > 0 && canUseBrokerForBob) {
           // Use broker for atomic revert (refund + commission)
           const sideBCommission = this.calculateCommissionAmount(deal, 'B');
           const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
@@ -1541,7 +1545,7 @@ export class Engine {
         } else {
           // Fall back to individual refund queue items
           for (const [asset, amount] of Object.entries(deal.sideBState.collectedByAsset)) {
-            if (parseFloat(amount) > 0) {
+            if (compareAmounts(amount, '0') > 0) {
               this.queueRepo.enqueue({
                 dealId: deal.id,
                 chainId: deal.bob.chainId,
