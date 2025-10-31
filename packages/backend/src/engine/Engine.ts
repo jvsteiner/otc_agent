@@ -469,8 +469,9 @@ export class Engine {
     if (deal.escrowA) {
       const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
       // For CREATED and COLLECTION stages, accept unconfirmed deposits (0 confirmations)
-      // In WAITING stage, use proper threshold for checking locks
-      const minConf = (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') ? 0 : getConfirmationThreshold(deal.alice.chainId);
+      // In WAITING stage, use collectConfirms threshold (configured per chain, not hardcoded)
+      // This prevents false REORG detection when deposits haven't reached full confirmation threshold yet
+      const minConf = (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') ? 0 : plugin.getCollectConfirms();
       
       console.log(`[Engine] Checking deposits for Alice (${deal.alice.chainId}):`, {
         asset: deal.alice.asset,
@@ -610,8 +611,9 @@ export class Engine {
     if (deal.escrowB) {
       const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
       // For CREATED and COLLECTION stages, accept unconfirmed deposits (0 confirmations)
-      // In WAITING stage, use proper threshold for checking locks
-      const minConf = (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') ? 0 : getConfirmationThreshold(deal.bob.chainId);
+      // In WAITING stage, use collectConfirms threshold (configured per chain, not hardcoded)
+      // This prevents false REORG detection when deposits haven't reached full confirmation threshold yet
+      const minConf = (deal.stage === 'CREATED' || deal.stage === 'COLLECTION') ? 0 : plugin.getCollectConfirms();
       
       console.log(`[Engine] Checking deposits for Bob (${deal.bob.chainId}):`, {
         asset: deal.bob.asset,
