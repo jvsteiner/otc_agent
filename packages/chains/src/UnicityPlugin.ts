@@ -351,9 +351,20 @@ export class UnicityPlugin implements ChainPlugin {
     
     try {
       // Get UTXOs
-      const utxos = await this.electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
+      const utxoResponse = await this.electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
+
+      // CRITICAL: Convert UTXO values from Number to BigInt
+      // Electrum server returns numeric values that JSON parses as Numbers,
+      // but our UTXO interface expects BigInt for safe arithmetic
+      const utxos: UTXO[] = utxoResponse.map((utxo: any) => ({
+        tx_hash: utxo.tx_hash,
+        tx_pos: utxo.tx_pos,
+        value: BigInt(utxo.value),  // Convert Number to BigInt
+        height: utxo.height,
+      }));
+
       console.log(`[UnicityPlugin] Found ${utxos.length} UTXOs for address ${address}`);
-    
+
     // Get current block height for confirmation calculation
     const headers = await this.electrumRequest('blockchain.headers.subscribe', []);
     const currentHeight = headers.height;
@@ -450,8 +461,18 @@ export class UnicityPlugin implements ChainPlugin {
 
     // Get UTXOs for the address
     const scriptHash = this.addressToScriptHash(from.address);
-    const utxos = await this.electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
-    
+    const utxoResponse = await this.electrumRequest('blockchain.scripthash.listunspent', [scriptHash]);
+
+    // CRITICAL: Convert UTXO values from Number to BigInt
+    // Electrum server returns numeric values that JSON parses as Numbers,
+    // but our UTXO interface expects BigInt for safe arithmetic
+    const utxos: UTXO[] = utxoResponse.map((utxo: any) => ({
+      tx_hash: utxo.tx_hash,
+      tx_pos: utxo.tx_pos,
+      value: BigInt(utxo.value),  // Convert Number to BigInt
+      height: utxo.height,
+    }));
+
     if (!utxos.length) {
       throw new Error('No UTXOs available for spending');
     }
