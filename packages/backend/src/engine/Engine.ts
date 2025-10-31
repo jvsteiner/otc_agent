@@ -532,9 +532,13 @@ export class Engine {
         ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
         : (deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString());
       
-      // For lock checking, use the plugin's collect confirms configuration
+      // For lock checking, use stage-appropriate threshold:
+      // - COLLECTION stage: use collectConfirms for quick transition to WAITING
+      // - WAITING stage: use confirmationThreshold for full finality before SWAP
       const alicePlugin = this.pluginManager.getPlugin(deal.alice.chainId);
-      const lockMinConf = alicePlugin.getCollectConfirms();
+      const lockMinConf = (deal.stage === 'COLLECTION')
+        ? alicePlugin.getCollectConfirms()
+        : alicePlugin.getConfirmationThreshold();
       
       const locks = checkLocks(
         allDeposits,
@@ -670,9 +674,13 @@ export class Engine {
         ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
         : (deal.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString());
       
-      // For lock checking, use the plugin's collect confirms configuration
+      // For lock checking, use stage-appropriate threshold:
+      // - COLLECTION stage: use collectConfirms for quick transition to WAITING
+      // - WAITING stage: use confirmationThreshold for full finality before SWAP
       const bobPlugin = this.pluginManager.getPlugin(deal.bob.chainId);
-      const lockMinConfB = bobPlugin.getCollectConfirms();
+      const lockMinConfB = (deal.stage === 'COLLECTION')
+        ? bobPlugin.getCollectConfirms()
+        : bobPlugin.getConfirmationThreshold();
       
       console.log(`[Engine] Calling checkLocks for Bob with:`, {
         depositCount: allDepositsB.length,
