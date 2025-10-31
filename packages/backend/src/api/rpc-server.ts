@@ -557,9 +557,31 @@ export class RpcServer {
       const erc20Fee = deal.commissionPlan.sideA.erc20FixedFee || '0';
 
       // For PERCENT_BPS or same-asset commission, include commission + ERC20 fee in the trade amount
-      const totalRequired = deal.commissionPlan.sideA.currency === 'ASSET'
+      let totalRequired = deal.commissionPlan.sideA.currency === 'ASSET'
         ? sumAmounts([deal.alice.amount, commissionAmount, erc20Fee])
         : deal.alice.amount;
+
+      // Add gas buffer for native currency swaps on EVM chains
+      // When swapping native currency, the escrow pays gas from its own balance
+      // Gas estimates: ~150-200k gas for broker swap
+      // ETH at 30 gwei: 200k × 30 × 10^-9 = 0.006 ETH, with 2x buffer = 0.012 ETH
+      // POLYGON at 100 gwei: 200k × 100 × 10^-9 = 0.02 MATIC, with 2x buffer = 0.04 MATIC
+      const isNative = !deal.alice.asset.startsWith('ERC20:') && !deal.alice.asset.startsWith('SPL:');
+      const isEVM = ['ETH', 'POLYGON', 'BSC', 'BASE', 'SEPOLIA'].includes(deal.alice.chainId);
+      if (isNative && isEVM) {
+        const gasBuffers: Record<string, string> = {
+          'ETH': '0.01',      // 0.01 ETH gas buffer (~$25-30 at current prices)
+          'POLYGON': '0.05',  // 0.05 MATIC gas buffer (~$0.05 at current prices)
+          'BSC': '0.01',      // Estimate for BNB
+          'BASE': '0.002',    // Lower for L2
+          'SEPOLIA': '0.01'   // Testnet
+        };
+        const gasBuffer = gasBuffers[deal.alice.chainId] || '0';
+        if (gasBuffer !== '0') {
+          totalRequired = sumAmounts([totalRequired, gasBuffer]);
+          console.log(`[RPC] Adding ${gasBuffer} gas buffer for native ${deal.alice.asset} swap on ${deal.alice.chainId}`);
+        }
+      }
 
       instructions.sideA.push({
         assetCode: assetCode,
@@ -605,9 +627,28 @@ export class RpcServer {
       const erc20FeeB = deal.commissionPlan.sideB.erc20FixedFee || '0';
 
       // For PERCENT_BPS or same-asset commission, include commission + ERC20 fee in the trade amount
-      const totalRequiredB = deal.commissionPlan.sideB.currency === 'ASSET'
+      let totalRequiredB = deal.commissionPlan.sideB.currency === 'ASSET'
         ? sumAmounts([deal.bob.amount, commissionAmountB, erc20FeeB])
         : deal.bob.amount;
+
+      // Add gas buffer for native currency swaps on EVM chains
+      // When swapping native currency, the escrow pays gas from its own balance
+      const isNativeB = !deal.bob.asset.startsWith('ERC20:') && !deal.bob.asset.startsWith('SPL:');
+      const isEVMB = ['ETH', 'POLYGON', 'BSC', 'BASE', 'SEPOLIA'].includes(deal.bob.chainId);
+      if (isNativeB && isEVMB) {
+        const gasBuffers: Record<string, string> = {
+          'ETH': '0.01',      // 0.01 ETH gas buffer (~$25-30 at current prices)
+          'POLYGON': '0.05',  // 0.05 MATIC gas buffer (~$0.05 at current prices)
+          'BSC': '0.01',      // Estimate for BNB
+          'BASE': '0.002',    // Lower for L2
+          'SEPOLIA': '0.01'   // Testnet
+        };
+        const gasBuffer = gasBuffers[deal.bob.chainId] || '0';
+        if (gasBuffer !== '0') {
+          totalRequiredB = sumAmounts([totalRequiredB, gasBuffer]);
+          console.log(`[RPC] Adding ${gasBuffer} gas buffer for native ${deal.bob.asset} swap on ${deal.bob.chainId}`);
+        }
+      }
 
       instructions.sideB.push({
         assetCode: assetCodeB,
@@ -5586,8 +5627,20 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
             const erc20Fee = parseFloat(yourCommission.erc20FixedFee || '0');
             const totalAmount = parseFloat(escrowAmount);
 
-            // Only show breakdown if there are fees
-            if (commissionAmount > 0 || erc20Fee > 0) {
+            // Calculate gas buffer for native EVM currency swaps
+            const isNative = !escrowAsset.includes('ERC20:') && !escrowAsset.includes('SPL:');
+            const isEVM = ['ETH', 'POLYGON', 'BSC', 'BASE', 'SEPOLIA'].includes(escrowChainId);
+            const gasBuffers = {
+              'ETH': 0.01,
+              'POLYGON': 0.05,
+              'BSC': 0.01,
+              'BASE': 0.002,
+              'SEPOLIA': 0.01
+            };
+            const gasBuffer = (isNative && isEVM) ? (gasBuffers[escrowChainId] || 0) : 0;
+
+            // Only show breakdown if there are fees or gas buffer
+            if (commissionAmount > 0 || erc20Fee > 0 || gasBuffer > 0) {
               let breakdownHtml = '';
               breakdownHtml += '<div>• Trade Amount: <strong>' + baseAmount.toFixed(6) + ' ' + assetName + '</strong></div>';
               if (commissionAmount > 0) {
@@ -5595,6 +5648,9 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
               }
               if (erc20Fee > 0) {
                 breakdownHtml += '<div>• ERC20 Gas Fee: <strong>' + erc20Fee.toFixed(6) + ' ' + assetName + '</strong></div>';
+              }
+              if (gasBuffer > 0) {
+                breakdownHtml += '<div>• Gas Buffer (for swap execution): <strong>' + gasBuffer.toFixed(6) + ' ' + assetName + '</strong></div>';
               }
               breakdownHtml += '<div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #f59e0b;">• <strong>Total Required: ' + totalAmount.toFixed(6) + ' ' + assetName + '</strong></div>';
 
@@ -5614,7 +5670,7 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                   document.getElementById('escrowAmount').textContent = escrowAmount + ' ' + symbol + ' on ' + chainDisplayName;
 
                   // Update fee breakdown with correct symbol
-                  if (commissionAmount > 0 || erc20Fee > 0) {
+                  if (commissionAmount > 0 || erc20Fee > 0 || gasBuffer > 0) {
                     let breakdownHtml = '';
                     breakdownHtml += '<div>• Trade Amount: <strong>' + baseAmount.toFixed(6) + ' ' + symbol + '</strong></div>';
                     if (commissionAmount > 0) {
@@ -5622,6 +5678,9 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                     }
                     if (erc20Fee > 0) {
                       breakdownHtml += '<div>• ERC20 Gas Fee: <strong>' + erc20Fee.toFixed(6) + ' ' + symbol + '</strong></div>';
+                    }
+                    if (gasBuffer > 0) {
+                      breakdownHtml += '<div>• Gas Buffer (for swap execution): <strong>' + gasBuffer.toFixed(6) + ' ' + symbol + '</strong></div>';
                     }
                     breakdownHtml += '<div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #f59e0b;">• <strong>Total Required: ' + totalAmount.toFixed(6) + ' ' + symbol + '</strong></div>';
 
