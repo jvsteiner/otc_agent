@@ -276,74 +276,49 @@ export class Engine {
         // WAITING stage: We have funds but waiting for confirmations
         // Update deposits to get latest confirmation counts
         await this.updateDeposits(deal);
-        
-        // First check if we still have sufficient funds (reorg detection)
-        const sideAFunded = this.hasSufficientFunds(deal, 'A');
-        const sideBFunded = this.hasSufficientFunds(deal, 'B');
-        
-        if (!sideAFunded || !sideBFunded) {
-          // REORG DETECTED: Funds dropped below required
-          console.error(`[REORG DETECTED] Deal ${deal.id} in WAITING but funds lost!`);
-          console.error(`  Side A funded: ${sideAFunded}, Side B funded: ${sideBFunded}`);
-          
-          // Revert back to COLLECTION stage and resume timer
-          this.dealRepo.updateStage(deal.id, 'COLLECTION');
-          
-          // Resume timer from where it was suspended
-          if (!deal.expiresAt) {
-            // Timer was cleared, restart with original timeout
-            deal.expiresAt = new Date(Date.now() + deal.timeoutSeconds * 1000).toISOString();
-            console.log(`[REORG] Restarting timer for deal ${deal.id}, expires at ${deal.expiresAt}`);
-          } else {
-            console.log(`[REORG] Resuming suspended timer for deal ${deal.id}, expires at ${deal.expiresAt}`);
-          }
-          
-          this.dealRepo.update(deal);
-          this.dealRepo.addEvent(deal.id, 'REORG: Funds lost, reverting to COLLECTION (timer resumed)');
-          
-          // Clear any pending queue items
-          const pendingSwaps = this.queueRepo.getByDeal(deal.id)
-            .filter(q => q.purpose === 'SWAP_PAYOUT' && q.status === 'PENDING');
-          
-          if (pendingSwaps.length > 0) {
-            console.log(`[REORG] Would clear ${pendingSwaps.length} pending swap queue items`);
-            // TODO: Add method to remove pending queue items
-          }
-          
-          return; // Process in next tick as COLLECTION stage
-        }
-        
-        // Funds are still sufficient - check if we have enough confirmations (locks)
+
+        // In WAITING stage, we only care about locks (sufficient confirmations), not current balance
+        // Checking current balance leads to false positives when deposits have 1 confirmation
+        // vs the 2+ confirmations required - this isn't a reorg, just waiting for more blocks
         const sideALocked = deal.sideAState?.locks.tradeLockedAt && deal.sideAState?.locks.commissionLockedAt;
         const sideBLocked = deal.sideBState?.locks.tradeLockedAt && deal.sideBState?.locks.commissionLockedAt;
-        
-        console.log(`[Engine] Deal ${deal.id} in WAITING - checking confirmations:`, {
+
+        console.log(`[Engine] Deal ${deal.id} in WAITING - checking lock status:`, {
           sideALocked,
           sideBLocked,
           sideALocks: deal.sideAState?.locks,
           sideBLocks: deal.sideBState?.locks
         });
-        
+
         if (sideALocked && sideBLocked) {
-          // Both sides have sufficient confirmations - move to SWAP stage
+          // Both sides have sufficient confirmations (locks ready) - move to SWAP stage
           console.log(`[Engine] Deal ${deal.id} has confirmed locks, transitioning to SWAP stage`);
-          
+
           // NOW we permanently clear the timer as we enter SWAP stage
           if (deal.expiresAt) {
             console.log(`[Engine] Clearing timer PERMANENTLY for deal ${deal.id} - entering SWAP stage`);
             deal.expiresAt = undefined;
             this.dealRepo.update(deal);
           }
-          
+
           // Build transfer plan and move to SWAP stage
           await this.buildTransferPlan(deal);
           this.dealRepo.updateStage(deal.id, 'SWAP');
           this.dealRepo.addEvent(deal.id, 'Confirmations complete, executing swap (timer removed)');
         } else {
-          // Still waiting for confirmations
-          console.log(`[Engine] Deal ${deal.id} still waiting for confirmations`);
+          // Still waiting for more confirmations - don't revert, just wait
+          const sideALockStatus = deal.sideAState?.locks
+            ? `trade: ${deal.sideAState.locks.tradeLockedAt ? 'locked' : 'pending'}, commission: ${deal.sideAState.locks.commissionLockedAt ? 'locked' : 'pending'}`
+            : 'unknown';
+          const sideBLockStatus = deal.sideBState?.locks
+            ? `trade: ${deal.sideBState.locks.tradeLockedAt ? 'locked' : 'pending'}, commission: ${deal.sideBState.locks.commissionLockedAt ? 'locked' : 'pending'}`
+            : 'unknown';
+
+          console.log(`[Engine] Deal ${deal.id} waiting for more confirmations`);
+          console.log(`  Side A locks: ${sideALockStatus}`);
+          console.log(`  Side B locks: ${sideBLockStatus}`);
           console.log(`  Timer suspended at: ${deal.expiresAt || 'not set'}`);
-          // Stay in WAITING stage
+          // Stay in WAITING stage - confirmations will accumulate over time
         }
         
       } else if (deal.stage === 'SWAP') {
@@ -602,13 +577,10 @@ export class Engine {
         if (commissionAsset !== normalizedAsset) {
           deal.sideAState.collectedByAsset[commissionAsset] = commissionSum;
         }
-      } else {
-        // In WAITING stage and beyond, use locked amounts only
-        deal.sideAState.collectedByAsset[normalizedAsset] = locks.tradeCollected;
-        if (commissionAsset !== normalizedAsset) {
-          deal.sideAState.collectedByAsset[commissionAsset] = locks.commissionCollected;
-        }
       }
+      // In WAITING/SWAP stages: DO NOT update collectedByAsset
+      // Keep it FROZEN at the value from COLLECTION stage to prevent false REORG detection
+      // Only the lock checks (aliceLockReady/bobLockReady) determine WAITING → SWAP transition
     }
     
     // Update side B deposits (similar logic)
@@ -754,13 +726,10 @@ export class Engine {
         if (commissionAsset !== normalizedAssetB) {
           deal.sideBState.collectedByAsset[commissionAsset] = commissionSum;
         }
-      } else {
-        // In WAITING stage and beyond, use locked amounts only
-        deal.sideBState.collectedByAsset[normalizedAssetB] = locks.tradeCollected;
-        if (commissionAsset !== normalizedAssetB) {
-          deal.sideBState.collectedByAsset[commissionAsset] = locks.commissionCollected;
-        }
       }
+      // In WAITING/SWAP stages: DO NOT update collectedByAsset
+      // Keep it FROZEN at the value from COLLECTION stage to prevent false REORG detection
+      // Only the lock checks (aliceLockReady/bobLockReady) determine WAITING → SWAP transition
     }
     
     // NOW decide on locks based on BOTH sides' readiness
