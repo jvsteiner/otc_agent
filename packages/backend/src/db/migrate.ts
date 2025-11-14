@@ -367,6 +367,37 @@ export function runMigrations(db: DB): void {
             }
             console.log('Migration already applied, continuing...');
           }
+        }
+        // Special handling for lastConfirmedNonce migration
+        else if (file === '010_add_last_confirmed_nonce.sql') {
+          try {
+            // Check if accounts table exists
+            const accountsTableExists = db.prepare(
+              "SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='accounts'"
+            ).get() as { count: number };
+
+            if (accountsTableExists.count > 0) {
+              // Check if lastConfirmedNonce column exists
+              const checkColumn = db.prepare(
+                "SELECT COUNT(*) as count FROM pragma_table_info('accounts') WHERE name = 'lastConfirmedNonce'"
+              ).get() as { count: number };
+
+              if (checkColumn.count === 0) {
+                console.log('Adding lastConfirmedNonce column to accounts...');
+                db.exec('ALTER TABLE accounts ADD COLUMN lastConfirmedNonce INTEGER');
+                console.log('lastConfirmedNonce column added successfully');
+              } else {
+                console.log('lastConfirmedNonce column already exists, skipping...');
+              }
+            } else {
+              console.log('  accounts table does not exist yet, skipping');
+            }
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
+              throw err;
+            }
+            console.log('Migration already applied, continuing...');
+          }
         } else {
           db.exec(migration);
         }
