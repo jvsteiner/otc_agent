@@ -14,6 +14,7 @@ import { TankManager, TankConfig } from './TankManager';
 import { ResolutionWorker } from '../workers/ResolutionWorker';
 import { GasReimbursementCalculator } from '../services/GasReimbursementCalculator';
 import * as crypto from 'crypto';
+import { ethers } from 'ethers';
 
 /**
  * Normalizes asset codes to include chain suffix for consistent comparison.
@@ -1950,6 +1951,47 @@ export class Engine {
 
     console.log(`[BrokerSwap] DEBUG: Asset: ${item.asset}, Currency: ${currency}, Decimals: ${decimals}`);
     console.log(`[BrokerSwap] DEBUG: AssetConfig:`, assetConfig);
+
+    // Fund escrow with gas for native currency swaps
+    // TankManager will check if funding is actually needed
+    if (this.tankManager && !currency) {
+      console.log(`[BrokerSwap] Ensuring escrow ${escrowRef.address} has gas for native ${item.asset} swap`);
+
+      // Gas buffer per chain (same values as in rpc-server.ts deposit calculations)
+      const gasBuffers: Record<string, string> = {
+        'ETH': '0.01',      // 0.01 ETH gas buffer
+        'POLYGON': '0.05',  // 0.05 MATIC gas buffer
+        'BSC': '0.01',      // BNB buffer
+        'BASE': '0.002',    // Lower for L2
+        'SEPOLIA': '0.01'   // Testnet
+      };
+      const gasBufferAmount = gasBuffers[item.chainId] || '0';
+
+      if (gasBufferAmount !== '0') {
+        // Calculate required gas amount (swap + fees + gas buffer)
+        const swapAmount = new Decimal(item.amount);
+        const feeAmount = new Decimal(item.fees);
+        const gasBuffer = new Decimal(gasBufferAmount);
+        const totalRequired = swapAmount.plus(feeAmount).plus(gasBuffer);
+
+        console.log(`[BrokerSwap] Required: ${totalRequired.toFixed()} ${item.asset} (swap: ${swapAmount.toFixed()}, fees: ${feeAmount.toFixed()}, gas: ${gasBuffer.toFixed()})`);
+
+        // Convert to wei for TankManager (expects bigint)
+        const totalRequiredWei = ethers.parseEther(totalRequired.toFixed());
+
+        // Call TankManager to fund if needed (it checks balance internally)
+        await this.tankManager.fundEscrowForGas(
+          item.dealId,
+          item.chainId,
+          escrowRef.address,
+          totalRequiredWei
+        );
+
+        // Wait for funding transaction to be broadcast and picked up
+        console.log(`[BrokerSwap] Waiting 3 seconds for gas funding to propagate...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
 
     try {
       const result = await (plugin as any).swapViaBroker({
