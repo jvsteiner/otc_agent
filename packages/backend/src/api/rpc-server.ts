@@ -7413,14 +7413,19 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
         return;
       }
 
-      // Estimate gas needed for approval transaction (typically ~50k gas)
-      const estimatedGasUnits = '60000'; // Conservative estimate for ERC20 approve
+      // Estimate gas needed for approval transaction (typically ~50k-70k gas)
+      // Use conservative estimate to handle high gas prices and EIP-1559 priority fees
+      const estimatedGasUnits = '100000'; // Conservative estimate for ERC20 approve
       const gasPrice = await this.getGasPrice(plugin, chainId);
       const gasCostWei = BigInt(estimatedGasUnits) * BigInt(gasPrice);
-      const gasFundAmount = (gasCostWei * BigInt(120)) / BigInt(100); // Add 20% buffer
+      // Use 200% buffer (3x total) to handle gas price volatility and EIP-1559
+      const gasFundAmount = (gasCostWei * BigInt(300)) / BigInt(100);
 
-      console.log(`[Broker] Funding escrow ${escrow.address} with ${gasFundAmount} wei for approval`);
-      this.dealRepo.addEvent(dealId, `Funding escrow with gas for broker approval...`);
+      // Import ethers for logging
+      const ethers = await import('ethers');
+      console.log(`[Broker] Gas calculation: ${estimatedGasUnits} gas × ${gasPrice} wei × 3.0 buffer = ${gasFundAmount} wei (${ethers.formatEther(gasFundAmount)} MATIC)`);
+      console.log(`[Broker] Funding escrow ${escrow.address} with ${ethers.formatEther(gasFundAmount)} MATIC for approval`);
+      this.dealRepo.addEvent(dealId, `Funding escrow with ${ethers.formatEther(gasFundAmount)} MATIC for broker approval...`);
 
       // Fund escrow from tank
       const fundingTx = await this.fundEscrowFromTank(plugin, chainId, escrow.address, gasFundAmount.toString(), tankPrivateKey);
@@ -7457,19 +7462,35 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
         return await (plugin as any).getGasPrice();
       }
 
-      // Default gas prices by chain (in wei)
+      // For EVM chains, query actual gas price from provider
+      if ((plugin as any).provider) {
+        const ethers = await import('ethers');
+        const provider = (plugin as any).provider;
+        const feeData = await provider.getFeeData();
+
+        // Use maxFeePerGas for EIP-1559 chains, fallback to gasPrice for legacy
+        const gasPrice = feeData.maxFeePerGas || feeData.gasPrice;
+        if (gasPrice) {
+          console.log(`[Broker] Current gas price for ${chainId}: ${ethers.formatUnits(gasPrice, 'gwei')} gwei`);
+          return gasPrice.toString();
+        }
+      }
+
+      // Fallback to default gas prices by chain (in wei)
       const defaults: Record<string, string> = {
         'ETH': '30000000000',      // 30 gwei
         'SEPOLIA': '10000000000',   // 10 gwei
-        'POLYGON': '50000000000',   // 50 gwei
+        'POLYGON': '100000000000',  // 100 gwei (increased due to volatility)
         'BASE': '1000000000',       // 1 gwei
         'BSC': '5000000000',        // 5 gwei
       };
 
-      return defaults[chainId] || '20000000000'; // Default 20 gwei
+      const defaultPrice = defaults[chainId] || '20000000000';
+      console.log(`[Broker] Using default gas price for ${chainId}: ${defaultPrice} wei`);
+      return defaultPrice;
     } catch (error) {
-      console.warn(`[Broker] Failed to get gas price, using default`);
-      return '20000000000'; // 20 gwei default
+      console.warn(`[Broker] Failed to get gas price for ${chainId}, using fallback:`, error);
+      return '100000000000'; // Conservative 100 gwei fallback
     }
   }
 
