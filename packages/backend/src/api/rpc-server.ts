@@ -12,6 +12,7 @@ import { DB } from '../db/database';
 import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import * as crypto from 'crypto';
 import { EmailService } from '../services/email';
+import { GasPriceOracle } from '../services/GasPriceOracle';
 import * as productionConfig from '../config/production-config';
 import { setupAdminRoutes } from './admin-routes';
 import { validateAmountString } from '../utils/validation';
@@ -74,6 +75,7 @@ export class RpcServer {
   private payoutRepo: PayoutRepository;
   private pluginManager: PluginManager;
   private emailService: EmailService;
+  private gasPriceOracle: GasPriceOracle;
   private server: any | null = null; // HTTP or HTTPS server instance
 
   // Internal transaction retry cache
@@ -94,6 +96,19 @@ export class RpcServer {
     this.payoutRepo = new PayoutRepository(db);
     this.pluginManager = pluginManager;
     this.emailService = new EmailService(db);
+
+    // Initialize gas price oracle with 12-second cache (1 Ethereum block)
+    // and circuit breakers from environment or defaults
+    this.gasPriceOracle = new GasPriceOracle(
+      parseInt(process.env.GAS_CACHE_TTL_MS || '12000'),
+      {
+        ETH: process.env.MAX_GAS_PRICE_ETH || '500',
+        POLYGON: process.env.MAX_GAS_PRICE_POLYGON || '2000',
+        SEPOLIA: process.env.MAX_GAS_PRICE_SEPOLIA || '1000',
+        BASE: process.env.MAX_GAS_PRICE_BASE || '100',
+        BSC: process.env.MAX_GAS_PRICE_BSC || '100',
+      }
+    );
 
     this.setupRoutes();
 
@@ -7453,43 +7468,32 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
   }
 
   /**
-   * Get current gas price for a chain
+   * Get current gas price for a chain using GasPriceOracle
+   * Returns maxFeePerGas in wei as string
    */
   private async getGasPrice(plugin: ChainPlugin, chainId: ChainId): Promise<string> {
     try {
-      // Use plugin-specific method if available
+      // For EVM chains, use gas price oracle with caching and circuit breakers
+      if ((plugin as any).provider) {
+        const provider = (plugin as any).provider;
+        const gasPriceData = await this.gasPriceOracle.getGasPrice(chainId, provider);
+
+        // Return maxFeePerGas (works for both EIP-1559 and legacy chains)
+        console.log(`[Broker] Gas price for ${chainId}: ${(await import('ethers')).formatUnits(gasPriceData.maxFeePerGas, 'gwei')} gwei (source: ${gasPriceData.source})`);
+        return gasPriceData.maxFeePerGas.toString();
+      }
+
+      // For non-EVM chains, use plugin-specific method if available
       if ((plugin as any).getGasPrice) {
         return await (plugin as any).getGasPrice();
       }
 
-      // For EVM chains, query actual gas price from provider
-      if ((plugin as any).provider) {
-        const ethers = await import('ethers');
-        const provider = (plugin as any).provider;
-        const feeData = await provider.getFeeData();
-
-        // Use maxFeePerGas for EIP-1559 chains, fallback to gasPrice for legacy
-        const gasPrice = feeData.maxFeePerGas || feeData.gasPrice;
-        if (gasPrice) {
-          console.log(`[Broker] Current gas price for ${chainId}: ${ethers.formatUnits(gasPrice, 'gwei')} gwei`);
-          return gasPrice.toString();
-        }
-      }
-
-      // Fallback to default gas prices by chain (in wei)
-      const defaults: Record<string, string> = {
-        'ETH': '30000000000',      // 30 gwei
-        'SEPOLIA': '10000000000',   // 10 gwei
-        'POLYGON': '100000000000',  // 100 gwei (increased due to volatility)
-        'BASE': '1000000000',       // 1 gwei
-        'BSC': '5000000000',        // 5 gwei
-      };
-
-      const defaultPrice = defaults[chainId] || '20000000000';
-      console.log(`[Broker] Using default gas price for ${chainId}: ${defaultPrice} wei`);
-      return defaultPrice;
-    } catch (error) {
-      console.warn(`[Broker] Failed to get gas price for ${chainId}, using fallback:`, error);
+      // Final fallback for unsupported chains
+      console.warn(`[Broker] No gas price method available for ${chainId}, using conservative fallback`);
+      return '100000000000'; // 100 gwei
+    } catch (error: any) {
+      console.error(`[Broker] Failed to get gas price for ${chainId}:`, error.message);
+      // Oracle fallback already handles this, but just in case
       return '100000000000'; // Conservative 100 gwei fallback
     }
   }
