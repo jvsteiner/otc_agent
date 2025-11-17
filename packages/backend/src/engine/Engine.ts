@@ -3157,7 +3157,20 @@ export class Engine {
         // Process items for this sender one at a time (serial processing)
         for (const item of items) {
           try {
-            // Get the deal for this item
+            // Special handling for BROKER_REFUND items with synthetic "_late_" tracking IDs
+            // These don't have corresponding deals in the database
+            if (item.purpose === 'BROKER_REFUND' && item.dealId.includes('_late_')) {
+              console.log(`[QueueProcessor] Processing late deposit refund for tracking ID ${item.dealId}`);
+
+              // Process the refund directly without loading a deal
+              await this.processSingleQueueItemWithoutDeal(item);
+
+              // Wait a bit between transactions from same sender
+              await new Promise(resolve => setTimeout(resolve, 100));
+              continue;
+            }
+
+            // Get the deal for this item (required for normal queue items)
             const deal = this.dealRepo.get(item.dealId);
             if (!deal) {
               console.error(`[QueueProcessor] Deal ${item.dealId} not found for queue item ${item.id}`);
@@ -3215,6 +3228,49 @@ export class Engine {
     }
 
     return false;
+  }
+
+  /**
+   * Process a BROKER_REFUND queue item without a deal object (for late deposits)
+   * Late deposit refunds use synthetic tracking IDs that don't exist as deals
+   */
+  private async processSingleQueueItemWithoutDeal(item: any): Promise<void> {
+    try {
+      console.log(`[QueueProcessor] Processing BROKER_REFUND without deal for item ${item.id}`);
+
+      // Extract original deal ID from tracking ID for logging
+      // Format: dealId_late_PARTY_timestamp
+      const originalDealId = item.dealId.split('_late_')[0];
+
+      // Route to appropriate submission handler
+      if (item.purpose === 'BROKER_REFUND') {
+        // Create a minimal deal-like object for submitBrokerRefund
+        const minimalDeal = {
+          id: item.dealId,
+          stage: 'CLOSED',
+          events: []
+        } as unknown as Deal;
+
+        await this.submitBrokerRefund(item, minimalDeal);
+
+        // Add event to original deal if it exists
+        const originalDeal = this.dealRepo.get(originalDealId);
+        if (originalDeal) {
+          this.dealRepo.addEvent(originalDealId, `Late deposit refund processed: ${item.amount} ${item.asset}`);
+        }
+      } else {
+        console.error(`[QueueProcessor] Unsupported purpose ${item.purpose} for late deposit refund`);
+      }
+
+    } catch (error: any) {
+      console.error(`[QueueProcessor] Error processing late deposit refund ${item.id}:`, error.message);
+      // Extract original deal ID for error logging
+      const originalDealId = item.dealId.split('_late_')[0];
+      const originalDeal = this.dealRepo.get(originalDealId);
+      if (originalDeal) {
+        this.dealRepo.addEvent(originalDealId, `Late deposit refund error: ${error.message}`);
+      }
+    }
   }
 
   /**
