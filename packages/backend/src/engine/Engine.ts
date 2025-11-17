@@ -1952,10 +1952,12 @@ export class Engine {
     console.log(`[BrokerSwap] DEBUG: Asset: ${item.asset}, Currency: ${currency}, Decimals: ${decimals}`);
     console.log(`[BrokerSwap] DEBUG: AssetConfig:`, assetConfig);
 
-    // Fund escrow with gas for native currency swaps
+    // Fund escrow with gas for ALL broker swaps (both native and ERC20)
+    // ERC20 swaps need gas for approve() + transferFrom() calls
     // TankManager will check if funding is actually needed
-    if (this.tankManager && !currency) {
-      console.log(`[BrokerSwap] Ensuring escrow ${escrowRef.address} has gas for native ${item.asset} swap`);
+    if (this.tankManager) {
+      const assetType = currency ? 'ERC20' : 'native';
+      console.log(`[BrokerSwap] Ensuring escrow ${escrowRef.address} has gas for ${assetType} ${item.asset} swap`);
 
       // Gas buffer per chain (same values as in rpc-server.ts deposit calculations)
       const gasBuffers: Record<string, string> = {
@@ -1968,13 +1970,23 @@ export class Engine {
       const gasBufferAmount = gasBuffers[item.chainId] || '0';
 
       if (gasBufferAmount !== '0') {
-        // Calculate required gas amount (swap + fees + gas buffer)
-        const swapAmount = new Decimal(item.amount);
-        const feeAmount = new Decimal(item.fees);
-        const gasBuffer = new Decimal(gasBufferAmount);
-        const totalRequired = swapAmount.plus(feeAmount).plus(gasBuffer);
+        // Calculate required native currency amount
+        // For native swaps: swap amount + fees + gas buffer
+        // For ERC20 swaps: ONLY gas buffer (tokens are separate)
+        let totalRequired: Decimal;
 
-        console.log(`[BrokerSwap] Required: ${totalRequired.toFixed()} ${item.asset} (swap: ${swapAmount.toFixed()}, fees: ${feeAmount.toFixed()}, gas: ${gasBuffer.toFixed()})`);
+        if (currency) {
+          // ERC20: Only need native currency for gas
+          totalRequired = new Decimal(gasBufferAmount);
+          console.log(`[BrokerSwap] Required gas: ${totalRequired.toFixed()} ${item.chainId} native (for ERC20 approve+transfer)`);
+        } else {
+          // Native: Need swap amount + fees + gas
+          const swapAmount = new Decimal(item.amount);
+          const feeAmount = new Decimal(item.fees);
+          const gasBuffer = new Decimal(gasBufferAmount);
+          totalRequired = swapAmount.plus(feeAmount).plus(gasBuffer);
+          console.log(`[BrokerSwap] Required: ${totalRequired.toFixed()} ${item.asset} (swap: ${swapAmount.toFixed()}, fees: ${feeAmount.toFixed()}, gas: ${gasBuffer.toFixed()})`);
+        }
 
         // Convert to wei for TankManager (expects bigint)
         const totalRequiredWei = ethers.parseEther(totalRequired.toFixed());
@@ -1994,6 +2006,63 @@ export class Engine {
     }
 
     try {
+      // For ERC20 swaps, we need to approve the broker contract FIRST
+      if (currency && (plugin as any).approveERC20) {
+        console.log(`[BrokerSwap] Checking ERC20 approval for broker contract...`);
+
+        // Check current allowance
+        const currentAllowance = await (plugin as any).getERC20Allowance(
+          currency,
+          escrowRef.address,
+          (plugin as any).brokerContract?.target || (plugin as any).brokerContract?.address
+        );
+
+        const requiredAmount = ethers.parseUnits(
+          new Decimal(item.amount).plus(item.fees).toFixed(),
+          decimals || 18
+        );
+
+        console.log(`[BrokerSwap] Current allowance: ${currentAllowance.toString()}, Required: ${requiredAmount.toString()}`);
+
+        // If allowance is insufficient, approve
+        if (currentAllowance < requiredAmount) {
+          console.log(`[BrokerSwap] Insufficient allowance, approving broker contract...`);
+
+          const approvalResult = await (plugin as any).approveERC20({
+            escrow: escrowRef,
+            tokenAddress: currency,
+            spender: (plugin as any).brokerContract?.target || (plugin as any).brokerContract?.address,
+            amount: requiredAmount.toString()
+          });
+
+          console.log(`[BrokerSwap] Approval submitted: ${approvalResult.txid}`);
+
+          // Wait for approval to be mined (check every 2 seconds, max 60 seconds)
+          let approvalConfirmed = false;
+          for (let i = 0; i < 30; i++) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            const newAllowance = await (plugin as any).getERC20Allowance(
+              currency,
+              escrowRef.address,
+              (plugin as any).brokerContract?.target || (plugin as any).brokerContract?.address
+            );
+
+            if (newAllowance >= requiredAmount) {
+              approvalConfirmed = true;
+              console.log(`[BrokerSwap] Approval confirmed!`);
+              break;
+            }
+          }
+
+          if (!approvalConfirmed) {
+            throw new Error('ERC20 approval transaction did not confirm within 60 seconds');
+          }
+        } else {
+          console.log(`[BrokerSwap] Sufficient allowance already exists, skipping approval`);
+        }
+      }
+
       const result = await (plugin as any).swapViaBroker({
         dealId: item.dealId,
         escrow: escrowRef,
@@ -2201,20 +2270,43 @@ export class Engine {
 
         const balance = depositsView.totalConfirmed;
 
+        // Dust thresholds per chain (minimum economical amount to refund)
+        // Below these thresholds, gas costs exceed refund value
+        const dustThresholds: Record<string, string> = {
+          'ETH': '0.005',       // 0.005 ETH (~$12 at $2400/ETH, gas ~$5-10)
+          'POLYGON': '0.1',     // 0.1 MATIC (~$0.08, gas ~$0.02-0.05)
+          'BSC': '0.005',       // 0.005 BNB
+          'BASE': '0.002',      // 0.002 ETH (L2, lower gas)
+          'SEPOLIA': '0.01',    // Testnet
+        };
+
+        const dustThreshold = dustThresholds[side.spec.chainId] || '0';
+
         // If balance > 0, there are leftover funds (use decimal comparison)
         if (compareAmounts(balance, '0') > 0) {
+          // Check if amount is dust (not economical to refund)
+          if (dustThreshold !== '0' && compareAmounts(balance, dustThreshold) < 0) {
+            console.log(`[LateDeposit] Skipping dust amount ${balance} ${side.spec.asset} (threshold: ${dustThreshold}) in ${side.party} escrow for deal ${deal.id.slice(0, 8)}...`);
+            continue; // Skip dust refunds
+          }
+
           console.log(`[LateDeposit] Found ${balance} ${side.spec.asset} in ${side.party} escrow for closed deal ${deal.id.slice(0, 8)}...`);
 
           // Check if we already have a pending BROKER_REFUND for this escrow
-          const existingRefunds = this.queueRepo.getByDeal(deal.id)
-            .filter(q =>
-              q.purpose === 'BROKER_REFUND' &&
-              q.from.address === side.escrow!.address &&
-              q.status !== 'COMPLETED'
-            );
+          // IMPORTANT: Can't use getByDeal(deal.id) because late deposit refunds use synthetic tracking IDs
+          // Instead, check for ANY BROKER_REFUND queue items for this specific escrow address
+          const existingRefundsStmt = this.db.prepare(`
+            SELECT COUNT(*) as count
+            FROM queue_items
+            WHERE purpose = 'BROKER_REFUND'
+              AND fromAddr = ?
+              AND asset = ?
+              AND status IN ('PENDING', 'SUBMITTED')
+          `);
+          const existingRefundsCount = (existingRefundsStmt.get(side.escrow!.address, side.spec.asset) as any).count;
 
-          if (existingRefunds.length > 0) {
-            console.log(`[LateDeposit] Refund already queued for ${side.party} escrow, skipping`);
+          if (existingRefundsCount > 0) {
+            console.log(`[LateDeposit] Refund already queued for ${side.party} escrow (${existingRefundsCount} items), skipping`);
             continue;
           }
 
@@ -3244,20 +3336,28 @@ export class Engine {
 
       // Route to appropriate submission handler
       if (item.purpose === 'BROKER_REFUND') {
-        // Create a minimal deal-like object for submitBrokerRefund
-        const minimalDeal = {
+        // Load the original deal to get escrow references
+        const originalDeal = this.dealRepo.get(originalDealId);
+
+        if (!originalDeal) {
+          console.error(`[QueueProcessor] Original deal ${originalDealId} not found for late deposit refund`);
+          return;
+        }
+
+        // Create a deal-like object with escrow references from the original deal
+        // This is needed for submitBrokerRefund to find the correct wallet
+        const dealWithEscrows = {
           id: item.dealId,
           stage: 'CLOSED',
-          events: []
+          events: [],
+          escrowA: originalDeal.escrowA,
+          escrowB: originalDeal.escrowB
         } as unknown as Deal;
 
-        await this.submitBrokerRefund(item, minimalDeal);
+        await this.submitBrokerRefund(item, dealWithEscrows);
 
-        // Add event to original deal if it exists
-        const originalDeal = this.dealRepo.get(originalDealId);
-        if (originalDeal) {
-          this.dealRepo.addEvent(originalDealId, `Late deposit refund processed: ${item.amount} ${item.asset}`);
-        }
+        // Add event to original deal
+        this.dealRepo.addEvent(originalDealId, `Late deposit refund processed: ${item.amount} ${item.asset}`);
       } else {
         console.error(`[QueueProcessor] Unsupported purpose ${item.purpose} for late deposit refund`);
       }

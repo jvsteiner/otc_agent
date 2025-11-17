@@ -1771,6 +1771,75 @@ export class EthereumPlugin implements ChainPlugin {
   }
 
   /**
+   * Get ERC20 allowance for a spender
+   */
+  async getERC20Allowance(
+    tokenAddress: string,
+    owner: string,
+    spender: string
+  ): Promise<bigint> {
+    const tokenContract = new ethers.Contract(
+      tokenAddress,
+      ['function allowance(address owner, address spender) view returns (uint256)'],
+      this.provider
+    );
+
+    const allowance = await tokenContract.allowance(owner, spender);
+    return allowance;
+  }
+
+  /**
+   * Approve ERC20 tokens for spending
+   */
+  async approveERC20(params: {
+    escrow: any;
+    tokenAddress: string;
+    spender: string;
+    amount: string;
+  }): Promise<{ txid: string; submittedAt: string }> {
+    // Get wallet for escrow
+    let wallet = this.wallets.get(params.escrow.keyRef || params.escrow.address);
+    if (!wallet) {
+      // Try to recreate wallet from keyRef
+      if (params.escrow.keyRef) {
+        if (params.escrow.keyRef.startsWith('0x')) {
+          // Direct private key
+          const newWallet = new ethers.Wallet(params.escrow.keyRef, this.provider);
+          this.wallets.set(params.escrow.keyRef, newWallet as any);
+          wallet = newWallet as any;
+        } else if (params.escrow.keyRef.startsWith('m/') && this.rootWallet) {
+          // HD path
+          const childWallet = this.rootWallet.derivePath(params.escrow.keyRef);
+          const connectedWallet = childWallet.connect(this.provider);
+          this.wallets.set(params.escrow.keyRef, connectedWallet);
+          wallet = connectedWallet;
+        }
+      }
+    }
+
+    if (!wallet) {
+      throw new Error(`Wallet not found for escrow address: ${params.escrow.address}`);
+    }
+
+    // Create token contract
+    const tokenContract = new ethers.Contract(
+      params.tokenAddress,
+      ['function approve(address spender, uint256 amount) returns (bool)'],
+      wallet
+    );
+
+    // Submit approval transaction
+    const tx = await tokenContract.approve(params.spender, params.amount);
+
+    console.log(`[${this.chainId}] ERC20 approval submitted: ${tx.hash} | Token: ${params.tokenAddress} | Spender: ${params.spender}`);
+
+    return {
+      txid: tx.hash,
+      submittedAt: new Date().toISOString()
+    };
+  }
+
+  /**
    * Classifies broker transfers by position in the transfer sequence.
    *
    * Pattern for broker operations:
