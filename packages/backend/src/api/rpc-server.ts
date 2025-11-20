@@ -50,6 +50,10 @@ interface SendInviteParams {
   link: string;
 }
 
+interface ListAssetsParams {
+  chainId?: string;  // Optional: filter by specific chain
+}
+
 /**
  * JSON-RPC server that exposes OTC broker functionality via HTTP.
  * Handles deal creation, party management, status queries, and serves web pages.
@@ -167,6 +171,9 @@ export class RpcServer {
             break;
           case 'otc.getChainConfig':
             result = await this.getChainConfig(params as { chainId?: string });
+            break;
+          case 'otc.listAssets':
+            result = await this.listAssets(params as ListAssetsParams);
             break;
           default:
             throw new Error(`Method ${method} not found`);
@@ -1030,6 +1037,58 @@ export class RpcServer {
     }
     
     return configs;
+  }
+
+  /**
+   * List all trading-enabled assets with full metadata.
+   * Respects PRODUCTION_MODE and ALLOWED_ASSETS filtering.
+   *
+   * @param params - Optional parameters for filtering
+   * @param params.chainId - Optional: filter by specific chain
+   * @returns Object containing assets array, production mode flag, and supported chains
+   */
+  private async listAssets(params: ListAssetsParams = {}) {
+    const registry = getAssetRegistry();
+    const productionConfig = await import('../config/production-config');
+    const isProduction = productionConfig.isProductionMode();
+
+    // Start with all assets
+    let assets = registry.assets;
+
+    // Filter by chain if specified
+    if (params.chainId) {
+      assets = assets.filter(a => a.chainId === params.chainId);
+    }
+
+    // Apply production mode filters
+    if (isProduction) {
+      assets = assets.filter((asset: any) => {
+        const assetCode = formatAssetCode(asset);
+        return productionConfig.isChainAllowed(asset.chainId as ChainId) &&
+               productionConfig.isAssetAllowed(assetCode as AssetCode, asset.chainId as ChainId);
+      });
+    }
+
+    // Format response with full metadata
+    return {
+      assets: assets.map(asset => ({
+        chainId: asset.chainId,
+        assetName: asset.assetName,
+        assetSymbol: asset.assetSymbol,
+        native: asset.native,
+        type: asset.type,
+        contractAddress: asset.contractAddress,
+        decimals: asset.decimals,
+        icon: asset.icon,
+        refundable: asset.refundable,
+        assetCode: formatAssetCode(asset),
+        maxAmount: isProduction ? productionConfig.getMaxAmount(formatAssetCode(asset) as AssetCode) : null
+      })),
+      productionMode: isProduction,
+      chains: registry.supportedChains.filter(chain =>
+        !isProduction || productionConfig.isChainAllowed(chain.chainId as ChainId)
+      )
+    };
   }
 
   private async sendInviteOld(params: SendInviteParams) {
