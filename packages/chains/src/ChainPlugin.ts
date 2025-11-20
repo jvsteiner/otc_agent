@@ -357,4 +357,25 @@ export interface ChainPlugin {
     value: string;
     type: 'swap' | 'fee' | 'refund' | 'unknown';
   }>>;
+
+  /**
+   * Discover all token balances at an address (EVM chains only).
+   * Scans for ERC20 tokens by:
+   * 1. Querying Etherscan/Polygonscan API for token transfer history
+   * 2. Falling back to event log scanning if API unavailable
+   * 3. Checking current balanceOf() for each discovered token
+   * 4. Querying decimals() for proper formatting
+   *
+   * Used by the refund scanner to detect unexpected tokens deposited to escrow addresses.
+   * Only returns tokens with non-zero balances.
+   *
+   * @param address - The address to scan for token balances
+   * @returns Array of token balances with metadata
+   */
+  getAllTokenBalances?(address: string): Promise<Array<{
+    asset: AssetCode;           // e.g., "ERC20:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48@ETH"
+    amount: string;             // Balance as decimal string
+    decimals: number;           // Token decimals
+    contractAddress: string;    // Token contract address
+  }>>;
 }

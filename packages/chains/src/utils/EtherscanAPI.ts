@@ -121,13 +121,16 @@ export class EtherscanAPI {
       const response = await fetch(`${this.apiUrl}?${params.toString()}`);
       const data = await response.json() as EtherscanResponse;
 
-      // Check for V2 API deprecation message
-      if (data.message && data.message.includes('deprecated V1 endpoint')) {
-        console.error(`Etherscan API error: ${data.message}. API key required for V2.`);
-        if (!this.apiKey) {
-          console.error(`Please set ${this.apiUrl.includes('polygon') ? 'POLYGONSCAN_API_KEY' : 'ETHERSCAN_API_KEY'} environment variable`);
-        }
-        return [];
+      // Check for V2 API deprecation message - throw error to trigger fallback
+      // The deprecation message can be in data.message OR data.result (when result is a string)
+      const deprecationMsg =
+        (data.message && data.message.includes('deprecated V1 endpoint')) ||
+        (typeof data.result === 'string' && data.result.includes('deprecated V1 endpoint'));
+
+      if (deprecationMsg) {
+        const errorMsg = typeof data.result === 'string' ? data.result : data.message;
+        console.warn(`[EtherscanAPI] ${errorMsg} - will fall back to RPC`);
+        throw new Error(errorMsg);
       }
 
       if (data.status === '1' && Array.isArray(data.result)) {
@@ -246,13 +249,16 @@ export class EtherscanAPI {
       const response = await fetch(`${this.apiUrl}?${params.toString()}`);
       const data = await response.json() as any;
 
-      // Check for V2 API deprecation message
-      if (data.message && data.message.includes('deprecated V1 endpoint')) {
-        console.error(`Etherscan API error: ${data.message}. API key required for V2.`);
-        if (!this.apiKey) {
-          console.error(`Please set ${this.apiUrl.includes('polygon') ? 'POLYGONSCAN_API_KEY' : 'ETHERSCAN_API_KEY'} environment variable`);
-        }
-        return [];
+      // Check for V2 API deprecation message - throw error to trigger fallback
+      // The deprecation message can be in data.message OR data.result (when result is a string)
+      const deprecationMsg =
+        (data.message && data.message.includes('deprecated V1 endpoint')) ||
+        (typeof data.result === 'string' && data.result.includes('deprecated V1 endpoint'));
+
+      if (deprecationMsg) {
+        const errorMsg = typeof data.result === 'string' ? data.result : data.message;
+        console.warn(`[EtherscanAPI] ${errorMsg} - will fall back to RPC`);
+        throw new Error(errorMsg);
       }
 
       if (data.status === '1' && Array.isArray(data.result)) {
@@ -273,6 +279,83 @@ export class EtherscanAPI {
       return [];
     } catch (error) {
       console.error('Failed to fetch ERC20 transfers:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get ALL token transfers for an address (discover all ERC20 tokens).
+   * Unlike getERC20Transfers(), this does not filter by token contract address.
+   * Used for discovering what tokens have been sent to an escrow address.
+   *
+   * @param address - Address to fetch token transfers for
+   * @param startBlock - Starting block number (default: 0)
+   * @returns Array of token transfer records including contract addresses
+   */
+  async getTokenTransfers(
+    address: string,
+    startBlock: number = 0
+  ): Promise<Array<{
+    txid: string;
+    contractAddress: string;
+    from: string;
+    to: string;
+    amount: string;
+    tokenSymbol?: string;
+    tokenDecimals?: number;
+    blockHeight: number;
+    blockTime: string;
+  }>> {
+    try {
+      const params = new URLSearchParams({
+        module: 'account',
+        action: 'tokentx',
+        address: address,  // No contractaddress filter - get ALL tokens
+        startblock: startBlock.toString(),
+        endblock: '99999999',
+        sort: 'desc',
+      });
+
+      if (this.apiKey) {
+        params.append('apikey', this.apiKey);
+      }
+
+      const response = await fetch(`${this.apiUrl}?${params.toString()}`);
+      const data = await response.json() as any;
+
+      // Check for V2 API deprecation message - throw error to trigger fallback
+      // The deprecation message can be in data.message OR data.result (when result is a string)
+      const deprecationMsg =
+        (data.message && data.message.includes('deprecated V1 endpoint')) ||
+        (typeof data.result === 'string' && data.result.includes('deprecated V1 endpoint'));
+
+      if (deprecationMsg) {
+        const errorMsg = typeof data.result === 'string' ? data.result : data.message;
+        console.warn(`[EtherscanAPI] ${errorMsg} - will fall back to RPC`);
+        throw new Error(errorMsg);
+      }
+
+      if (data.status === '1' && Array.isArray(data.result)) {
+        return data.result.map((tx: any) => ({
+          txid: tx.hash,
+          contractAddress: tx.contractAddress,
+          from: tx.from,
+          to: tx.to,
+          amount: ethers.formatUnits(tx.value, parseInt(tx.tokenDecimal || '18')),
+          tokenSymbol: tx.tokenSymbol,
+          tokenDecimals: parseInt(tx.tokenDecimal || '18'),
+          blockHeight: parseInt(tx.blockNumber),
+          blockTime: new Date(parseInt(tx.timeStamp) * 1000).toISOString()
+        }));
+      }
+
+      return [];
+    } catch (error: any) {
+      // Re-throw deprecation errors so they can trigger the RPC fallback
+      if (error.message && error.message.includes('deprecated V1 endpoint')) {
+        throw error;
+      }
+      console.error('Failed to fetch token transfers:', error);
       return [];
     }
   }

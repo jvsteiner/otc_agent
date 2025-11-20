@@ -13,6 +13,7 @@ import { PluginManager, ChainPlugin } from '@otc-broker/chains';
 import { TankManager, TankConfig } from './TankManager';
 import { ResolutionWorker } from '../workers/ResolutionWorker';
 import { GasReimbursementCalculator } from '../services/GasReimbursementCalculator';
+import { GasPriceOracle } from '../services/GasPriceOracle';
 import * as crypto from 'crypto';
 import { ethers } from 'ethers';
 
@@ -53,6 +54,7 @@ export class Engine {
   private tankManager?: TankManager;
   private resolutionWorker?: ResolutionWorker;
   private gasReimbursementCalculator: GasReimbursementCalculator;
+  private gasPriceOracle: GasPriceOracle;
   private isProcessingQueues = false;  // Prevent concurrent queue processing
   private queueProcessingInterval?: NodeJS.Timeout;
 
@@ -68,6 +70,18 @@ export class Engine {
     this.engineId = crypto.randomBytes(8).toString('hex');
     this.resolutionWorker = new ResolutionWorker(db, pluginManager);
     this.gasReimbursementCalculator = new GasReimbursementCalculator();
+
+    // Initialize gas price oracle with 12-second cache (1 Ethereum block)
+    this.gasPriceOracle = new GasPriceOracle(
+      parseInt(process.env.GAS_CACHE_TTL_MS || '12000'),
+      {
+        ETH: process.env.MAX_GAS_PRICE_ETH || '500',
+        POLYGON: process.env.MAX_GAS_PRICE_POLYGON || '2000',
+        SEPOLIA: process.env.MAX_GAS_PRICE_SEPOLIA || '1000',
+        BASE: process.env.MAX_GAS_PRICE_BASE || '100',
+        BSC: process.env.MAX_GAS_PRICE_BSC || '100',
+      }
+    );
   }
   
   private async initializeTankManager() {
@@ -413,6 +427,11 @@ export class Engine {
           this.dealRepo.updateStage(deal.id, 'CLOSED');
           this.dealRepo.addEvent(deal.id, 'All refunds confirmed - deal closed');
         }
+
+        // IMPORTANT: Also monitor escrows for additional funds (not part of else-if chain)
+        // Continuously monitor escrows for any funds and return them immediately
+        // Note: monitorAndReturnEscrowFunds calls processQueues internally at the end
+        await this.monitorAndReturnEscrowFunds(deal);
       } else if (deal.stage === 'CLOSED') {
         // Continuously monitor escrows for any funds and return them immediately
         // Note: monitorAndReturnEscrowFunds calls processQueues internally at the end
@@ -2372,6 +2391,206 @@ export class Engine {
   }
 
   /**
+   * Estimate the total cost (gas + commission) for refunding an asset in USD.
+   * Used to determine if a refund is profitable (amount > costs).
+   *
+   * @param chainId - Chain to execute refund on
+   * @param asset - Asset to refund (e.g., "ERC20:0x...")
+   * @param amount - Amount to refund (decimal string)
+   * @returns Total cost in USD (gas cost + commission fee)
+   */
+  private async estimateRefundCostUSD(
+    chainId: ChainId,
+    asset: AssetCode,
+    amount: string
+  ): Promise<string> {
+    try {
+      const plugin = this.pluginManager.getPlugin(chainId);
+
+      // Step 1: Estimate gas cost
+      let gasEstimate = 65000; // Default for ERC20 transfer
+      const isNative = !asset.startsWith('ERC20:') && !asset.startsWith('SPL:');
+
+      if (isNative) {
+        gasEstimate = 21000; // Native currency transfer
+      }
+
+      // Get current gas price (cast plugin to access provider property)
+      const gasPrice = await this.gasPriceOracle.getGasPrice(chainId, (plugin as any).provider, false);
+
+      // Calculate gas cost in native currency
+      const gasCostWei = BigInt(gasEstimate) * BigInt(gasPrice.maxFeePerGas);
+      const gasCostNative = ethers.formatEther(gasCostWei);
+
+      // Convert gas cost to USD
+      const quoteResult = await plugin.quoteNativeForUSD(gasCostNative);
+      const gasCostUSD = new Decimal(gasCostNative).times(quoteResult.quote.price).toString();
+
+      // Step 2: Calculate commission fee
+      const assetMetadata = getAssetMetadata(asset, chainId);
+      const decimals = assetMetadata?.decimals || 18;
+
+      // Use existing commission calculation (0.3% for known assets)
+      const commissionAmount = calculateCommission(amount, 30, decimals); // 30 bps = 0.3%
+
+      // Add ERC20 fixed fee if applicable
+      let erc20Fee = '0';
+      if (asset.startsWith('ERC20:')) {
+        const envKey = `${chainId}_ERC20_FEE`;
+        const configuredFee = process.env[envKey];
+        if (configuredFee && parseFloat(configuredFee) > 0) {
+          erc20Fee = configuredFee;
+        }
+      }
+
+      // Convert commission + ERC20 fee to USD
+      const totalCommissionAsset = sumAmounts([commissionAmount, erc20Fee]);
+
+      // For simplicity, assume commission is in the same currency as the refund
+      // and estimate its USD value based on amount/value ratio
+      // This is a rough estimate - could be improved with token price oracles
+      const commissionUSD = new Decimal(gasCostUSD)
+        .times(totalCommissionAsset)
+        .div(amount.length > 0 ? amount : '1')
+        .toString();
+
+      // Total cost = gas + commission (in USD)
+      const totalCostUSD = sumAmounts([gasCostUSD, commissionUSD]);
+
+      console.log(`[RefundCost] ${chainId} ${asset}: gas=$${gasCostUSD}, commission=$${commissionUSD}, total=$${totalCostUSD}`);
+
+      return totalCostUSD;
+    } catch (error: any) {
+      console.warn(`[RefundCost] Failed to estimate refund cost:`, error.message);
+      // Return a conservative default (prevents refunding tiny amounts)
+      return '5.00'; // $5 default cost estimate
+    }
+  }
+
+  /**
+   * Process a discovered token balance - check whitelist and profitability before queueing refund.
+   * @returns true if refund was queued, false if skipped
+   */
+  private async processDiscoveredTokenBalance(
+    deal: Deal,
+    escrow: EscrowAccountRef,
+    paybackAddress: string,
+    chainId: ChainId,
+    tokenBalance: {
+      asset: AssetCode;
+      amount: string;
+      decimals: number;
+      contractAddress: string;
+    }
+  ): Promise<boolean> {
+    const { asset, amount, contractAddress } = tokenBalance;
+
+    console.log(`[TokenRefund] Discovered ${amount} ${asset} at escrow ${escrow.address}`);
+
+    // Step 1: Whitelist check - only process known assets from assets.json
+    try {
+      // Extract asset code without chain suffix (e.g., "ERC20:0x..." from "ERC20:0x...@ETH")
+      const assetParts = asset.split('@');
+      const assetCode = assetParts[0];
+      const assetChainId = assetParts[1] || chainId;
+
+      const parsedAsset = parseAssetCode(assetCode, assetChainId);
+      if (!parsedAsset) {
+        console.log(`[TokenRefund] Skipping unknown asset ${asset} - not in whitelist`);
+        this.dealRepo.addEvent(deal.id, `Found unknown token ${contractAddress} (${amount}) - not refunding`);
+        return false;
+      }
+    } catch (error) {
+      console.log(`[TokenRefund] Skipping invalid asset code ${asset} - not in whitelist`);
+      this.dealRepo.addEvent(deal.id, `Found unparseable token ${contractAddress} (${amount}) - not refunding`);
+      return false;
+    }
+
+    // Step 2: Check if amount > dust threshold
+    if (compareAmounts(amount, '0.000001') <= 0) {
+      console.log(`[TokenRefund] Skipping dust amount ${amount} ${asset}`);
+      return false;
+    }
+
+    // Step 3: Check if already queued
+    const existingQueues = this.queueRepo.getByDeal(deal.id)
+      .filter(q => q.from.address === escrow.address &&
+                  q.asset === asset &&
+                  (q.status === 'PENDING' || q.status === 'SUBMITTED'));
+
+    if (existingQueues.length > 0) {
+      console.log(`[TokenRefund] Already have queue item for ${asset} - skipping`);
+      return false;
+    }
+
+    // Step 4: Profitability check - estimate gas + commission costs
+    try {
+      const costUSD = await this.estimateRefundCostUSD(chainId, asset, amount);
+
+      // Get token USD value (rough estimate)
+      // For now, use a conservative threshold: only refund if amount seems substantial
+      // TODO: Add proper token price oracle integration
+      const costThreshold = new Decimal(costUSD).times(2); // Cost must be less than half of value
+
+      console.log(`[TokenRefund] Estimated refund cost: $${costUSD} for ${amount} ${asset}`);
+
+      // For known stablecoins (USDT, USDC, DAI), we can estimate value directly
+      const assetSymbol = asset.split('@')[0].toUpperCase();
+      let isProfitable = false;
+
+      if (assetSymbol.includes('USDT') || assetSymbol.includes('USDC') || assetSymbol.includes('DAI')) {
+        // Stablecoin - value ≈ amount in USD
+        const valueUSD = new Decimal(amount);
+        isProfitable = valueUSD.greaterThan(costThreshold);
+        console.log(`[TokenRefund] Stablecoin value: ~$${amount}, cost: $${costUSD}, profitable: ${isProfitable}`);
+      } else {
+        // Non-stablecoin - be conservative, only refund if amount is substantial
+        // Use a heuristic: if cost is low (< $2) AND amount > 0.01, proceed
+        const lowCost = new Decimal(costUSD).lessThan('2.00');
+        const substantialAmount = new Decimal(amount).greaterThan('0.01');
+        isProfitable = lowCost && substantialAmount;
+        console.log(`[TokenRefund] Non-stablecoin: cost=$${costUSD}, amount=${amount}, profitable=${isProfitable}`);
+      }
+
+      if (!isProfitable) {
+        console.log(`[TokenRefund] Skipping unprofitable refund for ${asset}`);
+        this.dealRepo.addEvent(deal.id, `Found ${amount} ${asset} but refund cost ($${costUSD}) too high - not refunding`);
+        return false;
+      }
+    } catch (error: any) {
+      console.warn(`[TokenRefund] Failed to estimate cost for ${asset}:`, error.message);
+      // If cost estimation fails, proceed conservatively for substantial amounts only
+      if (compareAmounts(amount, '1.0') < 0) {
+        console.log(`[TokenRefund] Skipping small amount ${amount} ${asset} due to cost estimation failure`);
+        return false;
+      }
+    }
+
+    // Step 5: Queue the refund
+    console.log(`[TokenRefund] Queueing refund for ${amount} ${asset} to ${paybackAddress}`);
+
+    // Ensure gas funding for ERC20 tokens
+    if (asset.startsWith('ERC20:')) {
+      await this.ensureGasForRefund(escrow.address, chainId, deal.id, asset);
+    }
+
+    this.queueRepo.enqueue({
+      dealId: deal.id,
+      chainId: chainId,
+      from: escrow,
+      to: paybackAddress,
+      asset: asset,
+      amount: amount,
+      purpose: 'TIMEOUT_REFUND',
+    });
+
+    this.dealRepo.addEvent(deal.id, `Auto-returning discovered ${amount} ${asset} from escrow`);
+    console.log(`[TokenRefund] Successfully queued refund for ${asset}`);
+
+    return true;
+  }
+
+  /**
    * Get actual current balance for an escrow address
    * For UTXO chains: sum of available UTXOs
    * For account chains: current balance
@@ -2420,18 +2639,27 @@ export class Engine {
             const tokenAddress = asset.split(':')[1].split('@')[0];
             const provider = (plugin as any).provider;
             if (provider) {
-              // Create contract instance to check balance
-              const abi = ['function balanceOf(address) view returns (uint256)'];
+              // Create contract instance to check balance and decimals
+              const abi = [
+                'function balanceOf(address) view returns (uint256)',
+                'function decimals() view returns (uint8)'
+              ];
               const { Contract } = await import('ethers');
               const contract = new Contract(tokenAddress, abi, provider);
-              const balance = await contract.balanceOf(escrowAddress);
 
-              // Assume 6 decimals for USDT/USDC (common stablecoins)
-              // This should ideally check the token's decimals
-              const decimals = 6; // TODO: Get actual decimals from contract
+              // Query balance and decimals in parallel
+              const [balance, decimals] = await Promise.all([
+                contract.balanceOf(escrowAddress),
+                contract.decimals().catch(() => {
+                  // Fallback: try to get decimals from asset metadata
+                  const metadata = getAssetMetadata(asset as AssetCode, chainId);
+                  return metadata?.decimals || 18; // Default to 18 if not found
+                })
+              ]);
+
               // Use Decimal for precision (avoid Number division that loses precision)
               const tokenBalance = new Decimal(balance.toString()).div(new Decimal(10).pow(decimals)).toString();
-              console.log(`[Engine] ${chainId} escrow ${escrowAddress} has ${tokenBalance} of token ${tokenAddress}`);
+              console.log(`[Engine] ${chainId} escrow ${escrowAddress} has ${tokenBalance} of token ${tokenAddress} (${decimals} decimals)`);
               return tokenBalance;
             }
           }
@@ -2481,13 +2709,36 @@ export class Engine {
         console.log(`[Engine] Checking Alice's escrow ${deal.escrowA.address} on ${deal.alice.chainId}`);
         const plugin = this.pluginManager.getPlugin(deal.alice.chainId);
         const escrowAddress = await plugin.getManagedAddress(deal.escrowA);
-      
-        // Check for ANY asset balance (not just the deal asset)
-        // First check the primary asset
+
+        // For EVM chains: scan for ALL tokens using getAllTokenBalances()
+        if (plugin.getAllTokenBalances && (deal.alice.chainId === 'ETH' || deal.alice.chainId === 'POLYGON' || deal.alice.chainId === 'SEPOLIA' || deal.alice.chainId === 'BASE' || deal.alice.chainId === 'BSC')) {
+          console.log(`[Engine] Scanning for all tokens at Alice's escrow (EVM chain)`);
+
+          try {
+            const tokenBalances = await plugin.getAllTokenBalances(escrowAddress);
+            console.log(`[Engine] Discovered ${tokenBalances.length} tokens at Alice's escrow`);
+
+            // Process each discovered token
+            for (const tokenBalance of tokenBalances) {
+              await this.processDiscoveredTokenBalance(
+                deal,
+                deal.escrowA,
+                deal.aliceDetails.paybackAddress,
+                deal.alice.chainId,
+                tokenBalance
+              );
+            }
+          } catch (error: any) {
+            console.error(`[Engine] Failed to scan tokens at Alice's escrow:`, error.message);
+            // Fall back to single-asset check below
+          }
+        }
+
+        // Fallback: Also check the primary deal asset explicitly (for non-EVM chains or as backup)
         const aliceAsset = deal.alice.asset;
-        
-        console.log(`[Engine] Getting balance for ${aliceAsset} at ${escrowAddress}`);
-        
+
+        console.log(`[Engine] Getting balance for primary deal asset ${aliceAsset} at ${escrowAddress}`);
+
         // Get the ACTUAL current balance (what's really there now)
         const currentBalance = await this.getActualBalance(
           plugin,
@@ -2495,7 +2746,7 @@ export class Engine {
           escrowAddress,
           aliceAsset
         );
-        
+
         console.log(`[Engine] Balance check result: ${currentBalance} ${aliceAsset}`);
 
       // Use decimal comparison for balance check (avoid float precision loss)
@@ -2713,12 +2964,39 @@ export class Engine {
     
     // Check Bob's escrow for any balances
     if (deal.escrowB && deal.bobDetails) {
+      console.log(`[Engine] Checking Bob's escrow ${deal.escrowB.address} on ${deal.bob.chainId}`);
       const plugin = this.pluginManager.getPlugin(deal.bob.chainId);
       const escrowAddress = await plugin.getManagedAddress(deal.escrowB);
-      
-      // Check for the primary asset
+
+      // For EVM chains: scan for ALL tokens using getAllTokenBalances()
+      if (plugin.getAllTokenBalances && (deal.bob.chainId === 'ETH' || deal.bob.chainId === 'POLYGON' || deal.bob.chainId === 'SEPOLIA' || deal.bob.chainId === 'BASE' || deal.bob.chainId === 'BSC')) {
+        console.log(`[Engine] Scanning for all tokens at Bob's escrow (EVM chain)`);
+
+        try {
+          const tokenBalances = await plugin.getAllTokenBalances(escrowAddress);
+          console.log(`[Engine] Discovered ${tokenBalances.length} tokens at Bob's escrow`);
+
+          // Process each discovered token
+          for (const tokenBalance of tokenBalances) {
+            await this.processDiscoveredTokenBalance(
+              deal,
+              deal.escrowB,
+              deal.bobDetails.paybackAddress,
+              deal.bob.chainId,
+              tokenBalance
+            );
+          }
+        } catch (error: any) {
+          console.error(`[Engine] Failed to scan tokens at Bob's escrow:`, error.message);
+          // Fall back to single-asset check below
+        }
+      }
+
+      // Fallback: Also check the primary deal asset explicitly (for non-EVM chains or as backup)
       const bobAsset = deal.bob.asset;
-      
+
+      console.log(`[Engine] Getting balance for primary deal asset ${bobAsset} at ${escrowAddress}`);
+
       // Get the ACTUAL current balance (what's really there now)
       const currentBalance = await this.getActualBalance(
         plugin,

@@ -2053,6 +2053,164 @@ export class EthereumPlugin implements ChainPlugin {
     }
   }
 
+  /**
+   * Discover all ERC20 token balances at an address.
+   * Uses hybrid approach:
+   * 1. Try Etherscan API for token transfer history (fast)
+   * 2. Fall back to event log scanning if API unavailable
+   * 3. Query balanceOf() and decimals() for each discovered token
+   * 4. Return only tokens with non-zero balances
+   */
+  async getAllTokenBalances(address: string): Promise<Array<{
+    asset: AssetCode;
+    amount: string;
+    decimals: number;
+    contractAddress: string;
+  }>> {
+    console.log(`[${this.chainId}] Discovering all token balances for ${address}`);
+
+    // Step 1: Discover token contracts by transfer events
+    const tokenContracts = await this.discoverTokenContracts(address);
+    console.log(`[${this.chainId}] Found ${tokenContracts.size} unique token contracts`);
+
+    // Step 2: Query balances for each token
+    const balances: Array<{
+      asset: AssetCode;
+      amount: string;
+      decimals: number;
+      contractAddress: string;
+    }> = [];
+
+    for (const tokenAddress of tokenContracts) {
+      try {
+        // Query token balance
+        const tokenContract = new ethers.Contract(
+          tokenAddress,
+          ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)'],
+          this.provider
+        );
+
+        const [balance, decimals] = await Promise.all([
+          tokenContract.balanceOf(address),
+          tokenContract.decimals().catch(() => 18) // Default to 18 if decimals() fails
+        ]);
+
+        // Skip zero balances
+        if (balance === 0n) {
+          continue;
+        }
+
+        // Format balance
+        const amount = ethers.formatUnits(balance, decimals);
+        const asset: AssetCode = `ERC20:${tokenAddress}@${this.chainId}` as AssetCode;
+
+        balances.push({
+          asset,
+          amount,
+          decimals,
+          contractAddress: tokenAddress
+        });
+
+        console.log(`[${this.chainId}] Found balance: ${amount} tokens at ${tokenAddress} (${decimals} decimals)`);
+      } catch (error: any) {
+        console.warn(`[${this.chainId}] Failed to query balance for token ${tokenAddress}:`, error.message);
+        // Skip this token and continue with others
+      }
+    }
+
+    return balances;
+  }
+
+  /**
+   * Discover ERC20 token contracts by scanning transfer events.
+   * Uses Etherscan API first, falls back to RPC event logs.
+   */
+  private async discoverTokenContracts(address: string): Promise<Set<string>> {
+    // Try Etherscan API first (faster and more reliable)
+    if (this.etherscanAPI) {
+      try {
+        const tokenTransfers = await this.etherscanAPI.getTokenTransfers(address);
+        const contracts = new Set<string>();
+
+        for (const transfer of tokenTransfers) {
+          // Normalize address to checksum format
+          try {
+            const checksumAddress = ethers.getAddress(transfer.contractAddress);
+            contracts.add(checksumAddress);
+          } catch {
+            // Skip invalid addresses
+            console.warn(`[${this.chainId}] Skipping invalid token address: ${transfer.contractAddress}`);
+          }
+        }
+
+        console.log(`[${this.chainId}] Discovered ${contracts.size} tokens via Etherscan API`);
+        return contracts;
+      } catch (error: any) {
+        console.warn(`[${this.chainId}] Etherscan API failed, falling back to event logs:`, error.message);
+      }
+    }
+
+    // Fallback: Scan Transfer event logs via RPC
+    return await this.discoverTokenContractsViaLogs(address);
+  }
+
+  /**
+   * Discover token contracts by scanning Transfer event logs.
+   * Scans last 500,000 blocks (~2 weeks for Ethereum, longer for faster chains).
+   */
+  private async discoverTokenContractsViaLogs(address: string): Promise<Set<string>> {
+    try {
+      const currentBlock = await this.provider.getBlockNumber();
+      const startBlock = Math.max(0, currentBlock - 500000);
+
+      console.log(`[${this.chainId}] Scanning Transfer logs from block ${startBlock} to ${currentBlock}`);
+
+      // ERC20 Transfer event: Transfer(address indexed from, address indexed to, uint256 value)
+      const transferTopic = ethers.id('Transfer(address,address,uint256)');
+      const addressTopic = ethers.zeroPadValue(address, 32);
+
+      // Query for incoming transfers (to this address)
+      const incomingLogs = await this.provider.getLogs({
+        fromBlock: startBlock,
+        toBlock: 'latest',
+        topics: [
+          transferTopic,
+          null, // from (any)
+          addressTopic // to (this address)
+        ]
+      });
+
+      // Query for outgoing transfers (from this address) to discover tokens we might have spent
+      const outgoingLogs = await this.provider.getLogs({
+        fromBlock: startBlock,
+        toBlock: 'latest',
+        topics: [
+          transferTopic,
+          addressTopic, // from (this address)
+          null // to (any)
+        ]
+      });
+
+      // Combine and deduplicate token contract addresses
+      const contracts = new Set<string>();
+
+      for (const log of [...incomingLogs, ...outgoingLogs]) {
+        try {
+          const checksumAddress = ethers.getAddress(log.address);
+          contracts.add(checksumAddress);
+        } catch {
+          // Skip invalid addresses
+        }
+      }
+
+      console.log(`[${this.chainId}] Discovered ${contracts.size} tokens via event logs (${incomingLogs.length} incoming, ${outgoingLogs.length} outgoing)`);
+      return contracts;
+    } catch (error: any) {
+      console.error(`[${this.chainId}] Failed to scan event logs:`, error.message);
+      return new Set(); // Return empty set on failure
+    }
+  }
+
   getCollectConfirms(): number {
     return this.config.collectConfirms || this.config.confirmations;
   }
