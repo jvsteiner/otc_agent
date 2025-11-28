@@ -29,6 +29,8 @@ export interface AssetConfig {
   decimals: number;
   /** Unicode/emoji icon for display */
   icon: string;
+  /** Whether this token is eligible for automatic refunds */
+  refundable: boolean;
   /** Optional custom URL for asset information */
   url?: string;
 }
@@ -194,6 +196,39 @@ export function parseAssetCode(assetCode: string, chainId: string): AssetConfig 
   // Try to find by symbol
   return assetRegistry.assets.find(
     asset => asset.chainId === chainId && asset.assetSymbol === assetCode
+  );
+}
+
+/**
+ * Checks if a token is eligible for automatic refunds from escrow addresses.
+ * This is used by the refund scanner to determine which discovered tokens
+ * should be automatically returned to payback addresses.
+ *
+ * @param chainId - The blockchain to check
+ * @param contractAddress - The contract address for ERC20/SPL tokens (optional for native assets)
+ * @returns true if the token is whitelisted for automatic refunds
+ *
+ * @example
+ * isRefundableToken('ETH') // true for native ETH
+ * isRefundableToken('POLYGON', '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359') // true for USDC on Polygon
+ * isRefundableToken('POLYGON', '0x32898BE3Deab4d9D25331b980e77cD5e35cBb265') // false for fake USDC scam token
+ */
+export function isRefundableToken(chainId: string, contractAddress?: string): boolean {
+  // For native assets (no contract address)
+  if (!contractAddress) {
+    return assetRegistry.assets.some(
+      asset => asset.chainId === chainId &&
+               asset.native === true &&
+               asset.refundable === true
+    );
+  }
+
+  // For ERC20/SPL tokens (with contract address)
+  const normalized = contractAddress.toLowerCase();
+  return assetRegistry.assets.some(
+    asset => asset.chainId === chainId &&
+             asset.contractAddress?.toLowerCase() === normalized &&
+             asset.refundable === true
   );
 }
 

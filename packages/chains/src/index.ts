@@ -19,3 +19,4 @@ export * from './PluginManager';
 // Utilities
 export * from './utils/UnicityKeyManager';
 export * from './utils/EtherscanAPI';
+export * from './utils/VestingTracer';

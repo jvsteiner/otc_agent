@@ -6282,6 +6282,10 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
           let collected = parseFloat(collection?.collectedByAsset?.[assetCode] || '0');
           let liveBalance = null;
 
+          // For vested/unvested assets, we MUST use backend's classified balance
+          // Raw blockchain balance doesn't account for vesting classification
+          const isVestedAsset = assetCode.includes('ALPHA_VESTED') || assetCode.includes('ALPHA_UNVESTED');
+
           if (escrowAddress && chainId) {
             try {
               if (chainId === 'UNICITY') {
@@ -6291,7 +6295,11 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                   // Only use live balance if we actually got a valid response
                   if (balanceInfo && typeof balanceInfo.total === 'number') {
                     liveBalance = balanceInfo.total;
-                    collected = liveBalance; // Always use blockchain data
+                    // For vested/unvested assets, DON'T override with raw balance
+                    // The backend's collectedByAsset has proper vesting classification
+                    if (!isVestedAsset) {
+                      collected = liveBalance; // Only use blockchain data for regular ALPHA
+                    }
 
                     // Add live indicator
                     const liveIndicator = document.createElement('span');
@@ -6304,6 +6312,23 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                     if (existing) existing.remove();
 
                     balanceEl.appendChild(liveIndicator);
+
+                    // Show vesting mismatch warning if escrow has funds but none match vesting requirement
+                    if (isVestedAsset && liveBalance > 0 && collected === 0) {
+                      const vestingWarning = document.createElement('div');
+                      vestingWarning.style.cssText = 'color: #dc2626; font-size: 11px; margin-top: 4px; padding: 4px 8px; background: #fef2f2; border-radius: 4px;';
+                      vestingWarning.innerHTML = '⚠️ ' + liveBalance.toFixed(4) + ' ALPHA in escrow but wrong vesting type';
+                      vestingWarning.id = type + 'VestingWarning';
+                      vestingWarning.title = 'The deposited ALPHA does not match the required vesting classification. It will be refunded when the deal expires.';
+
+                      const existingWarning = document.getElementById(type + 'VestingWarning');
+                      if (existingWarning) existingWarning.remove();
+
+                      balanceEl.parentElement.appendChild(vestingWarning);
+                    } else {
+                      const existingWarning = document.getElementById(type + 'VestingWarning');
+                      if (existingWarning) existingWarning.remove();
+                    }
                   }
 
                   // Show confirmation status if there are unconfirmed funds

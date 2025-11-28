@@ -32,6 +32,20 @@ const ASSET_METADATA: Record<string, AssetMetadata> = {
     isNative: true,
     chainId: 'UNICITY',
   },
+  'ALPHA_VESTED@UNICITY': {
+    symbol: 'ALPHA_VESTED',
+    decimals: 8,
+    minSendable: '0.00001', // 1000 satoshis
+    isNative: true,
+    chainId: 'UNICITY',
+  },
+  'ALPHA_UNVESTED@UNICITY': {
+    symbol: 'ALPHA_UNVESTED',
+    decimals: 8,
+    minSendable: '0.00001', // 1000 satoshis
+    isNative: true,
+    chainId: 'UNICITY',
+  },
   'ETH': {
     symbol: 'ETH',
     decimals: 18,

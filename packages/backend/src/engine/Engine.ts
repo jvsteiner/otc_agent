@@ -1890,12 +1890,13 @@ export class Engine {
     }
 
     // Submit the transaction with explicit nonce if EVM
+    // Include purpose in options for chain plugins that need it (e.g., Unicity vesting)
     const tx = await plugin.send(
       item.asset,
       fromAccountWithKey,
       item.to,
       item.amount,
-      txOptions
+      { ...txOptions, purpose: item.purpose }
     );
 
     // SANITY CHECK: Verify nonce is not already used by another queue item
@@ -3823,12 +3824,13 @@ export class Engine {
       }
 
       // Submit the transaction with explicit nonce if EVM
+      // Include purpose in options for chain plugins that need it (e.g., Unicity vesting)
       const tx = await plugin.send(
         item.asset,
         fromAccountWithKey,
         item.to,
         item.amount,
-        txOptions
+        { ...txOptions, purpose: item.purpose }
       );
 
       // SANITY CHECK: Verify nonce is not already used by another queue item
@@ -4031,8 +4033,10 @@ export class Engine {
       }
 
       // Resubmit with same nonce but higher gas price
+      // Include purpose in options for chain plugins that need it (e.g., Unicity vesting)
       const txOptions = {
         nonce: item.originalNonce,
+        purpose: item.purpose,
         ...newGasPrice
       };
 

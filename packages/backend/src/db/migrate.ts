@@ -398,6 +398,108 @@ export function runMigrations(db: DB): void {
             }
             console.log('Migration already applied, continuing...');
           }
+        }
+        // Special handling for events deduplication migration
+        else if (file === '011_add_events_deduplication.sql') {
+          try {
+            console.log('Running migration: 011_add_events_deduplication.sql');
+
+            // Check if events table exists
+            const eventsTableExists = db.prepare(
+              "SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='events'"
+            ).get() as { count: number };
+
+            if (eventsTableExists.count > 0) {
+              // Check which columns already exist
+              const dedupeColumns = ['category', 'occurrences', 'firstSeen', 'lastSeen', 'fingerprint'];
+              for (const col of dedupeColumns) {
+                const checkColumn = db.prepare(
+                  "SELECT COUNT(*) as count FROM pragma_table_info('events') WHERE name = ?"
+                ).get(col) as { count: number };
+
+                if (checkColumn.count === 0) {
+                  console.log(`  Adding ${col} column to events`);
+
+                  if (col === 'category') {
+                    db.exec("ALTER TABLE events ADD COLUMN category TEXT DEFAULT 'INFO'");
+                  } else if (col === 'occurrences') {
+                    db.exec('ALTER TABLE events ADD COLUMN occurrences INTEGER DEFAULT 1');
+                  } else if (col === 'firstSeen') {
+                    db.exec('ALTER TABLE events ADD COLUMN firstSeen TEXT');
+                  } else if (col === 'lastSeen') {
+                    db.exec('ALTER TABLE events ADD COLUMN lastSeen TEXT');
+                  } else if (col === 'fingerprint') {
+                    db.exec('ALTER TABLE events ADD COLUMN fingerprint TEXT');
+                  }
+                } else {
+                  console.log(`  Column ${col} already exists, skipping`);
+                }
+              }
+
+              // Create index (IF NOT EXISTS is safe)
+              db.exec('CREATE INDEX IF NOT EXISTS idx_events_fingerprint ON events(dealId, fingerprint, category)');
+
+              console.log('Events deduplication migration completed successfully');
+            } else {
+              console.log('  events table does not exist yet, skipping');
+            }
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
+              throw err;
+            }
+            console.log('Migration already applied, continuing...');
+          }
+        }
+        // Special handling for vesting cache migration
+        else if (file === '012_add_vesting_cache.sql') {
+          try {
+            console.log('Running migration: 012_add_vesting_cache.sql');
+
+            // Create the vesting cache table (IF NOT EXISTS is safe)
+            db.exec(`
+              CREATE TABLE IF NOT EXISTS utxo_vesting_cache (
+                txid TEXT PRIMARY KEY,
+                is_coinbase INTEGER NOT NULL DEFAULT 0,
+                coinbase_block_height INTEGER,
+                parent_txid TEXT,
+                vesting_status TEXT NOT NULL DEFAULT 'pending',
+                traced_at TEXT NOT NULL,
+                error_message TEXT,
+                CHECK (vesting_status IN ('vested', 'unvested', 'unknown', 'pending', 'tracing_failed'))
+              )
+            `);
+            db.exec('CREATE INDEX IF NOT EXISTS idx_vesting_status ON utxo_vesting_cache(vesting_status)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_vesting_coinbase ON utxo_vesting_cache(is_coinbase, coinbase_block_height) WHERE is_coinbase = 1');
+
+            // Check if escrow_deposits table exists
+            const depositsTableExists = db.prepare(
+              "SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='escrow_deposits'"
+            ).get() as { count: number };
+
+            if (depositsTableExists.count > 0) {
+              // Check which columns already exist
+              const vestingColumns = ['vesting_status', 'coinbase_block_height'];
+              for (const col of vestingColumns) {
+                const checkColumn = db.prepare(
+                  "SELECT COUNT(*) as count FROM pragma_table_info('escrow_deposits') WHERE name = ?"
+                ).get(col) as { count: number };
+
+                if (checkColumn.count === 0) {
+                  console.log(`  Adding ${col} column to escrow_deposits`);
+                  db.exec(`ALTER TABLE escrow_deposits ADD COLUMN ${col} ${col === 'coinbase_block_height' ? 'INTEGER' : 'TEXT'}`);
+                } else {
+                  console.log(`  Column ${col} already exists, skipping`);
+                }
+              }
+            }
+
+            console.log('Vesting cache migration completed successfully');
+          } catch (err: any) {
+            if (!err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
+              throw err;
+            }
+            console.log('Vesting cache migration already applied, continuing...');
+          }
         } else {
           db.exec(migration);
         }

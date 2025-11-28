@@ -21,9 +21,18 @@ export type ChainId =
  * Can be a native token, a token with chain suffix, or a contract address.
  * @example 'ETH' | 'ALPHA@UNICITY' | 'ERC20:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
  */
+/**
+ * Vesting status for Unicity ALPHA UTXOs.
+ * Determined by tracing UTXO back to its coinbase origin block.
+ * Block <= 280,000 = vested, block > 280,000 = unvested.
+ */
+export type VestingStatus = 'vested' | 'unvested' | 'unknown' | 'pending' | 'tracing_failed';
+
 export type AssetCode =
   | 'ALPHA' // native Alpha on Unicity (without chain suffix)
   | 'ALPHA@UNICITY' // alias to native Alpha on Unicity
+  | 'ALPHA_VESTED' | 'ALPHA_VESTED@UNICITY' // vested Alpha (coinbase block <= 280,000)
+  | 'ALPHA_UNVESTED' | 'ALPHA_UNVESTED@UNICITY' // unvested Alpha (coinbase block > 280,000)
   | 'ALPHA@ETH'
   | 'ETH' | 'ETH@ETH' // native ETH on Ethereum
   | 'MATIC' | 'MATIC@POLYGON' // native MATIC on Polygon
@@ -152,6 +161,10 @@ export interface EscrowDeposit {
   blockTime?: string;  // ISO
   /** Current number of confirmations */
   confirms: number;
+  /** Vesting status for Unicity ALPHA UTXOs (traced to coinbase origin) */
+  vestingStatus?: VestingStatus;
+  /** Block height of the coinbase transaction where this UTXO originated */
+  coinbaseBlockHeight?: number;
 }
 
 /**

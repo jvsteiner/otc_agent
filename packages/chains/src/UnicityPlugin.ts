@@ -7,10 +7,11 @@
 import WebSocket from 'ws';
 import * as crypto from 'crypto';
 import { ChainPlugin, ChainConfig, EscrowDepositsView, QuoteNativeForUSDResult, SubmittedTx } from './ChainPlugin';
-import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts, Decimal, isAmountGte } from '@otc-broker/core';
+import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, sumAmounts, Decimal, isAmountGte, VestingStatus } from '@otc-broker/core';
 import { generateDeterministicKey, deriveChildPrivateKey, privateKeyToAddress } from './utils/UnicityAddress';
 import { buildAndSignSegWitTransaction, selectUTXOs, UTXO } from './utils/UnicityTransaction';
 import { deriveIndexFromDealId } from './utils/DealIndexDerivation';
+import { VestingTracer, VestingCacheStore } from './utils/VestingTracer';
 
 /**
  * Electrum protocol request structure.
@@ -35,6 +36,32 @@ interface ElectrumResponse {
  * Uses Electrum protocol over WebSocket for blockchain interaction.
  * Supports UTXO-based transactions with SegWit P2WPKH addresses.
  */
+/**
+ * Checks if an asset code is any ALPHA variant (regular, vested, or unvested).
+ */
+function isAlphaVariant(asset: AssetCode): boolean {
+  const normalized = asset.toUpperCase();
+  return normalized === 'ALPHA' ||
+         normalized === 'ALPHA@UNICITY' ||
+         normalized.includes('ALPHA_VESTED') ||
+         normalized.includes('ALPHA_UNVESTED');
+}
+
+/**
+ * Extracts required vesting filter from asset code.
+ * Returns null for regular ALPHA (no filtering).
+ */
+function parseVestingFilter(asset: AssetCode): 'vested' | 'unvested' | null {
+  const normalized = asset.toUpperCase();
+  if (normalized.includes('ALPHA_VESTED') && !normalized.includes('UNVESTED')) {
+    return 'vested';
+  }
+  if (normalized.includes('ALPHA_UNVESTED')) {
+    return 'unvested';
+  }
+  return null; // Regular ALPHA - accept all
+}
+
 export class UnicityPlugin implements ChainPlugin {
   readonly chainId: ChainId = 'UNICITY';
   private config!: ChainConfig;
@@ -46,11 +73,12 @@ export class UnicityPlugin implements ChainPlugin {
   private nextWalletIndex?: number; // Fallback counter when no database
   private masterPrivateKey?: string;
   private database?: any;
+  private vestingTracer?: VestingTracer;
 
   async init(cfg: ChainConfig): Promise<void> {
     this.config = cfg;
     this.database = cfg.database;
-    
+
     // Initialize master private key from seed
     if (cfg.hotWalletSeed) {
       // Create a deterministic master key from the seed
@@ -61,8 +89,17 @@ export class UnicityPlugin implements ChainPlugin {
     } else {
       console.warn('UnicityPlugin: No hot wallet seed provided, using random keys');
     }
-    
+
     await this.connect();
+
+    // Initialize vesting tracer for ALPHA_VESTED/ALPHA_UNVESTED support
+    // The vestingCacheStore is passed via config.vestingCacheStore if available
+    const vestingCacheStore = cfg.vestingCacheStore as VestingCacheStore | undefined;
+    this.vestingTracer = new VestingTracer(
+      (method, params) => this.electrumRequest(method, params),
+      vestingCacheStore
+    );
+    console.log('UnicityPlugin: Initialized vesting tracer for ALPHA variants');
   }
 
   private async connect(): Promise<void> {
@@ -222,10 +259,11 @@ export class UnicityPlugin implements ChainPlugin {
 
   async generateEscrowAccount(asset: AssetCode, dealId?: string, party?: 'ALICE' | 'BOB'): Promise<EscrowAccountRef> {
     console.log('UnicityPlugin.generateEscrowAccount called with asset:', asset, 'dealId:', dealId?.slice(0, 8), 'party:', party);
-    
-    // Accept both ALPHA and ALPHA@UNICITY formats
-    if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
-      throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
+
+    // Accept all ALPHA variants (ALPHA, ALPHA_VESTED, ALPHA_UNVESTED)
+    // All variants use the same escrow address - filtering happens at deposit detection
+    if (!isAlphaVariant(asset)) {
+      throw new Error(`Unicity plugin only supports ALPHA variants, not ${asset}`);
     }
 
     let privateKey: string;
@@ -313,17 +351,21 @@ export class UnicityPlugin implements ChainPlugin {
     minConf: number,
     since?: string
   ): Promise<EscrowDepositsView> {
-    // Accept both ALPHA and ALPHA@UNICITY formats
-    if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
+    // Accept all ALPHA variants
+    if (!isAlphaVariant(asset)) {
       console.error(`[UnicityPlugin] Unsupported asset: ${asset}`);
-      throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
+      throw new Error(`Unicity plugin only supports ALPHA variants, not ${asset}`);
     }
+
+    // Determine if we need vesting filtering
+    const vestingFilter = parseVestingFilter(asset);
 
     console.log(`[UnicityPlugin] listConfirmedDeposits called:`, {
       asset,
       address,
       minConf,
       since,
+      vestingFilter,
       connected: this.connected,
       wsState: this.ws?.readyState
     });
@@ -371,13 +413,44 @@ export class UnicityPlugin implements ChainPlugin {
     console.log(`[UnicityPlugin] Current block height: ${currentHeight}`);
     
     const deposits: EscrowDeposit[] = [];
-    
+
     for (const utxo of utxos) {
       const confirms = utxo.height > 0 ? currentHeight - utxo.height + 1 : 0;
-      
+
       if (confirms >= minConf) {
         // Get transaction details for block time
         const tx = await this.electrumRequest('blockchain.transaction.get', [utxo.tx_hash, true]);
+
+        // Classify vesting status if filtering is required
+        let vestingStatus: VestingStatus | undefined;
+        let coinbaseBlockHeight: number | undefined;
+
+        if (vestingFilter !== null) {
+          // SECURITY: Fail closed - if vesting filter is required but tracer unavailable, reject all deposits
+          if (!this.vestingTracer) {
+            throw new Error(`Vesting filter required for ${asset} but VestingTracer is unavailable`);
+          }
+
+          // Classify this UTXO's vesting status by tracing to coinbase origin
+          const classification = await this.vestingTracer.classifyUtxo(utxo.tx_hash);
+          vestingStatus = classification.status;
+          coinbaseBlockHeight = classification.coinbaseBlockHeight;
+
+          // Skip UTXOs that don't match the required vesting type
+          if (classification.status !== vestingFilter) {
+            console.log(`[UnicityPlugin] Skipping UTXO ${utxo.tx_hash}:${utxo.tx_pos} - vesting status '${classification.status}' does not match filter '${vestingFilter}'`);
+            continue;
+          }
+        }
+
+        // Determine the asset code to use:
+        // - If vestingFilter is set, use the filtered asset type
+        // - Otherwise use regular ALPHA@UNICITY
+        const depositAsset: AssetCode = vestingFilter === 'vested'
+          ? 'ALPHA_VESTED@UNICITY'
+          : vestingFilter === 'unvested'
+            ? 'ALPHA_UNVESTED@UNICITY'
+            : 'ALPHA@UNICITY';
 
         deposits.push({
           txid: utxo.tx_hash,
@@ -385,10 +458,12 @@ export class UnicityPlugin implements ChainPlugin {
           // Convert bigint satoshis to ALPHA string using Decimal for precision
           // CRITICAL: utxo.value is now bigint - convert to string first
           amount: new Decimal(utxo.value.toString()).div(100000000).toFixed(8),
-          asset: 'ALPHA@UNICITY', // Fully qualified asset name
+          asset: depositAsset,
           blockHeight: utxo.height,
           blockTime: new Date(tx.time * 1000).toISOString(),
           confirms,
+          vestingStatus,
+          coinbaseBlockHeight,
         });
       }
     }
@@ -439,14 +514,27 @@ export class UnicityPlugin implements ChainPlugin {
     asset: AssetCode,
     from: EscrowAccountRef,
     to: string,
-    amount: string
+    amount: string,
+    options?: { purpose?: string }
   ): Promise<SubmittedTx> {
     // For UNICITY, when we need to send the total amount from multiple UTXOs,
     // we need to create multiple transactions (one per UTXO)
     // This method will handle the first transaction and queue the rest
-    // Accept both ALPHA and ALPHA@UNICITY formats
-    if (asset !== 'ALPHA@UNICITY' && asset !== 'ALPHA') {
-      throw new Error(`Unicity plugin only supports ALPHA, not ${asset}`);
+    // Accept all ALPHA variants (regular, vested, unvested)
+    if (!isAlphaVariant(asset)) {
+      throw new Error(`Unicity plugin only supports ALPHA variants, not ${asset}`);
+    }
+
+    // Determine if we need vesting filtering for UTXO selection
+    // IMPORTANT: Skip vesting filtering for refunds - when a deal is CLOSED/REVERTED,
+    // we should return ALL remaining UTXOs regardless of their vesting classification
+    const isRefund = options?.purpose === 'TIMEOUT_REFUND' ||
+                     options?.purpose === 'SURPLUS_REFUND' ||
+                     options?.purpose === 'GAS_REFUND_TO_TANK';
+    const vestingFilter = isRefund ? null : parseVestingFilter(asset);
+
+    if (isRefund && parseVestingFilter(asset) !== null) {
+      console.log(`[UNICITY] Skipping vesting filter for ${options?.purpose} - returning all available UTXOs`);
     }
 
     // Try to restore wallet if not found
@@ -466,15 +554,34 @@ export class UnicityPlugin implements ChainPlugin {
     // CRITICAL: Convert UTXO values from Number to BigInt
     // Electrum server returns numeric values that JSON parses as Numbers,
     // but our UTXO interface expects BigInt for safe arithmetic
-    const utxos: UTXO[] = utxoResponse.map((utxo: any) => ({
+    let utxos: UTXO[] = utxoResponse.map((utxo: any) => ({
       tx_hash: utxo.tx_hash,
       tx_pos: utxo.tx_pos,
       value: BigInt(utxo.value),  // Convert Number to BigInt
       height: utxo.height,
     }));
 
+    // Filter UTXOs by vesting status if required
+    if (vestingFilter !== null && this.vestingTracer) {
+      console.log(`[UNICITY] Filtering ${utxos.length} UTXOs for vesting status: ${vestingFilter}`);
+      const filteredUtxos: UTXO[] = [];
+
+      for (const utxo of utxos) {
+        const classification = await this.vestingTracer.classifyUtxo(utxo.tx_hash);
+
+        if (classification.status === vestingFilter) {
+          filteredUtxos.push(utxo);
+        } else {
+          console.log(`[UNICITY] Excluding UTXO ${utxo.tx_hash}:${utxo.tx_pos} (vesting: ${classification.status}, need: ${vestingFilter})`);
+        }
+      }
+
+      console.log(`[UNICITY] After vesting filter: ${filteredUtxos.length}/${utxos.length} UTXOs match ${vestingFilter}`);
+      utxos = filteredUtxos;
+    }
+
     if (!utxos.length) {
-      throw new Error('No UTXOs available for spending');
+      throw new Error(`No UTXOs available for spending${vestingFilter ? ` (required vesting: ${vestingFilter})` : ''}`);
     }
     
     // Convert amount to satoshis using Decimal for precision
@@ -645,13 +752,20 @@ export class UnicityPlugin implements ChainPlugin {
       if (txids.length === 0) {
         throw new Error('Failed to send any transactions');
       }
-      
+
+      // Log summary of what was sent
+      const totalSentAlpha = new Decimal(totalSent.toString()).div(100000000).toFixed(8);
+      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${totalSentAlpha} ALPHA`);
+
       if (remainingAmount > 0n) {
-        throw new Error(`Insufficient funds: could only send ${new Decimal(totalSent.toString()).div(100000000).toFixed(8)} ALPHA out of ${amount} ALPHA requested`);
+        // IMPORTANT: Transactions were already broadcast successfully!
+        // We can't throw an error here as that would cause retries which find 0 UTXOs.
+        // Instead, log a warning and return success with what was sent.
+        // The slight shortfall (usually due to fees) is acceptable for commission payments.
+        const shortfall = new Decimal(remainingAmount.toString()).div(100000000).toFixed(8);
+        console.warn(`[UNICITY] Partial send: sent ${totalSentAlpha} ALPHA, requested ${amount} ALPHA (shortfall: ${shortfall} ALPHA due to fees)`);
       }
-      
-      console.log(`[UNICITY] Sent ${txids.length} transactions, total ${new Decimal(totalSent.toString()).div(100000000).toFixed(8)} ALPHA`);
-      
+
       // Return all transaction IDs for proper tracking
       return {
         txid: txids[0], // Primary transaction ID

@@ -9,7 +9,32 @@
       "contractAddress": null,
       "tokenId": null,
       "decimals": 8,
-      "icon": "🪙"
+      "icon": "🪙",
+      "refundable": true
+    },
+    {
+      "assetName": "Alpha (Vested)",
+      "assetSymbol": "ALPHA_VESTED",
+      "chainId": "UNICITY",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 8,
+      "icon": "🔒",
+      "refundable": true
+    },
+    {
+      "assetName": "Alpha (Unvested)",
+      "assetSymbol": "ALPHA_UNVESTED",
+      "chainId": "UNICITY",
+      "native": true,
+      "type": "NATIVE",
+      "contractAddress": null,
+      "tokenId": null,
+      "decimals": 8,
+      "icon": "🔓",
+      "refundable": true
     },
     {
       "assetName": "Ethereum",
@@ -20,7 +45,8 @@
       "contractAddress": null,
       "tokenId": null,
       "decimals": 18,
-      "icon": "Ξ"
+      "icon": "Ξ",
+      "refundable": true
     },
     {
       "assetName": "Tether USD",
@@ -31,7 +57,8 @@
       "contractAddress": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
       "tokenId": null,
       "decimals": 6,
-      "icon": "₮"
+      "icon": "₮",
+      "refundable": true
     },
     {
       "assetName": "USD Coin",
@@ -42,7 +69,8 @@
       "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
       "tokenId": null,
       "decimals": 6,
-      "icon": "$"
+      "icon": "$",
+      "refundable": true
     },
     {
       "assetName": "Euro Coin",
@@ -53,7 +81,8 @@
       "contractAddress": "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
       "tokenId": null,
       "decimals": 6,
-      "icon": "€"
+      "icon": "€",
+      "refundable": true
     },
     {
       "assetName": "Polygon",
@@ -64,7 +93,8 @@
       "contractAddress": null,
       "tokenId": null,
       "decimals": 18,
-      "icon": "Ⓜ"
+      "icon": "Ⓜ",
+      "refundable": true
     },
     {
       "assetName": "Tether USD (Polygon)",
@@ -75,7 +105,8 @@
       "contractAddress": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
       "tokenId": null,
       "decimals": 6,
-      "icon": "₮"
+      "icon": "₮",
+      "refundable": true
     },
     {
       "assetName": "USD Coin (Polygon)",
@@ -86,7 +117,8 @@
       "contractAddress": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
       "tokenId": null,
       "decimals": 6,
-      "icon": "$"
+      "icon": "$",
+      "refundable": true
     },
     {
       "assetName": "Euro Coin (Polygon)",
@@ -97,7 +129,8 @@
       "contractAddress": "0x4e3Decbb3645551B8A19f0eA1678079FCB33fB4c",
       "tokenId": null,
       "decimals": 6,
-      "icon": "€"
+      "icon": "€",
+      "refundable": true
     },
     {
       "assetName": "Ethereum (Base)",
@@ -108,7 +141,8 @@
       "contractAddress": null,
       "tokenId": null,
       "decimals": 18,
-      "icon": "Ξ"
+      "icon": "Ξ",
+      "refundable": true
     },
     {
       "assetName": "USD Coin (Base)",
@@ -119,7 +153,8 @@
       "contractAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       "tokenId": null,
       "decimals": 6,
-      "icon": "$"
+      "icon": "$",
+      "refundable": true
     },
     {
       "assetName": "Dai (Base)",
@@ -130,7 +165,8 @@
       "contractAddress": "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
       "tokenId": null,
       "decimals": 18,
-      "icon": "◈"
+      "icon": "◈",
+      "refundable": true
     },
     {
       "assetName": "Solana",
@@ -141,7 +177,8 @@
       "contractAddress": null,
       "tokenId": null,
       "decimals": 9,
-      "icon": "◎"
+      "icon": "◎",
+      "refundable": true
     },
     {
       "assetName": "Tether USD (Solana)",
@@ -152,7 +189,8 @@
       "contractAddress": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
       "tokenId": null,
       "decimals": 6,
-      "icon": "₮"
+      "icon": "₮",
+      "refundable": true
     },
     {
       "assetName": "USD Coin (Solana)",
@@ -163,7 +201,8 @@
       "contractAddress": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       "tokenId": null,
       "decimals": 6,
-      "icon": "$"
+      "icon": "$",
+      "refundable": true
     },
     {
       "assetName": "Ethereum (Sepolia Testnet)",
@@ -174,7 +213,8 @@
       "contractAddress": null,
       "tokenId": null,
       "decimals": 18,
-      "icon": "🧪"
+      "icon": "🧪",
+      "refundable": true
     },
     {
       "assetName": "USD Coin (Sepolia Testnet)",
@@ -185,7 +225,8 @@
       "contractAddress": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
       "tokenId": null,
       "decimals": 6,
-      "icon": "💵"
+      "icon": "💵",
+      "refundable": true
     },
     {
       "assetName": "BNB",
@@ -196,7 +237,8 @@
       "contractAddress": null,
       "tokenId": null,
       "decimals": 18,
-      "icon": "💎"
+      "icon": "💎",
+      "refundable": true
     },
     {
       "assetName": "Tether USD (BSC)",
@@ -207,7 +249,8 @@
       "contractAddress": "0x55d398326f99059fF775485246999027B3197955",
       "tokenId": null,
       "decimals": 18,
-      "icon": "₮"
+      "icon": "₮",
+      "refundable": true
     }
   ],
   "supportedChains": [

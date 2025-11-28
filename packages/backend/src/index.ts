@@ -20,6 +20,7 @@ import { RecoveryManager } from './services/RecoveryManager';
 import { loadSslCertificates, getSslSetupInfo } from './config/ssl-loader';
 import { getServerConfig, validateServerConfig, logServerConfig, applyServerConfig } from './config/server-config';
 import { HttpRedirectServer } from './services/http-redirect';
+import { VestingCacheRepository } from './db/repositories/VestingCacheRepository';
 
 /**
  * Main entry point for the backend server.
@@ -73,7 +74,11 @@ async function main() {
   
   // Initialize plugin manager with database for wallet index persistence
   const pluginManager = new PluginManager(db);
-  
+
+  // Create vesting cache repository for ALPHA_VESTED/ALPHA_UNVESTED support
+  const vestingCacheRepository = new VestingCacheRepository(db);
+  console.log('VestingCacheRepository initialized for ALPHA vesting support');
+
   // Register Unicity plugin (mandatory)
   await pluginManager.registerPlugin({
     chainId: 'UNICITY',
@@ -82,6 +87,7 @@ async function main() {
     collectConfirms: parseInt(process.env.UNICITY_COLLECT_CONFIRMS || '6'),
     operator: { address: process.env.UNICITY_OPERATOR_ADDRESS || 'UNI_OPERATOR_ADDRESS' },
     hotWalletSeed: process.env.HOT_WALLET_SEED,
+    vestingCacheStore: vestingCacheRepository, // For ALPHA_VESTED/ALPHA_UNVESTED tracing
   });
   
   // Register ETH plugin (always enabled with default or configured RPC)
