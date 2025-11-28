@@ -5,7 +5,7 @@
  */
 
 import { ethers, ContractTransactionResponse } from 'ethers';
-import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, parseAssetCode } from '@otc-broker/core';
+import { ChainId, AssetCode, EscrowAccountRef, EscrowDeposit, parseAssetCode, isRefundableToken } from '@otc-broker/core';
 import {
   ChainPlugin,
   ChainConfig,
@@ -2073,7 +2073,20 @@ export class EthereumPlugin implements ChainPlugin {
     const tokenContracts = await this.discoverTokenContracts(address);
     console.log(`[${this.chainId}] Found ${tokenContracts.size} unique token contracts`);
 
-    // Step 2: Query balances for each token
+    // Step 1.5: Filter for refundable tokens only (whitelist check)
+    const refundableTokens = new Set<string>();
+    for (const tokenAddress of tokenContracts) {
+      if (isRefundableToken(this.chainId, tokenAddress)) {
+        refundableTokens.add(tokenAddress);
+      }
+    }
+    const filteredCount = tokenContracts.size - refundableTokens.size;
+    if (filteredCount > 0) {
+      console.log(`[${this.chainId}] Filtered out ${filteredCount} non-refundable tokens`);
+    }
+    console.log(`[${this.chainId}] Processing ${refundableTokens.size} refundable tokens`);
+
+    // Step 2: Query balances for each refundable token
     const balances: Array<{
       asset: AssetCode;
       amount: string;
@@ -2081,7 +2094,7 @@ export class EthereumPlugin implements ChainPlugin {
       contractAddress: string;
     }> = [];
 
-    for (const tokenAddress of tokenContracts) {
+    for (const tokenAddress of refundableTokens) {
       try {
         // Query token balance
         const tokenContract = new ethers.Contract(

@@ -1,7 +1,13 @@
 /**
- * @fileoverview Etherscan API wrapper for fetching transaction history.
+ * @fileoverview Etherscan API V2 wrapper for fetching transaction history.
  * Provides methods to query transaction and token transfer history from Etherscan
- * and compatible block explorers (Polygonscan, Basescan, etc).
+ * using the unified V2 API endpoint (https://api.etherscan.io/v2/api).
+ *
+ * V2 API Features:
+ * - Single unified endpoint for all 60+ supported chains
+ * - Chain selection via chainid parameter
+ * - Backward-compatible response format
+ * - Single API key works across all chains
  */
 
 import { ethers } from 'ethers';
@@ -49,11 +55,14 @@ interface EtherscanResponse {
 }
 
 /**
- * Wrapper class for Etherscan and compatible APIs.
+ * Wrapper class for Etherscan API V2.
+ * Uses the unified V2 endpoint (https://api.etherscan.io/v2/api) with chainid parameter.
+ * Supports Ethereum, Polygon, Sepolia, BSC, Base, and 60+ other chains.
  * Handles transaction history queries without requiring an API key for basic operations.
  */
 export class EtherscanAPI {
   private apiUrl: string;
+  private chainIdNumber: number;
   private apiKey?: string;
   private provider?: ethers.JsonRpcProvider;
 
@@ -73,28 +82,31 @@ export class EtherscanAPI {
     const envKey = envKeyMap[chainId.toUpperCase()];
     this.apiKey = apiKey || (envKey && process.env[envKey]) || undefined;
 
-    // Map chain IDs to Etherscan API endpoints
+    // Etherscan API V2 unified endpoint
+    this.apiUrl = 'https://api.etherscan.io/v2/api';
+
+    // Map chain IDs to Etherscan V2 chain ID numbers
     switch (chainId.toUpperCase()) {
       case 'ETH':
       case 'ETHEREUM':
-        this.apiUrl = 'https://api.etherscan.io/api';
+        this.chainIdNumber = 1;
         break;
       case 'SEPOLIA':
-        this.apiUrl = 'https://api-sepolia.etherscan.io/api';
+        this.chainIdNumber = 11155111;
         break;
       case 'POLYGON':
       case 'MATIC':
-        this.apiUrl = 'https://api.polygonscan.com/api';
+        this.chainIdNumber = 137;
         break;
       case 'BASE':
-        this.apiUrl = 'https://api.basescan.org/api';
+        this.chainIdNumber = 8453;
         break;
       case 'BSC':
-        this.apiUrl = 'https://api.bscscan.com/api';
+        this.chainIdNumber = 56;
         break;
       default:
-        // Default to Ethereum
-        this.apiUrl = 'https://api.etherscan.io/api';
+        // Default to Ethereum mainnet
+        this.chainIdNumber = 1;
     }
   }
 
@@ -105,6 +117,7 @@ export class EtherscanAPI {
   ): Promise<Transaction[]> {
     try {
       const params = new URLSearchParams({
+        chainid: this.chainIdNumber.toString(),
         module: 'account',
         action: 'txlist',
         address: address,
@@ -233,6 +246,7 @@ export class EtherscanAPI {
   }>> {
     try {
       const params = new URLSearchParams({
+        chainid: this.chainIdNumber.toString(),
         module: 'account',
         action: 'tokentx',
         contractaddress: tokenAddress,
@@ -308,6 +322,7 @@ export class EtherscanAPI {
   }>> {
     try {
       const params = new URLSearchParams({
+        chainid: this.chainIdNumber.toString(),
         module: 'account',
         action: 'tokentx',
         address: address,  // No contractaddress filter - get ALL tokens
@@ -393,9 +408,10 @@ export class EtherscanAPI {
 
         logs = receipt.logs;
       } else {
-        // Fallback to deprecated Etherscan proxy API (may fail)
-        console.warn('Using deprecated Etherscan API - consider providing an RPC provider');
+        // Fallback to Etherscan proxy API V2
+        console.warn('Using Etherscan API proxy module - consider providing an RPC provider for better performance');
         const params = new URLSearchParams({
+          chainid: this.chainIdNumber.toString(),
           module: 'proxy',
           action: 'eth_getTransactionReceipt',
           txhash: txHash,
@@ -486,6 +502,7 @@ export class EtherscanAPI {
   }>> {
     try {
       const params = new URLSearchParams({
+        chainid: this.chainIdNumber.toString(),
         module: 'account',
         action: 'txlistinternal',
         txhash: txHash,

@@ -5110,20 +5110,26 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
             const currentBlock = await provider.getBlockNumber();
             const transactions = [];
             
-            // Try to fetch from Etherscan/Polygonscan API
-            let apiUrl;
+            // Try to fetch from Etherscan API V2 (unified endpoint for all chains)
+            let apiUrl = 'https://api.etherscan.io/v2/api';
+            let chainIdNumber;
             if (chainId === 'POLYGON') {
-              apiUrl = 'https://api.polygonscan.com/api';
+              chainIdNumber = 137;
             } else if (chainId === 'ETH') {
-              apiUrl = 'https://api.etherscan.io/api';
+              chainIdNumber = 1;
             } else if (chainId === 'BASE') {
-              apiUrl = 'https://api.basescan.org/api';
+              chainIdNumber = 8453;
+            } else if (chainId === 'SEPOLIA') {
+              chainIdNumber = 11155111;
+            } else if (chainId === 'BSC') {
+              chainIdNumber = 56;
             }
-            
-            if (apiUrl) {
+
+            if (chainIdNumber) {
               try {
-                // Fetch transaction list for the address
+                // Fetch transaction list for the address using V2 API
                 const params = new URLSearchParams({
+                  chainid: chainIdNumber.toString(),
                   module: 'account',
                   action: 'txlist',
                   address: address,
@@ -5131,7 +5137,7 @@ Note: Any state can move to REVERTED if timeout occurs or issues arise</code></p
                   endblock: currentBlock.toString(),
                   sort: 'desc'
                 });
-                
+
                 // Note: Some networks may require an API key for V2 endpoints
                 // For now, we'll try without an API key and handle errors gracefully
                 const response = await fetch(\`\${apiUrl}?\${params.toString()}\`);

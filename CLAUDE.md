@@ -104,7 +104,8 @@ forge install
   - `src/types.ts`: Central type definitions (Deal, Party, Stage, etc.)
   - `src/decimal.ts`: Decimal math helpers - ALWAYS use for amounts
   - `src/invariants.ts`: Deal validation logic and stage transition rules
-  - `src/assetConfig.ts`: Asset metadata (decimals, known assets)
+  - `src/assetConfig.ts`: Asset registry - loads from `src/config/assets.json`
+  - `src/config/assets.json`: Static asset/chain configuration (decimals, contracts, icons)
 
 - `packages/chains`: ChainPlugin interface and adapters (Unicity, EVM, Solana, BTC)
   - `src/ChainPlugin.ts`: Core interface all chain adapters implement
@@ -117,6 +118,9 @@ forge install
   - `src/engine/TankManager.ts`: Gas funding system for EVM chains
   - `src/db/`: Database layer with repositories (deals, deposits, queue, etc.)
   - `src/api/rpc-server.ts`: JSON-RPC endpoint implementations
+  - `src/services/GasPriceOracle.ts`: Dynamic gas price management per chain
+  - `src/services/RecoveryManager.ts`: Refund scanning for closed/reverted deals
+  - `src/services/AdminService.ts`: Admin dashboard data aggregation
 
 - `packages/web`: Static/SSR minimal pages for deal creation and personal pages
 
@@ -134,9 +138,12 @@ forge install
 SQLite database with key tables:
 - `deals`: Deal state and JSON snapshots
 - `escrow_deposits`: Confirmed deposits tracking (deduped by dealId/txid/idx)
-- `queue_items`: Transaction broadcast queue
+- `queue_items`: Transaction broadcast queue with phase-based processing
 - `accounts`: Nonce/UTXO state tracking
-- `wallets`: HD wallet index persistence
+- `leases`: Per-deal processing locks and global recovery locks
+- `events`: Audit trail with deduplication support (fingerprint-based)
+- `notifications`: Idempotent notification tracking
+- `oracle_quotes`: Cached price oracle data
 
 ### Database Setup
 Always initialize SQLite with these pragmas:
@@ -213,6 +220,7 @@ CREATED → COLLECTION → WAITING → SWAP → CLOSED (or REVERTED)
 - `otc.fillPartyDetails`: Set party addresses and email
 - `otc.status`: Get deal status
 - `otc.listDeals`: List deals with filters
+- `otc.listAssets`: Get available assets with chain info and decimals
 - `otc.sendInvite`: Send invitation email to party
 - `otc.setPrice`: Manually set oracle price for testing (dev only)
 
@@ -380,39 +388,60 @@ The backend can optionally deploy on-chain escrow contracts for EVM chains:
 - On-chain verification provides additional security layer
 - Smart contract state mirrors off-chain deal state machine
 
+## Runtime Paths & Files
+
+### Database Paths
+Database path depends on production mode (determined by `production-config.ts`).
+**Important**: Paths are relative to the working directory when the process starts (usually `packages/backend/`):
+- **Production mode**: `packages/backend/data/otc-production.db` (from `DB_PATH_PRODUCTION` env var)
+- **Development mode**: `packages/backend/data/otc.db` (from `DB_PATH` env var)
+- WAL files: `*.db-wal`, `*.db-shm` alongside the main database
+- **Note**: The `data/` directory at repo root may contain stale/empty database files
+
+### Log Files
+Production logs are written to `logs/` directory:
+- **Pattern**: `logs/otc-prod-YYYYMMDD-HHMMSS.log`
+- **Latest log**: Sort by date to find most recent (e.g., `ls -lt logs/ | head`)
+- Logs are created by `run-prod.sh` which redirects stdout/stderr
+
 ## Debugging & Development Tools
 
 ### Inspecting Deal State
+Use Node.js with better-sqlite3 (sqlite3 CLI may not be installed):
 ```bash
-# Query deal details from database
-sqlite3 ./data/otc.db "SELECT * FROM deals WHERE id='<deal-id>';"
+# Query database with node (use packages/backend/data/ path!)
+node -e "const db = require('better-sqlite3')('./packages/backend/data/otc-production.db'); console.log(JSON.stringify(db.prepare('SELECT * FROM deals WHERE dealId=?').get('DEAL_ID'), null, 2));"
 
-# Check queue items for a deal
-sqlite3 ./data/otc.db "SELECT * FROM queue_items WHERE dealId='<deal-id>';"
+# Check pending queue items
+node -e "const db = require('better-sqlite3')('./packages/backend/data/otc-production.db'); console.log(db.prepare('SELECT id, dealId, chainId, purpose, status FROM queue_items WHERE status=\\'PENDING\\'').all());"
 
 # View escrow deposits
-sqlite3 ./data/otc.db "SELECT * FROM escrow_deposits WHERE dealId='<deal-id>';"
+node -e "const db = require('better-sqlite3')('./packages/backend/data/otc-production.db'); console.log(db.prepare('SELECT * FROM escrow_deposits WHERE dealId=?').all('DEAL_ID'));"
 ```
 
-### Utility Scripts (in root directory)
+### Analyzing Logs
 ```bash
-# Check deal status via RPC
-node check_deal_status.mjs <deal-id>
+# Find latest log file
+ls -lt logs/ | head -5
 
-# Check tank wallet balance
-./check_tank_balance.mjs
+# Count unique errors
+grep -i "error\|failed" logs/otc-prod-*.log | sort | uniq -c | sort -rn | head -20
 
-# Generate tank wallet
-node generate_tank_wallet.mjs
+# Search for specific queue item issues
+grep "QUEUE_ITEM_ID" logs/otc-prod-*.log | tail -50
+```
 
-# Test deposit detection
-./test-deposit-detection.js
+### Utility Scripts
+Various debugging scripts exist in the root directory (check-*.js, analyze-*.js). Key patterns:
+```bash
+# Query database directly
+sqlite3 ./data/otc.db "SELECT * FROM deals WHERE stage='SWAP';"
 
-# Test ERC20 parsing
-node test-erc20-parsing.js
+# Run specific workspace tests
+npm test --workspace=packages/backend
 
-# Test broker flow
-./test-broker-flow.js
+# Run specific test file
+npm test packages/backend/test/specific-test.test.ts
 ```
 
 ### Common Issues
