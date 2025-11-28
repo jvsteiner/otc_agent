@@ -195,14 +195,32 @@ export class QueueRepository {
   }
   
   hasPhaseCompleted(dealId: string, phase: string): boolean {
-    const stmt = this.db.prepare(`
+    // CRITICAL FIX: Distinguish between "empty phase" and "completed phase"
+    // An empty phase (0 items) should return false to prevent skipping phases
+
+    // Get all items in this phase
+    const allItemsStmt = this.db.prepare(`
+      SELECT COUNT(*) as total
+      FROM queue_items
+      WHERE dealId = ? AND phase = ?
+    `);
+    const allItems = allItemsStmt.get(dealId, phase) as { total: number };
+
+    // If no items exist in this phase, it's empty (not completed)
+    // This prevents the bug where empty phases were treated as "complete"
+    if (allItems.total === 0) {
+      return false;
+    }
+
+    // If items exist, check if all are completed
+    const completedStmt = this.db.prepare(`
       SELECT COUNT(*) as count
       FROM queue_items
-      WHERE dealId = ? AND phase = ? AND status != 'COMPLETED'
+      WHERE dealId = ? AND phase = ? AND status = 'COMPLETED'
     `);
-    
-    const row = stmt.get(dealId, phase) as { count: number };
-    return row.count === 0;
+    const completed = completedStmt.get(dealId, phase) as { count: number };
+
+    return completed.count === allItems.total;
   }
   
   getPhaseItems(dealId: string, phase: string): QueueItem[] {

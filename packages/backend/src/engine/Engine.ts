@@ -5,7 +5,7 @@
  * Runs on a 30-second interval with an independent 5-second queue processor.
  */
 
-import { Deal, QueueItem, AssetCode, ChainId, EscrowAccountRef, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts, parseAssetCode, compareAmounts, Decimal } from '@otc-broker/core';
+import { Deal, QueueItem, AssetCode, ChainId, EscrowAccountRef, checkLocks, calculateCommission, getNativeAsset, getAssetMetadata, getConfirmationThreshold, isAmountGte, sumAmounts, subtractAmounts, parseAssetCode, compareAmounts, Decimal, isRefundableToken } from '@otc-broker/core';
 import { DB } from '../db/database';
 import { DealRepository, DepositRepository, QueueRepository, PayoutRepository } from '../db/repositories';
 import { AccountRepository } from '../db/repositories/AccountRepository';
@@ -1584,23 +1584,46 @@ export class Engine {
   private async processQueuesPhased(deal: Deal) {
     // Determine current phase based on what's completed
     let currentPhase: string | undefined;
-    
+
     // Check phase 1 (SWAP)
     const phase1Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_1_SWAP');
+    const phase1Completed = this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP');
     console.log(`[Engine] Phase 1 items for deal ${deal.id}:`, phase1Items.length);
-    console.log(`[Engine] Phase 1 completed:`, this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP'));
-    
-    if (phase1Items.length > 0 && !this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP')) {
+    console.log(`[Engine] Phase 1 completed:`, phase1Completed);
+
+    // CRITICAL: Handle three cases for Phase 1
+    // 1. Phase 1 items exist and NOT completed -> Process Phase 1
+    // 2. Phase 1 items exist and completed -> Move to Phase 2
+    // 3. Phase 1 items empty -> Skip to Phase 2 (implicit check via hasPhaseCompleted returning false)
+
+    if (phase1Items.length > 0 && !phase1Completed) {
+      // Case 1: Active Phase 1 items that need processing
       currentPhase = 'PHASE_1_SWAP';
-    } else if (phase1Items.length > 0 && this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_1_SWAP')) {
-      // Phase 1 complete, check phase 2
+    } else if (phase1Items.length > 0 && phase1Completed) {
+      // Case 2: Phase 1 complete, advance to Phase 2
       const phase2Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_2_COMMISSION');
-      if (phase2Items.length > 0 && !this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_2_COMMISSION')) {
+      const phase2Completed = this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_2_COMMISSION');
+      if (phase2Items.length > 0 && !phase2Completed) {
         currentPhase = 'PHASE_2_COMMISSION';
-      } else if (phase2Items.length === 0 || this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_2_COMMISSION')) {
+      } else if (phase2Items.length === 0 || phase2Completed) {
         // Phase 2 complete or no phase 2 items, check phase 3
         const phase3Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_3_REFUND');
-        if (phase3Items.length > 0 && !this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_3_REFUND')) {
+        const phase3Completed = this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_3_REFUND');
+        if (phase3Items.length > 0 && !phase3Completed) {
+          currentPhase = 'PHASE_3_REFUND';
+        }
+      }
+    } else if (phase1Items.length === 0) {
+      // Case 3: No Phase 1 items (empty phase), skip directly to Phase 2
+      const phase2Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_2_COMMISSION');
+      const phase2Completed = this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_2_COMMISSION');
+      if (phase2Items.length > 0 && !phase2Completed) {
+        currentPhase = 'PHASE_2_COMMISSION';
+      } else if (phase2Items.length === 0 || phase2Completed) {
+        // Phase 2 complete or no phase 2 items, check phase 3
+        const phase3Items = this.queueRepo.getPhaseItems(deal.id, 'PHASE_3_REFUND');
+        const phase3Completed = this.queueRepo.hasPhaseCompleted(deal.id, 'PHASE_3_REFUND');
+        if (phase3Items.length > 0 && !phase3Completed) {
           currentPhase = 'PHASE_3_REFUND';
         }
       }
@@ -2487,21 +2510,26 @@ export class Engine {
 
     console.log(`[TokenRefund] Discovered ${amount} ${asset} at escrow ${escrow.address}`);
 
-    // Step 1: Whitelist check - only process known assets from assets.json
+    // Step 1: Whitelist check - only process refundable assets from assets.json
     try {
       // Extract asset code without chain suffix (e.g., "ERC20:0x..." from "ERC20:0x...@ETH")
       const assetParts = asset.split('@');
       const assetCode = assetParts[0];
       const assetChainId = assetParts[1] || chainId;
 
-      const parsedAsset = parseAssetCode(assetCode, assetChainId);
-      if (!parsedAsset) {
-        console.log(`[TokenRefund] Skipping unknown asset ${asset} - not in whitelist`);
-        this.dealRepo.addEvent(deal.id, `Found unknown token ${contractAddress} (${amount}) - not refunding`);
+      // Extract contract address from asset code for ERC20/SPL tokens
+      // Asset code format: "ERC20:0x..." or "SPL:..." or "MATIC" (native)
+      const isERC20orSPL = assetCode.includes(':');
+      const extractedContractAddress = isERC20orSPL ? assetCode.split(':')[1] : undefined;
+
+      // Check if token is in the refundable whitelist
+      if (!isRefundableToken(assetChainId, extractedContractAddress)) {
+        console.log(`[TokenRefund] Skipping non-refundable asset ${asset} - not in whitelist`);
+        this.dealRepo.addEvent(deal.id, `Found non-refundable token ${contractAddress} (${amount}) - not auto-refunding`);
         return false;
       }
     } catch (error) {
-      console.log(`[TokenRefund] Skipping invalid asset code ${asset} - not in whitelist`);
+      console.log(`[TokenRefund] Skipping invalid asset code ${asset} - error checking whitelist`);
       this.dealRepo.addEvent(deal.id, `Found unparseable token ${contractAddress} (${amount}) - not refunding`);
       return false;
     }
